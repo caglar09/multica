@@ -1090,6 +1090,8 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 		Assignments []struct {
 			Role      string   `json:"role"`
 			RuntimeID string   `json:"runtime_id"`
+			Model     string   `json:"model"`
+			SkillMode string   `json:"skill_mode"`
 			SkillIDs  []string `json:"skill_ids"`
 		} `json:"assignments"`
 	}
@@ -1129,6 +1131,8 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 
 	type storedAssignment struct {
 		RuntimeID string   `json:"runtime_id"`
+		Model     string   `json:"model,omitempty"`
+		SkillMode string   `json:"skill_mode"`
 		SkillIDs  []string `json:"skill_ids"`
 	}
 	normalized := make(map[string]storedAssignment, len(req.Assignments))
@@ -1166,9 +1170,39 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 			return
 		}
 
+		model := strings.TrimSpace(assignment.Model)
+		if model != "" {
+			if catalog := h.cachedModelCatalog(r.Context(), uuidToString(runtimeID)); catalog != nil && catalog.Supported && len(catalog.Models) > 0 {
+				found := false
+				for _, candidate := range catalog.Models {
+					if candidate.ID == model {
+						found = true
+						break
+					}
+				}
+				if !found {
+					writeError(w, http.StatusBadRequest, "selected model is not available on the selected runtime")
+					return
+				}
+			}
+		}
+
+		skillMode := strings.ToLower(strings.TrimSpace(assignment.SkillMode))
+		if skillMode == "" {
+			skillMode = "inherit"
+		}
+		if skillMode != "inherit" && skillMode != "custom" {
+			writeError(w, http.StatusBadRequest, "skill_mode must be inherit or custom")
+			return
+		}
+
 		skillIDs := make([]string, 0, len(assignment.SkillIDs))
 		seenSkills := make(map[string]struct{}, len(assignment.SkillIDs))
-		for _, value := range assignment.SkillIDs {
+		values := assignment.SkillIDs
+		if skillMode == "inherit" {
+			values = nil
+		}
+		for _, value := range values {
 			skillID, ok := parseUUIDOrBadRequest(w, value, "skill_id")
 			if !ok {
 				return
@@ -1191,6 +1225,8 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 		}
 		normalized[role] = storedAssignment{
 			RuntimeID: uuidToString(runtimeID),
+			Model: model,
+			SkillMode: skillMode,
 			SkillIDs: skillIDs,
 		}
 	}
