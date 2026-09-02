@@ -13,25 +13,30 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/teamprovision"
 	"github.com/multica-ai/multica/server/internal/workflowruntime"
-	"github.com/multica-ai/multica/server/pkg/llm"
 )
 
-// startAutonomousWorkflow attaches to the router-owned TaskService and the
-// router-owned internal LLM client. Constructing parallel copies here would
-// bypass daemon wake/cache wiring and the operator's effective LLM retry policy.
+// startAutonomousWorkflow attaches to the router-owned TaskService. Team
+// planning is executed through a hidden carrier that inherits Mika's selected
+// daemon runtime/provider/model; it does not require server-side MULTICA_LLM_*
+// credentials.
 func startAutonomousWorkflow(
 	ctx context.Context,
 	bus *events.Bus,
 	pool *pgxpool.Pool,
 	taskSvc *service.TaskService,
-	llmClient *llm.Client,
 ) {
 	required := true
-	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_TEAM_LLM_REQUIRED")); raw != "" {
-		if value, err := strconv.ParseBool(raw); err == nil {
+	requiredRaw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_TEAM_RUNTIME_REQUIRED"))
+	if requiredRaw == "" {
+		// Backwards compatibility for deployments that already opted into the
+		// pre-runtime-planner flag name.
+		requiredRaw = strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_TEAM_LLM_REQUIRED"))
+	}
+	if requiredRaw != "" {
+		if value, err := strconv.ParseBool(requiredRaw); err == nil {
 			required = value
 		} else {
-			slog.Warn("invalid MULTICA_AUTONOMOUS_TEAM_LLM_REQUIRED; using true", "value", raw)
+			slog.Warn("invalid autonomous team runtime required flag; using true", "value", requiredRaw)
 		}
 	}
 
@@ -44,12 +49,14 @@ func startAutonomousWorkflow(
 		}
 	}
 
-	planner := teamprovision.NewModelBackedPlanner(llmClient, teamprovision.ModelBackedPlannerConfig{
-		Model: strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_TEAM_MODEL")),
-		MaxAgents: maxAgents,
-		Required: required,
-		Fallback: teamprovision.NewHeuristicPlanner(),
-	})
+	planner := teamprovision.NewRuntimeBackedPlanner(
+		workflowruntime.NewMikaTeamPlanExecutor(pool, taskSvc),
+		teamprovision.RuntimeBackedPlannerConfig{
+			MaxAgents: maxAgents,
+			Required:  required,
+			Fallback:  teamprovision.NewHeuristicPlanner(),
+		},
+	)
 
 	if _, err := workflowruntime.RegisterWithPlanner(
 		ctx,
