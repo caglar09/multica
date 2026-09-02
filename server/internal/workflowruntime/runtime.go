@@ -40,6 +40,7 @@ type Config struct {
 	MaxReviewCycles   int
 	PollInterval      time.Duration
 	ActionLease       time.Duration
+	ProjectPolicy     projectorchestration.Policy
 }
 
 func ConfigFromEnv() Config {
@@ -49,6 +50,7 @@ func ConfigFromEnv() Config {
 		MaxReviewCycles: 3,
 		PollInterval:    500 * time.Millisecond,
 		ActionLease:     30 * time.Second,
+		ProjectPolicy:   projectorchestration.DefaultPolicy(),
 	}
 	if cfg.ReviewerRole == "" {
 		cfg.ReviewerRole = "reviewer"
@@ -65,6 +67,31 @@ func ConfigFromEnv() Config {
 			cfg.AutoConfigureTeam = enabled
 		} else {
 			slog.Warn("invalid MULTICA_AUTONOMOUS_TEAM_AUTO_CONFIGURE; using manual team configuration", "value", raw)
+		}
+	}
+	if raw := strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_LEVEL"))); raw != "" {
+		switch projectorchestration.AutonomyLevel(raw) {
+		case projectorchestration.AutonomyAssisted,
+			projectorchestration.AutonomyDevelopment,
+			projectorchestration.AutonomyDelivery,
+			projectorchestration.AutonomyClosedLoop:
+			cfg.ProjectPolicy.Autonomy = projectorchestration.AutonomyLevel(raw)
+		default:
+			slog.Warn("invalid MULTICA_AUTONOMOUS_LEVEL; using development autonomy", "value", raw)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_MAX_PARALLEL_NODES")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value >= 1 && value <= 64 {
+			cfg.ProjectPolicy.Budget.MaxParallelNodes = value
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_MAX_PARALLEL_NODES; using default", "value", raw)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_MAX_PROJECT_ATTEMPTS")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value >= 1 {
+			cfg.ProjectPolicy.Budget.MaxTotalAttempts = value
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_MAX_PROJECT_ATTEMPTS; using default", "value", raw)
 		}
 	}
 	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES")); raw != "" {
@@ -110,6 +137,10 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		return nil, fmt.Errorf("build autonomous workflow engine: %w", err)
 	}
 	projectExecutor := NewMikaProjectPlanExecutor(pool, taskSvc)
+	projectPolicy := cfg.ProjectPolicy
+	if projectPolicy.Autonomy == "" {
+		projectPolicy = projectorchestration.DefaultPolicy()
+	}
 	r := &Runtime{
 		ctx: ctx,
 		pool: pool,
@@ -124,7 +155,7 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		engine: engine,
 		team: teamprovision.New(pool, taskSvc.Queries, planner),
 		projectStore: projectorchestration.NewStore(pool),
-		projectPlanner: projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes),
+		projectPlanner: projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
 		planningSem: make(chan struct{}, 4),
 		config: cfg,
 	}
@@ -152,6 +183,9 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		"reviewer_agent_id_configured", cfg.ReviewerAgentID != "",
 		"max_review_cycles", cfg.MaxReviewCycles,
 		"auto_configure_team", cfg.AutoConfigureTeam,
+		"autonomy_level", projectPolicy.Autonomy,
+		"max_parallel_nodes", projectPolicy.Budget.MaxParallelNodes,
+		"max_project_attempts", projectPolicy.Budget.MaxTotalAttempts,
 	)
 	return r, nil
 }
