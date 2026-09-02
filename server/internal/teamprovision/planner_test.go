@@ -19,6 +19,8 @@ func TestHeuristicPlannerMobileBackendProject(t *testing.T) {
 		t.Fatalf("intent = %q, want backend+mobile", plan.Intent)
 	}
 	assertRole(t, plan, RoleMobileEngineer)
+	assertRole(t, plan, RoleBackendEngineer)
+	assertRole(t, plan, RoleFullstackEngineer)
 	assertRole(t, plan, RoleCodeReviewer)
 	assertRole(t, plan, RoleQAEngineer)
 	assertRole(t, plan, RoleProductManager)
