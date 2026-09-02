@@ -311,6 +311,78 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 	})
 }
 
+func (r *Runtime) onProjectCreated(event events.Event) {
+	if r.team == nil || event.WorkspaceID == "" || event.ActorType != "agent" || event.ActorID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	workspaceID, err := util.ParseUUID(event.WorkspaceID)
+	if err != nil {
+		return
+	}
+	actorID, err := util.ParseUUID(event.ActorID)
+	if err != nil || !r.team.IsMikaAgent(ctx, workspaceID, actorID) {
+		return
+	}
+	projectIDValue := projectIDFromEvent(event)
+	if projectIDValue == "" {
+		return
+	}
+	projectID, err := util.ParseUUID(projectIDValue)
+	if err != nil {
+		return
+	}
+	team, err := r.team.EnsureProject(ctx, workspaceID, projectID)
+	if err != nil {
+		if errors.Is(err, teamprovision.ErrMikaUnavailable) {
+			return
+		}
+		slog.Warn("autonomous project team provisioning failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+		return
+	}
+	slog.Info("autonomous project team ready",
+		"project_id", projectIDValue,
+		"workspace_id", event.WorkspaceID,
+		"squad_id", util.UUIDToString(team.SquadID),
+		"intent", team.Intent,
+		"member_count", len(team.Members),
+	)
+}
+
+func (r *Runtime) onProjectDeleted(event events.Event) {
+	if r.team == nil || event.WorkspaceID == "" {
+		return
+	}
+	projectIDValue := projectIDFromEvent(event)
+	if projectIDValue == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	workspaceID, err := util.ParseUUID(event.WorkspaceID)
+	if err != nil {
+		return
+	}
+	projectID, err := util.ParseUUID(projectIDValue)
+	if err != nil {
+		return
+	}
+	if err := r.team.ArchiveProject(ctx, workspaceID, projectID); err != nil {
+		slog.Warn("autonomous project team archive failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
+}
+
 func (r *Runtime) onIssueDeleted(event events.Event) {
 	payload, _ := event.Payload.(map[string]any)
 	issueID, _ := payload["issue_id"].(string)
@@ -522,23 +594,32 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 		if effective != issuestatus.InProgress && effective != issuestatus.InReview {
 			return nil
 		}
-		ownerID := task.AgentID
-		_, reviewerID, resolveErr := r.resolveTeam(ctx, issue, ownerID)
+		resolvedOwnerID, reviewerID, resolveErr := r.resolveTeam(ctx, issue, task.AgentID)
 		if resolveErr != nil {
-			slog.Info("autonomous workflow not started from completion: reviewer unavailable",
+			slog.Info("autonomous workflow not started from completion: team unavailable",
 				"issue_id", issueID,
-				"agent_id", util.UUIDToString(ownerID),
+				"agent_id", util.UUIDToString(task.AgentID),
 				"error", resolveErr,
 			)
 			return nil
 		}
+
+		eventType := "implementation.completed"
+		eventID := "implementation-completed:" + util.UUIDToString(task.ID)
+		if resolvedOwnerID != task.AgentID {
+			// A Mika-owned legacy/manual task completed before the technology
+			// team took ownership. Start the deterministic workflow instead of
+			// treating Mika's coordination run as implementation evidence.
+			eventType = "workflow.started"
+			eventID = "workflow-start-after-coordinator:" + util.UUIDToString(task.ID)
+		}
 		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
-			ID:                "implementation-completed:" + util.UUIDToString(task.ID),
-			Type:              "implementation.completed",
+			ID:                eventID,
+			Type:              eventType,
 			WorkspaceID:       event.WorkspaceID,
 			ProjectID:         util.UUIDToString(issue.ProjectID),
 			IssueID:           issueID,
-			OwnerAgentID:      util.UUIDToString(ownerID),
+			OwnerAgentID:      util.UUIDToString(resolvedOwnerID),
 			ReviewerAgentID:   util.UUIDToString(reviewerID),
 			AccountableUserID: util.UUIDToString(task.AccountableUserID),
 			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
@@ -685,10 +766,42 @@ func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgt
 			`, issue.AssigneeID, issue.WorkspaceID).Scan(&ownerID); err != nil {
 				return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf("resolve squad leader: %w", err)
 			}
-		default:
-			return pgtype.UUID{}, pgtype.UUID{}, errors.New("issue has no agent or squad assignee")
 		}
 	}
+
+	// Project-team routing becomes authoritative when no implementation owner
+	// exists yet or the current owner is Mika. Mika is the Chief of Staff: she
+	// bootstraps and coordinates the technology team, but does not become the
+	// implementation/review quality gate herself.
+	if issue.ProjectID.Valid && r.team != nil {
+		provisionedOwner := !ownerID.Valid || r.team.IsMikaAgent(ctx, issue.WorkspaceID, ownerID)
+		if provisionedOwner {
+			implementationID, team, err := r.team.ImplementationAgent(ctx, issue)
+			if err == nil {
+				reviewerID, ok := team.Agent(teamprovision.RoleCodeReviewer)
+				if !ok {
+					return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no code reviewer")
+				}
+				if implementationID == reviewerID {
+					return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project implementation and review agents must differ")
+				}
+				return implementationID, reviewerID, nil
+			}
+			if !ownerID.Valid {
+				return pgtype.UUID{}, pgtype.UUID{}, err
+			}
+			slog.Info("autonomous project team unavailable; falling back to existing assignee routing",
+				"issue_id", util.UUIDToString(issue.ID),
+				"project_id", util.UUIDToString(issue.ProjectID),
+				"error", err,
+			)
+		} else if team, ok, err := r.team.FindProject(ctx, issue.WorkspaceID, issue.ProjectID); err == nil && ok {
+			if reviewerID, exists := team.Agent(teamprovision.RoleCodeReviewer); exists && reviewerID != ownerID {
+				return ownerID, reviewerID, nil
+			}
+		}
+	}
+
 	if !ownerID.Valid {
 		return pgtype.UUID{}, pgtype.UUID{}, errors.New("workflow owner agent is missing")
 	}
@@ -894,6 +1007,27 @@ func issueSnapshotFromEvent(event events.Event) (issueSnapshot, string, error) {
 	}
 	prevStatus, _ := payload["prev_status"].(string)
 	return snapshot, prevStatus, nil
+}
+
+func projectIDFromEvent(event events.Event) string {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if id, _ := payload["project_id"].(string); id != "" {
+		return id
+	}
+	raw, err := json.Marshal(payload["project"])
+	if err != nil {
+		return ""
+	}
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &project); err != nil {
+		return ""
+	}
+	return project.ID
 }
 
 func issueEventID(prefix string, snapshot issueSnapshot) string {
