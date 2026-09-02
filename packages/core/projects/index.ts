@@ -26,6 +26,7 @@ export {
   usePauseAutonomousProject,
   useResumeAutonomousProject,
   useReplanAutonomousProject,
+  useConfirmAutonomousTeam,
   useRetryAutonomousAction,
   useResolveAutonomousEscalation,
 } from "./autonomous";
