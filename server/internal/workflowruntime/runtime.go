@@ -54,6 +54,7 @@ func ConfigFromEnv() Config {
 		ProjectPolicy:   projectorchestration.DefaultPolicy(),
 		AdapterConfig: projectorchestration.WebhookAdapterConfig{
 			RepositoryURL:  strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_REPOSITORY_ANALYZER_WEBHOOK_URL")),
+			QualityURL:     strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_QUALITY_GATE_WEBHOOK_URL")),
 			DeploymentURL:  strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_DEPLOYMENT_WEBHOOK_URL")),
 			ObservationURL: strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_OBSERVATION_WEBHOOK_URL")),
 			BearerToken:    strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_WEBHOOK_BEARER_TOKEN")),
@@ -130,6 +131,7 @@ type Runtime struct {
 	projectStore   *projectorchestration.Store
 	projectPlanner      *projectorchestration.Planner
 	repositoryAnalyzer  projectorchestration.RepositoryAnalyzer
+	qualityGateRunner    projectorchestration.QualityGateRunner
 	deploymentAdapter   projectorchestration.DeploymentAdapter
 	observationAdapter  projectorchestration.ObservationAdapter
 	planningSem         chan struct{}
@@ -175,6 +177,7 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		projectStore: projectorchestration.NewStore(pool),
 		projectPlanner:     projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
 		repositoryAnalyzer: projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
+		qualityGateRunner:   projectorchestration.NewWebhookQualityGateRunner(cfg.AdapterConfig),
 		deploymentAdapter:  projectorchestration.NewWebhookDeploymentAdapter(cfg.AdapterConfig),
 		observationAdapter: projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
 		planningSem:        make(chan struct{}, 4),
