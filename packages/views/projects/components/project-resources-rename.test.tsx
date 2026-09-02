@@ -5,6 +5,9 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { renderWithI18n } from "../../test/i18n";
 
 const updateMock = vi.fn().mockResolvedValue({});
+const openLocalDirectoryMock = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ ok: true }),
+);
 
 const RESOURCE = {
   id: "res-1",
@@ -59,6 +62,7 @@ vi.mock("@multica/core/paths", () => ({
 }));
 vi.mock("../../platform/local-directory", () => ({
   isDesktopShell: () => true,
+  openLocalDirectory: openLocalDirectoryMock,
   pickDirectory: vi.fn(),
   validateLocalDirectory: vi.fn(),
 }));
@@ -70,7 +74,10 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 import { ProjectResourcesSection } from "./project-resources-section";
 
 describe("ProjectResourcesSection — renaming a worktree local directory", () => {
-  beforeEach(() => updateMock.mockClear());
+  beforeEach(() => {
+    updateMock.mockClear();
+    openLocalDirectoryMock.mockClear();
+  });
 
   // The reported skew, one step further on: backend rolled back below v0.4.25
   // while the runtimes stay current — a combination the docs call supported.
@@ -98,6 +105,20 @@ describe("ProjectResourcesSection — renaming a worktree local directory", () =
     renderWithI18n(<ProjectResourcesSection projectId="p1" />);
     expect(screen.getByText("Renamed Client")).toBeInTheDocument();
     expect(screen.queryByText("Game Client")).not.toBeInTheDocument();
+  });
+
+  it("shows the project path and opens it in the desktop file manager", async () => {
+    renderWithI18n(<ProjectResourcesSection projectId="p1" />);
+
+    const path = screen.getByText("/Users/dev/work/game-client");
+    expect(path).toBeInTheDocument();
+    fireEvent.click(path);
+
+    await waitFor(() =>
+      expect(openLocalDirectoryMock).toHaveBeenCalledWith(
+        "/Users/dev/work/game-client",
+      ),
+    );
   });
 
   // Clearing goes through the same label-only path as renaming: an emptied

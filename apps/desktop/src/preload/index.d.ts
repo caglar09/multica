@@ -102,6 +102,14 @@ interface DesktopAPI {
      *  Drives the worktree execution-mode option in the resource UI. */
     is_git_repo?: boolean;
   }>;
+  /** Open an attached local directory in the operating system's file manager. */
+  openLocalDirectory: (
+    path: string,
+  ) => Promise<{
+    ok: boolean;
+    reason?: "not_absolute" | "not_found" | "not_a_directory" | "error";
+    error?: string;
+  }>;
   /** Listen for Cmd/Ctrl+W tab-close requests from the main process.
    *  Returns an unsubscribe function. */
   onCloseActiveTab: (callback: () => void) => () => void;

@@ -31,11 +31,23 @@ export type ValidateLocalDirectoryResult = {
   is_git_repo?: boolean;
 };
 
+export type OpenLocalDirectoryResult = {
+  ok: boolean;
+  reason?:
+    | "not_absolute"
+    | "not_found"
+    | "not_a_directory"
+    | "error"
+    | "unsupported";
+  error?: string;
+};
+
 interface DesktopLocalDirectoryAPI {
   pickDirectory?: (defaultPath?: string) => Promise<PickDirectoryResult>;
   validateLocalDirectory?: (
     path: string,
   ) => Promise<ValidateLocalDirectoryResult>;
+  openLocalDirectory?: (path: string) => Promise<OpenLocalDirectoryResult>;
 }
 
 function readDesktopAPI(): DesktopLocalDirectoryAPI | undefined {
@@ -67,4 +79,12 @@ export async function validateLocalDirectory(
   const api = readDesktopAPI();
   if (!api?.validateLocalDirectory) return { ok: false, reason: "unsupported" };
   return api.validateLocalDirectory(path);
+}
+
+export async function openLocalDirectory(
+  path: string,
+): Promise<OpenLocalDirectoryResult> {
+  const api = readDesktopAPI();
+  if (!api?.openLocalDirectory) return { ok: false, reason: "unsupported" };
+  return api.openLocalDirectory(path);
 }
