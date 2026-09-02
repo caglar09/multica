@@ -547,6 +547,33 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) requireAutonomousControlAdmin(
+	w http.ResponseWriter,
+	r *http.Request,
+	workspaceID pgtype.UUID,
+) (pgtype.UUID, bool) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return pgtype.UUID{}, false
+	}
+	userUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return pgtype.UUID{}, false
+	}
+	member, err := h.Queries.GetMemberByUserAndWorkspace(
+		r.Context(),
+		db.GetMemberByUserAndWorkspaceParams{
+			UserID: userUUID,
+			WorkspaceID: workspaceID,
+		},
+	)
+	if err != nil || (member.Role != "owner" && member.Role != "admin") {
+		writeError(w, http.StatusForbidden, "workspace owner or admin required")
+		return pgtype.UUID{}, false
+	}
+	return userUUID, true
+}
+
 func (h *Handler) PauseProjectAutonomous(w http.ResponseWriter, r *http.Request) {
 	h.setProjectAutonomousPaused(w, r, true)
 }
@@ -564,11 +591,7 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	userUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	userUUID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
 	if !ok {
 		return
 	}
@@ -605,11 +628,7 @@ func (h *Handler) ReplanProjectAutonomous(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	userUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	userUUID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
 	if !ok {
 		return
 	}
@@ -649,6 +668,9 @@ func (h *Handler) RetryProjectAutonomousAction(w http.ResponseWriter, r *http.Re
 	}
 	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
 	if !ok {
+		return
+	}
+	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
 		return
 	}
 	tag, err := h.DB.Exec(r.Context(), `
