@@ -1007,7 +1007,7 @@ func (r *Runtime) recordAgentPerformance(
 	)
 }
 
-func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) error {
+func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) (bool, error) {
 	var nodeID, planID pgtype.UUID
 	var kind string
 	err := r.pool.QueryRow(ctx, `
@@ -1019,10 +1019,10 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 		LIMIT 1
 	`, issue.WorkspaceID, issue.ID).Scan(&nodeID, &planID, &kind)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	var taskResult any = map[string]any{}
@@ -1031,12 +1031,13 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			taskResult = map[string]any{"raw": string(task.Result)}
 		}
 	}
-	content, _ := json.Marshal(map[string]any{
+	artifactPayload := map[string]any{
 		"task_id": util.UUIDToString(task.ID),
 		"agent_id": util.UUIDToString(task.AgentID),
 		"issue_id": util.UUIDToString(issue.ID),
 		"result": taskResult,
-	})
+	}
+	content, _ := json.Marshal(artifactPayload)
 	artifactType := projectArtifactType(projectorchestration.NodeKind(kind))
 	if _, err := r.pool.Exec(ctx, `
 		INSERT INTO autonomous_project_artifact (
@@ -1054,7 +1055,7 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 		)
 	`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, artifactType,
 		"Task result: "+issue.Title, content, task.AgentID, util.UUIDToString(task.ID)); err != nil {
-		return fmt.Errorf("record project task artifact: %w", err)
+		return false, fmt.Errorf("record project task artifact: %w", err)
 	}
 
 	if brainType := projectBrainEntryType(projectorchestration.NodeKind(kind)); brainType != "" {
@@ -1083,36 +1084,98 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			)
 		`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, brainType,
 			issue.Title, brainContent, util.UUIDToString(task.ID), task.AgentID); err != nil {
-			return fmt.Errorf("record project brain artifact knowledge: %w", err)
+			return false, fmt.Errorf("record project brain artifact knowledge: %w", err)
 		}
 	}
 
 	gateType := projectQualityGateType(projectorchestration.NodeKind(kind))
-	if gateType != "" {
-		evidence, _ := json.Marshal(map[string]any{
+	if gateType == "" {
+		return false, nil
+	}
+
+	gateStatus := "passed"
+	gateError := ""
+	gateEvidence := map[string]any{
+		"task_id": util.UUIDToString(task.ID),
+		"artifact_type": artifactType,
+		"mode": "semantic_task_completion",
+	}
+	if r.qualityGateRunner != nil {
+		result, runErr := r.qualityGateRunner.Run(ctx, projectorchestration.QualityGateRequest{
+			WorkspaceID: issue.WorkspaceID,
+			ProjectID: issue.ProjectID,
+			PlanID: planID,
+			NodeID: nodeID,
+			IssueID: issue.ID,
+			GateType: gateType,
+			Artifact: artifactPayload,
+		})
+		gateEvidence = map[string]any{
 			"task_id": util.UUIDToString(task.ID),
 			"artifact_type": artifactType,
-		})
-		if _, err := r.pool.Exec(ctx, `
-			INSERT INTO autonomous_project_quality_gate_run (
-				workspace_id, project_id, plan_id, node_id, gate_type,
-				status, required, evidence, attempt, started_at, completed_at
-			)
-			SELECT $1, $2, $3, $4, $5, 'passed', TRUE, $6, 1, now(), now()
-			WHERE NOT EXISTS (
-				SELECT 1
-				FROM autonomous_project_quality_gate_run
-				WHERE workspace_id = $1
-				  AND project_id = $2
-				  AND node_id = $4
-				  AND gate_type = $5
-				  AND evidence ->> 'task_id' = $7
-			)
-		`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, gateType, evidence, util.UUIDToString(task.ID)); err != nil {
-			return fmt.Errorf("record project quality evidence: %w", err)
+			"mode": "deterministic_runner",
+			"runner_evidence": result.Evidence,
+		}
+		if runErr != nil {
+			gateStatus = "failed"
+			gateError = runErr.Error()
+		} else if !result.Passed {
+			gateStatus = "failed"
+			gateError = strings.TrimSpace(result.Error)
+			if gateError == "" {
+				gateError = "deterministic quality gate failed"
+			}
 		}
 	}
-	return nil
+	evidenceJSON, _ := json.Marshal(gateEvidence)
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_quality_gate_run (
+			workspace_id, project_id, plan_id, node_id, gate_type,
+			status, required, evidence, attempt, last_error, started_at, completed_at
+		)
+		SELECT $1, $2, $3, $4, $5, $6, TRUE, $7, 1, NULLIF($8, ''), now(), now()
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM autonomous_project_quality_gate_run
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND node_id = $4
+			  AND gate_type = $5
+			  AND evidence ->> 'task_id' = $9
+		)
+	`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, gateType, gateStatus,
+		evidenceJSON, gateError, util.UUIDToString(task.ID)); err != nil {
+		return false, fmt.Errorf("record project quality evidence: %w", err)
+	}
+	if gateStatus == "passed" {
+		return false, nil
+	}
+
+	if r.projectStore == nil {
+		return true, errors.New(gateError)
+	}
+	disposition, nodeKey, projectID, failErr := r.projectStore.FailNodeByIssue(
+		ctx, issue.WorkspaceID, issue.ID, "quality gate "+gateType+" failed: "+gateError,
+	)
+	if failErr != nil {
+		return true, failErr
+	}
+	if disposition == projectorchestration.FailureBlocked {
+		_, _ = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked)
+		contextJSON, _ := json.Marshal(map[string]any{
+			"node_key": nodeKey,
+			"issue_id": util.UUIDToString(issue.ID),
+			"gate_type": gateType,
+			"error": gateError,
+		})
+		_, _ = r.pool.Exec(ctx, `
+			INSERT INTO autonomous_project_escalation (
+				workspace_id, project_id, category, severity, summary, context
+			)
+			VALUES ($1, $2, 'technical_failure', 'high', $3, $4)
+		`, issue.WorkspaceID, projectID, "Deterministic quality gate exhausted retry budget: "+nodeKey, contextJSON)
+	}
+	return true, nil
 }
 
 func projectArtifactType(kind projectorchestration.NodeKind) string {
