@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/service"
-	"github.com/multica-ai/multica/server/internal/teamprovision"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -809,6 +808,174 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"paused": paused})
+}
+
+func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	userUUID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+		ID: projectID,
+		WorkspaceID: workspaceID,
+	}); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	var req struct {
+		Assignments []struct {
+			Role      string   `json:"role"`
+			RuntimeID string   `json:"runtime_id"`
+			SkillIDs  []string `json:"skill_ids"`
+		} `json:"assignments"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid autonomous team configuration")
+		return
+	}
+
+	var draftPlan []byte
+	var draftStatus string
+	if err := h.DB.QueryRow(r.Context(), `
+		SELECT plan, status
+		FROM autonomous_project_team_draft
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID).Scan(&draftPlan, &draftStatus); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "autonomous team draft not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous team draft")
+		return
+	}
+	if draftStatus != "awaiting_configuration" {
+		writeError(w, http.StatusConflict, "autonomous team draft is not awaiting configuration")
+		return
+	}
+
+	var planned struct {
+		Roles []struct {
+			Role string `json:"role"`
+		} `json:"roles"`
+	}
+	if err := json.Unmarshal(draftPlan, &planned); err != nil || len(planned.Roles) == 0 {
+		writeError(w, http.StatusInternalServerError, "autonomous team draft is invalid")
+		return
+	}
+
+	type storedAssignment struct {
+		RuntimeID string   `json:"runtime_id"`
+		SkillIDs  []string `json:"skill_ids"`
+	}
+	normalized := make(map[string]storedAssignment, len(req.Assignments))
+	for _, assignment := range req.Assignments {
+		role := strings.TrimSpace(assignment.Role)
+		if role == "" || strings.TrimSpace(assignment.RuntimeID) == "" {
+			writeError(w, http.StatusBadRequest, "every autonomous role requires a runtime")
+			return
+		}
+		if _, duplicate := normalized[role]; duplicate {
+			writeError(w, http.StatusBadRequest, "duplicate autonomous role assignment")
+			return
+		}
+
+		runtimeID, ok := parseUUIDOrBadRequest(w, assignment.RuntimeID, "runtime_id")
+		if !ok {
+			return
+		}
+		var runtimeStatus, runtimeVisibility string
+		var runtimeOwner pgtype.UUID
+		if err := h.DB.QueryRow(r.Context(), `
+			SELECT status, visibility, owner_id
+			FROM agent_runtime
+			WHERE id = $1 AND workspace_id = $2
+		`, runtimeID, workspaceID).Scan(&runtimeStatus, &runtimeVisibility, &runtimeOwner); err != nil {
+			writeError(w, http.StatusBadRequest, "selected runtime is not available in this workspace")
+			return
+		}
+		if runtimeStatus != "online" {
+			writeError(w, http.StatusConflict, "selected runtime must be online")
+			return
+		}
+		if runtimeOwner.Valid && runtimeOwner != userUUID && runtimeVisibility != "public" {
+			writeError(w, http.StatusForbidden, "selected runtime is private to another member")
+			return
+		}
+
+		skillIDs := make([]string, 0, len(assignment.SkillIDs))
+		seenSkills := make(map[string]struct{}, len(assignment.SkillIDs))
+		for _, value := range assignment.SkillIDs {
+			skillID, ok := parseUUIDOrBadRequest(w, value, "skill_id")
+			if !ok {
+				return
+			}
+			canonical := uuidToString(skillID)
+			if _, duplicate := seenSkills[canonical]; duplicate {
+				continue
+			}
+			seenSkills[canonical] = struct{}{}
+			var exists bool
+			if err := h.DB.QueryRow(r.Context(), `
+				SELECT EXISTS (
+					SELECT 1 FROM skill WHERE id = $1 AND workspace_id = $2
+				)
+			`, skillID, workspaceID).Scan(&exists); err != nil || !exists {
+				writeError(w, http.StatusBadRequest, "selected skill is not available in this workspace")
+				return
+			}
+			skillIDs = append(skillIDs, canonical)
+		}
+		normalized[role] = storedAssignment{
+			RuntimeID: uuidToString(runtimeID),
+			SkillIDs: skillIDs,
+		}
+	}
+
+	for _, role := range planned.Roles {
+		if _, ok := normalized[role.Role]; !ok {
+			writeError(w, http.StatusBadRequest, "every planned autonomous role must be configured")
+			return
+		}
+	}
+	if len(normalized) != len(planned.Roles) {
+		writeError(w, http.StatusBadRequest, "configuration contains a role that is not in the autonomous team plan")
+		return
+	}
+
+	selectionsJSON, err := json.Marshal(normalized)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode autonomous team configuration")
+		return
+	}
+	tag, err := h.DB.Exec(r.Context(), `
+		UPDATE autonomous_project_team_draft
+		SET selections = $3,
+		    status = 'provisioning',
+		    confirmed_at = now(),
+		    confirmed_by = $4,
+		    updated_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND status = 'awaiting_configuration'
+	`, workspaceID, projectID, selectionsJSON, userUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to confirm autonomous team configuration")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusConflict, "autonomous team configuration changed; refresh and try again")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"provisioning": true})
 }
 
 func (h *Handler) ReplanProjectAutonomous(w http.ResponseWriter, r *http.Request) {
