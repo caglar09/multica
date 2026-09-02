@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS autonomous_agent_performance (
+    workspace_id UUID NOT NULL,
+    agent_id UUID NOT NULL,
+    role_family TEXT NOT NULL,
+    tasks_started BIGINT NOT NULL DEFAULT 0,
+    tasks_completed BIGINT NOT NULL DEFAULT 0,
+    tasks_failed BIGINT NOT NULL DEFAULT 0,
+    review_rejections BIGINT NOT NULL DEFAULT 0,
+    retries BIGINT NOT NULL DEFAULT 0,
+    total_runtime_seconds BIGINT NOT NULL DEFAULT 0,
+    last_outcome_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, agent_id, role_family),
+    CHECK (tasks_started >= 0),
+    CHECK (tasks_completed >= 0),
+    CHECK (tasks_failed >= 0),
+    CHECK (review_rejections >= 0),
+    CHECK (retries >= 0),
+    CHECK (total_runtime_seconds >= 0)
+);
