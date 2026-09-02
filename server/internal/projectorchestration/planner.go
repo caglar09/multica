@@ -68,6 +68,7 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 	}
 	plan, err := ParsePlan(execution.Output)
 	if err == nil {
+		plan = HardenPlan(plan)
 		if err = ValidatePlan(plan, p.maxNodes); err == nil {
 			return plan, execution, nil
 		}
@@ -89,6 +90,7 @@ Original output:
 	if parseErr != nil {
 		return Plan{}, repaired, fmt.Errorf("decode repaired project plan: %w", parseErr)
 	}
+	plan = HardenPlan(plan)
 	if validateErr := ValidatePlan(plan, p.maxNodes); validateErr != nil {
 		return Plan{}, repaired, fmt.Errorf("repaired project plan rejected: %w", validateErr)
 	}
