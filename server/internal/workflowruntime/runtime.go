@@ -76,6 +76,10 @@ type Runtime struct {
 }
 
 func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config) (*Runtime, error) {
+	return RegisterWithPlanner(ctx, bus, pool, taskSvc, cfg, nil)
+}
+
+func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config, planner teamprovision.Planner) (*Runtime, error) {
 	if !cfg.Enabled {
 		slog.Info("autonomous workflow disabled")
 		return nil, nil
@@ -94,7 +98,7 @@ func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc 
 		taskSvc: taskSvc,
 		store: store,
 		engine: engine,
-		team: teamprovision.New(pool, taskSvc.Queries),
+		team: teamprovision.New(pool, taskSvc.Queries, planner),
 		config: cfg,
 	}
 
