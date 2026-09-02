@@ -288,7 +288,12 @@ func (s *PostgresStore) ClaimPendingAction(ctx context.Context, lease time.Durat
 		WITH candidate AS (
 			SELECT a.id
 			FROM autonomous_workflow_action a
-			WHERE (
+			JOIN autonomous_workflow_run wr ON wr.id = a.run_id
+			LEFT JOIN autonomous_project_control pc
+			  ON pc.project_id = wr.project_id
+			 AND pc.workspace_id = wr.workspace_id
+			WHERE COALESCE(pc.paused, FALSE) = FALSE
+			  AND (
 				(a.status = 'pending' AND a.available_at <= now())
 				OR
 				(a.status = 'running' AND a.lease_expires_at < now())
