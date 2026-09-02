@@ -97,6 +97,7 @@ import type {
   CancelTaskResponse,
   Project,
   AutonomousProjectSnapshot,
+  AutonomousRoleRuntimeAssignment,
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,
@@ -3566,6 +3567,16 @@ export class ApiClient {
 
   async replanProjectAutonomous(id: string): Promise<{ requested: boolean }> {
     return this.fetch(`/api/projects/${id}/autonomous/replan`, { method: "POST" });
+  }
+
+  async confirmProjectAutonomousTeam(
+    id: string,
+    assignments: AutonomousRoleRuntimeAssignment[],
+  ): Promise<{ provisioning: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/team/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ assignments }),
+    });
   }
 
   async retryProjectAutonomousAction(
