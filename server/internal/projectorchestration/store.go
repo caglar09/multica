@@ -725,6 +725,169 @@ func (s *Store) loadSpecs(ctx context.Context, planID pgtype.UUID) ([]NodeSpec, 
 	return nodes, edges, edgeRows.Err()
 }
 
+func (s *Store) StartExternalNode(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeKey string,
+) (pgtype.UUID, pgtype.UUID, error) {
+	if s == nil || s.pool == nil {
+		return pgtype.UUID{}, pgtype.UUID{}, errors.New("project orchestration store is not configured")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var maxTotal, total int
+	if err := tx.QueryRow(ctx, `
+		SELECT max_total_attempts, total_attempts
+		FROM autonomous_project_budget
+		WHERE workspace_id = $1 AND project_id = $2
+		FOR UPDATE
+	`, workspaceID, projectID).Scan(&maxTotal, &total); err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	if total >= maxTotal {
+		return pgtype.UUID{}, pgtype.UUID{}, ErrBudgetExceeded
+	}
+
+	var nodeID, planID pgtype.UUID
+	tag, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node n
+		SET status = 'running',
+		    attempt = attempt + 1,
+		    started_at = COALESCE(started_at, now()),
+		    blocked_reason = NULL,
+		    updated_at = now()
+		FROM autonomous_project_plan p
+		WHERE n.plan_id = p.id
+		  AND n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND n.node_key = $3
+		  AND n.status = 'ready'
+		  AND n.attempt < n.max_attempts
+		  AND p.status = 'active'
+	`, workspaceID, projectID, nodeKey)
+	if err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgtype.UUID{}, pgtype.UUID{}, errors.New("project node is no longer ready")
+	}
+	if err := tx.QueryRow(ctx, `
+		SELECT id, plan_id
+		FROM autonomous_project_plan_node
+		WHERE workspace_id = $1 AND project_id = $2 AND node_key = $3
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, workspaceID, projectID, nodeKey).Scan(&nodeID, &planID); err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_budget
+		SET total_attempts = total_attempts + 1, updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID); err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	return nodeID, planID, nil
+}
+
+func (s *Store) CompleteExternalNode(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeKey string,
+) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET status = 'completed',
+		    completed_at = COALESCE(completed_at, now()),
+		    blocked_reason = NULL,
+		    updated_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND node_key = $3
+		  AND status = 'running'
+	`, workspaceID, projectID, nodeKey)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	if err := s.RefreshReady(ctx, workspaceID, projectID); err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan p
+		SET status = 'completed', updated_at = now()
+		WHERE p.workspace_id = $1
+		  AND p.project_id = $2
+		  AND p.status = 'active'
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan_node n
+			WHERE n.plan_id = p.id
+			  AND n.status NOT IN ('completed', 'cancelled')
+		  )
+	`, workspaceID, projectID)
+	return err
+}
+
+func (s *Store) FailExternalNode(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeKey, reason string,
+) (FailureDisposition, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	var attempt, maxAttempts int
+	if err := tx.QueryRow(ctx, `
+		SELECT attempt, max_attempts
+		FROM autonomous_project_plan_node
+		WHERE workspace_id = $1 AND project_id = $2 AND node_key = $3
+		FOR UPDATE
+	`, workspaceID, projectID, nodeKey).Scan(&attempt, &maxAttempts); err != nil {
+		return "", err
+	}
+	disposition := FailureRetry
+	status := "ready"
+	if attempt >= maxAttempts {
+		disposition = FailureBlocked
+		status = "blocked"
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET status = $4,
+		    blocked_reason = $5,
+		    ready_at = CASE WHEN $4 = 'ready' THEN now() ELSE ready_at END,
+		    updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2 AND node_key = $3
+	`, workspaceID, projectID, nodeKey, status, reason); err != nil {
+		return "", err
+	}
+	if disposition == FailureBlocked {
+		if _, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_plan
+			SET status = 'blocked', updated_at = now()
+			WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
+		`, workspaceID, projectID); err != nil {
+			return "", err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return disposition, nil
+}
+
 func (s *Store) ResetDeletedIssue(
 	ctx context.Context,
 	workspaceID, issueID pgtype.UUID,
