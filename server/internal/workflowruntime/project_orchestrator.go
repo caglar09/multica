@@ -485,6 +485,7 @@ func (r *Runtime) processDiscoveredProjectWork(ctx context.Context) error {
 		WHERE i.creator_type = 'agent'
 		  AND i.origin_type = 'agent_create'
 		  AND i.project_id IS NOT NULL
+		  AND i.status NOT IN ('done', 'cancelled')
 		  AND EXISTS (
 			SELECT 1
 			FROM autonomous_project_plan p
@@ -701,6 +702,18 @@ func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issu
 		brainContent,
 	); err != nil {
 		return err
+	}
+	if issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) == issuestatus.Blocked {
+		if err := r.projectStore.SetNodeBlocked(
+			ctx,
+			issue.WorkspaceID,
+			issue.ProjectID,
+			nodeKey,
+			"manual",
+			"runtime-discovered issue is currently blocked",
+		); err != nil {
+			return err
+		}
 	}
 
 	slog.Info("runtime-discovered issue adopted into project plan",
@@ -978,7 +991,7 @@ func (r *Runtime) syncProjectNodeBoardState(
 	case "pending":
 		target = issuestatus.Backlog
 	case "ready":
-		if issue.Status != issuestatus.Blocked {
+		if issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) != issuestatus.Blocked {
 			target = issuestatus.Todo
 		}
 	case "running":
@@ -1039,10 +1052,11 @@ func (r *Runtime) startReadyProjectNode(
 	if err != nil {
 		return err
 	}
-	if issue.Status == issuestatus.Blocked {
+	effectiveIssueStatus := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+	if effectiveIssueStatus == issuestatus.Blocked {
 		return nil
 	}
-	if issue.Status == issuestatus.Backlog {
+	if effectiveIssueStatus == issuestatus.Backlog {
 		issue, err = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Todo)
 		if err != nil {
 			return err
