@@ -201,6 +201,22 @@ describe("CreateProjectModal", () => {
     expect(screen.getByRole("button", { name: "Due date" })).toBeInTheDocument();
   });
 
+  it("reveals autonomous bootstrap intake when an autonomy level is selected", async () => {
+    const user = userEvent.setup();
+    renderWithI18n(<CreateProjectModal onClose={vi.fn()} />);
+
+    expect(screen.queryByText("Autonomous Project Bootstrap")).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Autonomous · Development" }),
+    );
+
+    expect(screen.getByText("Autonomous Project Bootstrap")).toBeInTheDocument();
+    expect(screen.getByText("Project brief")).toBeInTheDocument();
+    expect(screen.getByText("Project knowledge")).toBeInTheDocument();
+    expect(screen.getByText("Approval guardrails")).toBeInTheDocument();
+  });
+
   it("filters workspace repositories by search text", async () => {
     const user = userEvent.setup();
 
