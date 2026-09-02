@@ -788,11 +788,32 @@ func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgt
 
 		assignedToGeneratedSquad := teamExists && preferredSquad.Valid && preferredSquad == existingTeam.SquadID
 		ownerIsMika := ownerID.Valid && r.team.IsMikaAgent(ctx, issue.WorkspaceID, ownerID)
+		ownerRole := ""
+		ownerIsGenerated := false
+		ownerIsGeneratedImplementation := false
+		if teamExists && ownerID.Valid {
+			if role, generated := existingTeam.RoleForAgent(ownerID); generated {
+				ownerRole = role
+				ownerIsGenerated = true
+				if spec, ok := existingTeam.RoleSpec(role); ok {
+					ownerIsGeneratedImplementation = teamprovision.IsImplementationFamily(spec.Family)
+				}
+			}
+		}
 
-		// Demand-driven team bootstrap: unassigned/Mika-owned work, or work
-		// assigned to the generated Technology Team squad, is routed to the
-		// specialist implementation role inferred from the issue.
-		if !ownerID.Valid || ownerIsMika || assignedToGeneratedSquad {
+		if ownerIsGenerated && !ownerIsGeneratedImplementation {
+			// Product/architecture/QA/review work is not an implementation
+			// transition. Do not reinterpret those tasks as code delivery.
+			return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf(
+				"issue is assigned to non-implementation project role %q", ownerRole,
+			)
+		}
+
+		// The LLM is authoritative for generated-team delivery ownership.
+		// Re-evaluate every new issue revision (analysis is DB-cached) so an
+		// existing backend assignment can become security/devops/etc. when the
+		// new requirement needs a specialist the team did not have before.
+		if !ownerID.Valid || ownerIsMika || assignedToGeneratedSquad || ownerIsGeneratedImplementation {
 			implementationID, team, err := r.team.ImplementationAgent(ctx, issue)
 			if err != nil {
 				return pgtype.UUID{}, pgtype.UUID{}, err
@@ -807,27 +828,18 @@ func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgt
 			return implementationID, reviewerID, nil
 		}
 
-		if teamExists {
-			if role, generated := existingTeam.RoleForAgent(ownerID); generated {
-				spec, ok := existingTeam.RoleSpec(role)
-				if !ok || !teamprovision.IsImplementationFamily(spec.Family) {
-					// Planning/architecture/QA/review tasks are allowed to run
-					// under those roles, but this implementation->review state
-					// machine must not reinterpret them as delivery work.
-					return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf(
-						"issue is assigned to non-implementation project role %q", role,
-					)
-				}
-				reviewerID, _, ok := existingTeam.AgentByFamily("review")
-				if !ok {
-					return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no review-family agent")
-				}
-				return ownerID, reviewerID, nil
+		// A human explicitly assigned a user-created agent: keep that override,
+		// but still let the LLM-provisioned project team supply the independent
+		// reviewer. If the project has no team yet, create its LLM plan now.
+		if !teamExists {
+			var err error
+			existingTeam, err = r.team.EnsureProject(ctx, issue.WorkspaceID, issue.ProjectID)
+			if err != nil {
+				return pgtype.UUID{}, pgtype.UUID{}, err
 			}
-
-			// An explicitly assigned external/user-created implementation agent
-			// keeps ownership, while the project registry still supplies the
-			// independent reviewer.
+			teamExists = true
+		}
+		if teamExists {
 			if reviewerID, _, ok := existingTeam.AgentByFamily("review"); ok && reviewerID != ownerID {
 				return ownerID, reviewerID, nil
 			}
