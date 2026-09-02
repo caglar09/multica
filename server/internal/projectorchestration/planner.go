@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 var ErrPlannerUnavailable = errors.New("autonomous project planner runtime unavailable")
@@ -214,17 +216,6 @@ Planning rules:
 9. Do not invent a specialist family that is absent from the provisioned team unless the plan explicitly exposes the missing capability as a constraint.
 10. Keep the plan minimal: every node must contribute to the stated goal.
 11. Treat production deployment, destructive migrations, credentials and irreversible actions as approval-sensitive even under high autonomy.
-`, uuidString(input.WorkspaceID, input.ProjectID, true), input.ProjectTitle, input.ProjectDescription, string(teamJSON), current, string(policyJSON))
+`, util.UUIDToString(input.ProjectID), input.ProjectTitle, input.ProjectDescription, string(teamJSON), current, string(policyJSON))
 }
 
-func uuidString(workspaceID, projectID pgtype.UUID, project bool) string {
-	id := workspaceID
-	if project {
-		id = projectID
-	}
-	if !id.Valid {
-		return ""
-	}
-	return fmt.Sprintf("%x-%x-%x-%x-%x",
-		id.Bytes[0:4], id.Bytes[4:6], id.Bytes[6:8], id.Bytes[8:10], id.Bytes[10:16])
-}
