@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
@@ -38,6 +38,7 @@ import {
   useResolveAutonomousEscalation,
 } from "@multica/core/projects";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { runtimeModelsOptions } from "@multica/core/runtimes";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { cn } from "@multica/ui/lib/utils";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -140,7 +141,15 @@ function TeamDraftConfigurator({
   const draft = snapshot.draft;
   const roles = draft?.plan.roles ?? [];
   const [assignments, setAssignments] = useState<
-    Record<string, { runtime_id: string; skill_ids: string[] }>
+    Record<
+      string,
+      {
+        runtime_id: string;
+        model: string;
+        skill_mode: "inherit" | "custom";
+        skill_ids: string[];
+      }
+    >
   >({});
 
   useEffect(() => {
@@ -152,15 +161,31 @@ function TeamDraftConfigurator({
       draft.default_runtime_id ??
       snapshot.runtimes.find((runtime) => runtime.status === "online")?.id ??
       "";
-    const next: Record<string, { runtime_id: string; skill_ids: string[] }> = {};
+    const next: Record<
+      string,
+      {
+        runtime_id: string;
+        model: string;
+        skill_mode: "inherit" | "custom";
+        skill_ids: string[];
+      }
+    > = {};
     for (const role of draft.plan.roles ?? []) {
       next[role.role] = {
         runtime_id: fallbackRuntime,
-        skill_ids: [...draft.default_skill_ids],
+        model: "",
+        skill_mode: "inherit",
+        skill_ids: [],
       };
     }
     setAssignments(next);
   }, [draft?.updated_at, draft?.default_runtime_id, snapshot.runtimes.length]);
+
+  const modelQueries = useQueries({
+    queries: roles.map((role) =>
+      runtimeModelsOptions(assignments[role.role]?.runtime_id),
+    ),
+  });
 
   if (!draft) return null;
 
@@ -174,19 +199,73 @@ function TeamDraftConfigurator({
       ...current,
       [role]: {
         runtime_id: runtimeId,
+        model: "",
+        skill_mode: current[role]?.skill_mode ?? "inherit",
         skill_ids: current[role]?.skill_ids ?? [],
+      },
+    }));
+  };
+
+  const setModel = (role: string, model: string) => {
+    setAssignments((current) => ({
+      ...current,
+      [role]: {
+        ...(current[role] ?? {
+          runtime_id: "",
+          model: "",
+          skill_mode: "inherit" as const,
+          skill_ids: [],
+        }),
+        model,
+      },
+    }));
+  };
+
+  const setSkillMode = (role: string, skillMode: "inherit" | "custom") => {
+    setAssignments((current) => ({
+      ...current,
+      [role]: {
+        ...(current[role] ?? {
+          runtime_id: "",
+          model: "",
+          skill_mode: "inherit" as const,
+          skill_ids: [],
+        }),
+        skill_mode: skillMode,
+      },
+    }));
+  };
+
+  const setAllSkills = (role: string, selected: boolean) => {
+    setAssignments((current) => ({
+      ...current,
+      [role]: {
+        ...(current[role] ?? {
+          runtime_id: "",
+          model: "",
+          skill_mode: "custom" as const,
+          skill_ids: [],
+        }),
+        skill_mode: "custom",
+        skill_ids: selected ? snapshot.skills.map((skill) => skill.id) : [],
       },
     }));
   };
 
   const toggleSkill = (role: string, skillId: string) => {
     setAssignments((current) => {
-      const entry = current[role] ?? { runtime_id: "", skill_ids: [] };
+      const entry = current[role] ?? {
+        runtime_id: "",
+        model: "",
+        skill_mode: "custom" as const,
+        skill_ids: [],
+      };
       const selected = entry.skill_ids.includes(skillId);
       return {
         ...current,
         [role]: {
           ...entry,
+          skill_mode: "custom",
           skill_ids: selected
             ? entry.skill_ids.filter((id) => id !== skillId)
             : [...entry.skill_ids, skillId],
@@ -201,7 +280,12 @@ function TeamDraftConfigurator({
       roles.map((role) => ({
         role: role.role,
         runtime_id: assignments[role.role]?.runtime_id ?? "",
-        skill_ids: assignments[role.role]?.skill_ids ?? [],
+        model: assignments[role.role]?.model || undefined,
+        skill_mode: assignments[role.role]?.skill_mode ?? "inherit",
+        skill_ids:
+          assignments[role.role]?.skill_mode === "custom"
+            ? assignments[role.role]?.skill_ids ?? []
+            : [],
       })),
     );
   };
@@ -222,7 +306,8 @@ function TeamDraftConfigurator({
               The runtime-backed planner has proposed the roles, but no
               specialist agent is created until you choose which CLI/runtime
               each role will use. Workspace skills selected here are attached
-              during creation; runtime-local skills are inherited automatically.
+              during creation. You can also pin a CLI model per role. Skills default
+              to inherit mode, so manual skill selection is optional.
             </CardDescription>
           </div>
           <div className="text-right text-caption text-muted-foreground">
@@ -233,17 +318,22 @@ function TeamDraftConfigurator({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-3">
-          {roles.map((role) => {
+          {roles.map((role, roleIndex) => {
             const selected = assignments[role.role] ?? {
               runtime_id: "",
+              model: "",
+              skill_mode: "inherit" as const,
               skill_ids: [],
             };
+            const modelQuery = modelQueries[roleIndex];
+            const runtimeModels = modelQuery?.data?.models ?? [];
+            const modelSupported = modelQuery?.data?.supported !== false;
             return (
               <div
                 key={role.role}
                 className="rounded-xl border bg-muted/10 p-3"
               >
-                <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[minmax(220px,1fr)_minmax(220px,0.8fr)_minmax(260px,1.2fr)]">
+                <div className="flex flex-col gap-3 xl:grid xl:grid-cols-[minmax(210px,1fr)_minmax(190px,0.75fr)_minmax(190px,0.75fr)_minmax(300px,1.25fr)]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{role.display_name}</span>
@@ -287,10 +377,51 @@ function TeamDraftConfigurator({
                     </select>
                   </label>
 
+                  <label className="block">
+                    <span className="mb-1.5 block text-caption font-medium text-muted-foreground">
+                      Model
+                    </span>
+                    <select
+                      value={selected.model}
+                      onChange={(event) =>
+                        setModel(role.role, event.target.value)
+                      }
+                      disabled={
+                        !canControl ||
+                        provisioning ||
+                        isPending ||
+                        !selected.runtime_id ||
+                        modelQuery?.isLoading
+                      }
+                      className="h-9 w-full rounded-md border bg-background px-2 text-body"
+                    >
+                      <option value="">
+                        {modelQuery?.isLoading
+                          ? "Discovering models…"
+                          : "Runtime default"}
+                      </option>
+                      {runtimeModels.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label || model.id}
+                          {model.default ? " · default" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    {modelQuery?.isError ? (
+                      <span className="mt-1 block text-[11px] text-destructive">
+                        Model discovery failed; runtime default will be used.
+                      </span>
+                    ) : !modelSupported ? (
+                      <span className="mt-1 block text-[11px] text-muted-foreground">
+                        This CLI does not support per-agent model selection.
+                      </span>
+                    ) : null}
+                  </label>
+
                   <div>
                     <div className="mb-1.5 flex items-center justify-between gap-2">
                       <span className="text-caption font-medium text-muted-foreground">
-                        Workspace Skills
+                        Skills
                       </span>
                       <Button
                         type="button"
@@ -301,8 +432,65 @@ function TeamDraftConfigurator({
                         Manage skills
                       </Button>
                     </div>
-                    {snapshot.skills.length > 0 ? (
-                      <div className="max-h-28 space-y-1 overflow-y-auto rounded-md border bg-background p-2">
+                    <div className="mb-2 flex rounded-md border bg-background p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setSkillMode(role.role, "inherit")}
+                        disabled={!canControl || provisioning || isPending}
+                        className={cn(
+                          "flex-1 rounded px-2 py-1 text-caption transition-colors",
+                          selected.skill_mode === "inherit"
+                            ? "bg-muted font-medium text-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        Inherit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSkillMode(role.role, "custom")}
+                        disabled={!canControl || provisioning || isPending}
+                        className={cn(
+                          "flex-1 rounded px-2 py-1 text-caption transition-colors",
+                          selected.skill_mode === "custom"
+                            ? "bg-muted font-medium text-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        Custom
+                      </button>
+                    </div>
+                    {selected.skill_mode === "inherit" ? (
+                      <div className="rounded-md border border-dashed bg-muted/20 p-2.5 text-caption text-muted-foreground">
+                        No manual assignment required. The agent inherits Mika&apos;s
+                        enabled workspace skills and all skills exposed by its selected
+                        runtime, so it can use the appropriate skill when needed.
+                      </div>
+                    ) : snapshot.skills.length > 0 ? (
+                      <div>
+                        <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                          <span>{selected.skill_ids.length} selected</span>
+                          <span className="flex gap-1">
+                            <button
+                              type="button"
+                              className="hover:text-foreground"
+                              onClick={() => setAllSkills(role.role, true)}
+                              disabled={!canControl || provisioning || isPending}
+                            >
+                              Select all
+                            </button>
+                            <span>·</span>
+                            <button
+                              type="button"
+                              className="hover:text-foreground"
+                              onClick={() => setAllSkills(role.role, false)}
+                              disabled={!canControl || provisioning || isPending}
+                            >
+                              Clear
+                            </button>
+                          </span>
+                        </div>
+                        <div className="max-h-32 space-y-1 overflow-y-auto rounded-md border bg-background p-2">
                         {snapshot.skills.map((skill) => (
                           <label
                             key={skill.id}
@@ -326,6 +514,7 @@ function TeamDraftConfigurator({
                             </span>
                           </label>
                         ))}
+                        </div>
                       </div>
                     ) : (
                       <div className="rounded-md border border-dashed p-2 text-caption text-muted-foreground">
@@ -343,8 +532,9 @@ function TeamDraftConfigurator({
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
           <p className="text-caption text-muted-foreground">
-            Defaults inherit Mika&apos;s runtime and Mika&apos;s enabled workspace
-            skills. You can change each generated agent later from Agent Detail.
+            Runtime is required. Model is optional and defaults to the CLI/runtime
+            choice. Skills default to Inherit, so you only need Custom when you want
+            to restrict a role to a specific workspace-skill set.
           </p>
           {canControl ? (
             <Button
