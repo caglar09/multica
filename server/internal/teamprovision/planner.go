@@ -63,6 +63,24 @@ func containsAny(text string, terms ...string) bool {
 	return false
 }
 
+// LooksLikeSoftwareProject is the conservative event-time bootstrap gate.
+// A project that does not match is not rejected: demand-driven provisioning
+// still occurs later when a Mika-owned project issue enters the autonomous
+// software workflow.
+func LooksLikeSoftwareProject(project db.Project) bool {
+	description := ""
+	if project.Description.Valid {
+		description = project.Description.String
+	}
+	text := normalizedText(project.Title, description)
+	return containsAny(text,
+		"software", "yazilim", "yazılım", "app", "application", "uygulama",
+		"mvp", "saas", "platform", "web", "website", "dashboard",
+		"frontend", "backend", "api", "server", "database", "mobile", "mobil",
+		"android", "ios", "react", "flutter", "next.js", "nextjs", "dotnet", ".net",
+	)
+}
+
 func (HeuristicPlanner) PlanProject(project db.Project) Plan {
 	description := ""
 	if project.Description.Valid {
