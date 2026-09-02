@@ -343,6 +343,7 @@ export type {
   AutonomousTeamDraft,
   AutonomousRuntimeOption,
   AutonomousSkillOption,
+  AutonomousSkillMode,
   AutonomousRoleRuntimeAssignment,
   AutonomousDecision,
   AutonomousProjectHealth,
