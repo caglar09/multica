@@ -365,7 +365,20 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bootstrap.knowledge must be a JSON array")
 			return
 		}
+		validKnowledgeKinds := map[string]bool{
+			"prd": true,
+			"requirements": true,
+			"architecture": true,
+			"design": true,
+			"api_spec": true,
+			"reference": true,
+			"note": true,
+		}
 		for i, item := range bootstrapKnowledgeItems {
+			if !validKnowledgeKinds[strings.TrimSpace(item.Kind)] {
+				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"].kind is invalid")
+				return
+			}
 			if strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.Content) == "" {
 				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"] requires title and content")
 				return
