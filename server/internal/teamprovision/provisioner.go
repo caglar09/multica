@@ -34,6 +34,18 @@ func (t Team) Agent(role string) (pgtype.UUID, bool) {
 	return id, ok && id.Valid
 }
 
+func (t Team) RoleForAgent(agentID pgtype.UUID) (string, bool) {
+	if !agentID.Valid {
+		return "", false
+	}
+	for role, id := range t.Members {
+		if id == agentID {
+			return role, true
+		}
+	}
+	return "", false
+}
+
 type Provisioner struct {
 	pool    *pgxpool.Pool
 	queries *db.Queries
