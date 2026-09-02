@@ -1,0 +1,2 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_autonomous_agent_performance_rank
+ON autonomous_agent_performance (workspace_id, role_family, tasks_completed DESC, tasks_failed ASC, review_rejections ASC);
