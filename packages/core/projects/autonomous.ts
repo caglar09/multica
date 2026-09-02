@@ -31,6 +31,8 @@ function useAutonomousControlMutation(
           return api.resumeProjectAutonomous(projectId);
         case "replan":
           return api.replanProjectAutonomous(projectId);
+        default:
+          throw new Error("unsupported autonomous project action");
       }
     },
     onSettled: (_data, _err, projectId) => {
