@@ -169,3 +169,11 @@ type ReadyNode struct {
 	AcceptanceCriteria   []string
 	MaxAttempts          int
 }
+
+type PlannedNode struct {
+	ReadyNode
+	Status              string
+	MaterializedIssueID string
+	AssignedRole        string
+	AssignedAgentID     string
+}
