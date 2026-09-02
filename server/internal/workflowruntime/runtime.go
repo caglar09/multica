@@ -568,6 +568,30 @@ func (r *Runtime) cleanupWorkflowIssue(ctx context.Context, workspaceIDValue, is
 	return tx.Commit(ctx)
 }
 
+func (r *Runtime) refreshRunTeam(ctx context.Context, run workflow.Run, issue db.Issue, accountableUserID string) (workflow.Run, error) {
+	if r.team == nil || !issue.ProjectID.Valid {
+		return run, nil
+	}
+	implementationID, team, err := r.team.ImplementationAgent(ctx, issue)
+	if err != nil {
+		return run, err
+	}
+	reviewerID, _, ok := team.AgentByFamily("review")
+	if !ok {
+		return run, errors.New("LLM project team has no review-family agent")
+	}
+	if implementationID == reviewerID {
+		return run, errors.New("LLM project implementation and review agents must differ")
+	}
+	return r.store.UpdateRunActors(
+		ctx,
+		run.ID,
+		util.UUIDToString(implementationID),
+		util.UUIDToString(reviewerID),
+		accountableUserID,
+	)
+}
+
 func (r *Runtime) onIssueEvent(event events.Event) {
 	r.runAsync(45*time.Second, "autonomous workflow issue event failed", event, func(ctx context.Context) error {
 		return r.handleIssueEvent(ctx, event)
