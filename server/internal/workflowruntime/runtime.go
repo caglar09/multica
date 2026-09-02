@@ -1154,6 +1154,11 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 	if err := r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeCompleted); err != nil {
 		return fmt.Errorf("record autonomous agent completion: %w", err)
 	}
+	if handled, usageErr := r.accountProjectTaskUsage(ctx, task, issue); usageErr != nil {
+		return fmt.Errorf("account autonomous project task usage: %w", usageErr)
+	} else if handled {
+		return nil
+	}
 	if handled, artifactErr := r.recordProjectTaskArtifact(ctx, task, issue); artifactErr != nil {
 		return fmt.Errorf("record autonomous project task artifact: %w", artifactErr)
 	} else if handled {
