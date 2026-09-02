@@ -700,6 +700,43 @@ func (r *Runtime) onProjectDeleted(event events.Event) {
 			"error", err,
 		)
 	}
+	var continuationTaskID pgtype.UUID
+	if err := r.pool.QueryRow(ctx, `
+		SELECT continuation_task_id
+		FROM autonomous_project_team_draft
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID).Scan(&continuationTaskID); err == nil && continuationTaskID.Valid {
+		if _, cancelErr := r.taskSvc.CancelTask(ctx, continuationTaskID); cancelErr != nil &&
+			!errors.Is(cancelErr, service.ErrTaskNoLongerQueued) {
+			slog.Warn("autonomous project continuation cancel failed",
+				"project_id", projectIDValue,
+				"task_id", util.UUIDToString(continuationTaskID),
+				"error", cancelErr,
+			)
+		}
+	}
+	if _, err := r.pool.Exec(ctx, `
+		DELETE FROM agent
+		WHERE workspace_id = $1
+		  AND kind = 'system'
+		  AND system_key = $2
+	`, workspaceID, autonomousCoordinatorSystemKeyPrefix+projectIDValue); err != nil {
+		slog.Warn("autonomous project coordinator cleanup failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
+	if _, err := r.pool.Exec(ctx, `
+		DELETE FROM autonomous_project_team_draft
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID); err != nil {
+		slog.Warn("autonomous project team draft cleanup failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
 	if _, err := r.pool.Exec(ctx, `
 		DELETE FROM autonomous_project_control
 		WHERE workspace_id = $1 AND project_id = $2
@@ -772,6 +809,9 @@ func (r *Runtime) onWorkspaceDeleted(event events.Event) {
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `DELETE FROM autonomous_project_team WHERE workspace_id = $1`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `DELETE FROM autonomous_project_team_draft WHERE workspace_id = $1`, workspaceID)
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `DELETE FROM autonomous_project_control WHERE workspace_id = $1`, workspaceID)
