@@ -61,6 +61,7 @@ func NewModelBackedPlanner(client JSONGenerator, cfg ModelBackedPlannerConfig) *
 
 func (p *ModelBackedPlanner) Name() string  { return "llm" }
 func (p *ModelBackedPlanner) Model() string { return p.model }
+func (p *ModelBackedPlanner) MaxAgents() int { return p.maxAgents }
 
 type modelRole struct {
 	Role             string   `json:"role"`
