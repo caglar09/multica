@@ -120,9 +120,13 @@ export interface AutonomousSkillOption {
   description: string;
 }
 
+export type AutonomousSkillMode = "inherit" | "custom";
+
 export interface AutonomousRoleRuntimeAssignment {
   role: string;
   runtime_id: string;
+  model?: string;
+  skill_mode: AutonomousSkillMode;
   skill_ids: string[];
 }
 
