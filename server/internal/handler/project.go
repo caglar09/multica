@@ -98,6 +98,15 @@ func (h *Handler) loadProjectResourceCount(ctx context.Context, projectID pgtype
 	return rows[0].ResourceCount
 }
 
+type CreateProjectBootstrapRequest struct {
+	AutonomyMode  string          `json:"autonomy_mode"`
+	AutonomyLevel string          `json:"autonomy_level"`
+	Brief         string          `json:"brief"`
+	Knowledge     json.RawMessage `json:"knowledge"`
+	Approvals     json.RawMessage `json:"approvals"`
+	Budget        json.RawMessage `json:"budget"`
+}
+
 type CreateProjectRequest struct {
 	Title       string                                `json:"title"`
 	Description *string                               `json:"description"`
@@ -109,6 +118,7 @@ type CreateProjectRequest struct {
 	StartDate   *string                               `json:"start_date"`
 	DueDate     *string                               `json:"due_date"`
 	Resources   []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
+	Bootstrap   *CreateProjectBootstrapRequest        `json:"bootstrap,omitempty"`
 }
 
 // CreateProjectResourceRequestPayload mirrors CreateProjectResourceRequest but
@@ -322,6 +332,55 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		dueDate = d
 	}
 
+	bootstrapMode := "standard"
+	bootstrapLevel := "development"
+	var bootstrapKnowledge, bootstrapApprovals, bootstrapBudget []byte
+	if req.Bootstrap != nil {
+		if strings.TrimSpace(req.Bootstrap.AutonomyMode) != "" {
+			bootstrapMode = strings.TrimSpace(req.Bootstrap.AutonomyMode)
+		}
+		if bootstrapMode != "standard" && bootstrapMode != "autonomous" {
+			writeError(w, http.StatusBadRequest, "bootstrap.autonomy_mode must be standard or autonomous")
+			return
+		}
+		if strings.TrimSpace(req.Bootstrap.AutonomyLevel) != "" {
+			bootstrapLevel = strings.TrimSpace(req.Bootstrap.AutonomyLevel)
+		}
+		switch bootstrapLevel {
+		case "assisted", "development", "delivery", "closed_loop":
+		default:
+			writeError(w, http.StatusBadRequest, "bootstrap.autonomy_level is invalid")
+			return
+		}
+		bootstrapKnowledge = req.Bootstrap.Knowledge
+		if len(bootstrapKnowledge) == 0 {
+			bootstrapKnowledge = []byte("[]")
+		}
+		var knowledgeItems []struct {
+			Kind    string `json:"kind"`
+			Title   string `json:"title"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(bootstrapKnowledge, &knowledgeItems); err != nil {
+			writeError(w, http.StatusBadRequest, "bootstrap.knowledge must be a JSON array")
+			return
+		}
+		for i, item := range knowledgeItems {
+			if strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.Content) == "" {
+				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"] requires title and content")
+				return
+			}
+		}
+		bootstrapApprovals = req.Bootstrap.Approvals
+		if len(bootstrapApprovals) == 0 {
+			bootstrapApprovals = []byte("{}")
+		}
+		bootstrapBudget = req.Bootstrap.Budget
+		if len(bootstrapBudget) == 0 {
+			bootstrapBudget = []byte("{}")
+		}
+	}
+
 	// Pre-validate every resource payload before opening a transaction so an
 	// invalid ref produces a clean 400 with no DB work. For local_directory we
 	// also enforce one row per daemon_id within the batch — the daemon-side
@@ -380,8 +439,10 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		DueDate:     dueDate,
 	}
 
-	// Without resources, keep the simple non-tx path.
-	if len(req.Resources) == 0 {
+	// Keep the simple non-tx path only for legacy/standard projects with no
+	// bootstrap metadata. Autonomous bootstrap must commit atomically with the
+	// project so the project-created event cannot race ahead of its mode/policy.
+	if len(req.Resources) == 0 && req.Bootstrap == nil {
 		project, err := h.Queries.CreateProject(r.Context(), createParams)
 		if err != nil {
 			h.writeProjectWriteError(w, r, err, "create")
@@ -393,7 +454,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Transactional path: project + all resources are atomic.
+	// Transactional path: project + resources + bootstrap metadata are atomic.
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start transaction")
@@ -409,6 +470,28 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	creator, _ := h.parseUserUUIDOrZero(userID)
+	if req.Bootstrap != nil {
+		if _, err := tx.Exec(r.Context(), `
+			INSERT INTO autonomous_project_bootstrap (
+				project_id, workspace_id, autonomy_mode, autonomy_level,
+				brief, knowledge, policy, budget, status, created_by
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ready', $9)
+		`,
+			project.ID,
+			project.WorkspaceID,
+			bootstrapMode,
+			bootstrapLevel,
+			strings.TrimSpace(req.Bootstrap.Brief),
+			bootstrapKnowledge,
+			bootstrapApprovals,
+			bootstrapBudget,
+			creator,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to persist project bootstrap")
+			return
+		}
+	}
 	resourceRows := make([]db.ProjectResource, 0, len(req.Resources))
 	for i, res := range req.Resources {
 		var label pgtype.Text
