@@ -113,6 +113,34 @@ func (p *Provisioner) PrepareProject(ctx context.Context, workspaceID, projectID
 	if err != nil {
 		return TeamDraft{}, fmt.Errorf("load project for autonomous team draft: %w", err)
 	}
+	var bootstrapBrief string
+	var bootstrapKnowledge []byte
+	if err := p.pool.QueryRow(ctx, `
+		SELECT brief, knowledge
+		FROM autonomous_project_bootstrap
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND autonomy_mode = 'autonomous'
+		  AND status <> 'cancelled'
+	`, workspaceID, projectID).Scan(&bootstrapBrief, &bootstrapKnowledge); err == nil {
+		var contextBuilder strings.Builder
+		if project.Description.Valid && strings.TrimSpace(project.Description.String) != "" {
+			contextBuilder.WriteString(project.Description.String)
+		}
+		if strings.TrimSpace(bootstrapBrief) != "" {
+			contextBuilder.WriteString("\n\nAutonomous project brief:\n")
+			contextBuilder.WriteString(strings.TrimSpace(bootstrapBrief))
+		}
+		if len(bootstrapKnowledge) > 0 && string(bootstrapKnowledge) != "[]" {
+			contextBuilder.WriteString("\n\nProject knowledge / PRD:\n")
+			contextBuilder.Write(bootstrapKnowledge)
+		}
+		if enriched := strings.TrimSpace(contextBuilder.String()); enriched != "" {
+			project.Description = pgtype.Text{String: enriched, Valid: true}
+		}
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return TeamDraft{}, fmt.Errorf("load autonomous bootstrap for team planning: %w", err)
+	}
 	plan, err := p.planner.Plan(ctx, PlanningInput{Project: project})
 	if err != nil {
 		return TeamDraft{}, fmt.Errorf("plan autonomous project team: %w", err)
