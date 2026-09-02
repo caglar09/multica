@@ -152,6 +152,51 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 	return nil
 }
 
+func (r *Runtime) refreshRepositoryIntelligence(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) error {
+	if r.repositoryAnalyzer == nil {
+		return nil
+	}
+	snapshot, err := r.repositoryAnalyzer.Snapshot(ctx, workspaceID, projectID)
+	if err != nil {
+		return err
+	}
+	content, _ := json.Marshal(map[string]any{
+		"revision": snapshot.Revision,
+		"modules": snapshot.Modules,
+		"test_targets": snapshot.TestTargets,
+		"api_surfaces": snapshot.APISurfaces,
+		"data_stores": snapshot.DataStores,
+		"dependencies": snapshot.Dependencies,
+		"evidence": snapshot.Evidence,
+	})
+	sourceID := strings.TrimSpace(snapshot.Revision)
+	if sourceID == "" {
+		sourceID = "latest"
+	}
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_brain_entry (
+			workspace_id, project_id, entry_type, subject, content,
+			source_type, source_id, confidence, created_by_type
+		)
+		SELECT $1, $2, 'repository_fact', 'Repository snapshot', $3,
+		       'repository_analyzer', $4, 1.0, 'system'
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM autonomous_project_brain_entry
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND entry_type = 'repository_fact'
+			  AND source_type = 'repository_analyzer'
+			  AND source_id = $4
+			  AND superseded_by IS NULL
+		)
+	`, workspaceID, projectID, content, sourceID)
+	return err
+}
+
 func (r *Runtime) loadProjectPlanningBootstrap(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
@@ -295,6 +340,12 @@ func (r *Runtime) planProjectRevision(
 	} else if exists {
 		current := stored.Plan
 		currentPlan = &current
+	}
+	if err := r.refreshRepositoryIntelligence(ctx, workspaceID, projectID); err != nil {
+		slog.Warn("repository intelligence refresh failed; planning without fresh snapshot",
+			"project_id", util.UUIDToString(projectID),
+			"error", err,
+		)
 	}
 	brief, planningContext, resources, requestedPolicy, err := r.loadProjectPlanningBootstrap(ctx, workspaceID, projectID)
 	if err != nil {
