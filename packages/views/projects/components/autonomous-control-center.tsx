@@ -649,6 +649,7 @@ export function AutonomousControlCenter({
   const pause = usePauseAutonomousProject();
   const resume = useResumeAutonomousProject();
   const replan = useReplanAutonomousProject();
+  const confirmTeam = useConfirmAutonomousTeam();
   const retryAction = useRetryAutonomousAction();
 
   const replanPending = data ? isReplanPending(data) : false;
@@ -720,7 +721,7 @@ export function AutonomousControlCenter({
   }
 
   const controlMutationPending =
-    pause.isPending || resume.isPending || replan.isPending;
+    pause.isPending || resume.isPending || replan.isPending || confirmTeam.isPending;
 
   const handlePauseResume = () => {
     const mutation = data.control.paused ? resume : pause;
@@ -741,6 +742,20 @@ export function AutonomousControlCenter({
       onSuccess: () => toast.success("Runtime team replan requested"),
       onError: () => toast.error("Could not request team replan"),
     });
+  };
+
+  const handleConfirmTeam = (
+    assignments: AutonomousRoleRuntimeAssignment[],
+  ) => {
+    confirmTeam.mutate(
+      { projectId, assignments },
+      {
+        onSuccess: () =>
+          toast.success("Team configuration accepted; agents are being created"),
+        onError: () =>
+          toast.error("Could not confirm autonomous team configuration"),
+      },
+    );
   };
 
   return (
@@ -784,7 +799,11 @@ export function AutonomousControlCenter({
                   variant="outline"
                   size="sm"
                   onClick={handleReplan}
-                  disabled={controlMutationPending || replanPending}
+                  disabled={
+                    controlMutationPending ||
+                    replanPending ||
+                    !data.team
+                  }
                 >
                   <Brain />
                   {replanPending ? "Replanning…" : "Replan team"}
@@ -802,6 +821,16 @@ export function AutonomousControlCenter({
             ) : null}
           </div>
         </div>
+
+        {data.draft ? (
+          <TeamDraftConfigurator
+            snapshot={data}
+            canControl={canControl}
+            isPending={confirmTeam.isPending}
+            onConfirm={handleConfirmTeam}
+            onOpenSkills={() => router.push(wsPaths.skills())}
+          />
+        ) : null}
 
         {data.control.last_error ? (
           <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-body text-destructive">
@@ -916,9 +945,9 @@ export function AutonomousControlCenter({
                     </div>
                   ) : (
                     <div className="rounded-lg border border-dashed p-6 text-center text-muted-foreground">
-                      No Technology Team has been provisioned yet. Project
-                      creation or the first project issue can trigger LLM
-                      staffing.
+                      {data.draft
+                        ? "The team plan is ready and waiting for runtime configuration above."
+                        : "No Technology Team has been provisioned yet. Project creation can trigger runtime-backed staffing."}
                     </div>
                   )}
                 </CardContent>
