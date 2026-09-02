@@ -401,26 +401,9 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		return
 	}
 	if draftErr == nil {
-		defaultSkillIDs := []string{}
-		if mikaErr == nil {
-			rows, err := h.DB.Query(r.Context(), `
-				SELECT s.id
-				FROM agent_skill ask
-				JOIN skill s ON s.id = ask.skill_id
-				WHERE ask.agent_id = $1
-				  AND ask.enabled = TRUE
-				  AND s.workspace_id = $2
-				ORDER BY s.name
-			`, mika.ID, workspaceID)
-			if err == nil {
-				for rows.Next() {
-					var skillID pgtype.UUID
-					if rows.Scan(&skillID) == nil {
-						defaultSkillIDs = append(defaultSkillIDs, uuidToString(skillID))
-					}
-				}
-				rows.Close()
-			}
+		defaultSkillIDs := make([]string, 0, len(resp.Skills))
+		for _, skill := range resp.Skills {
+			defaultSkillIDs = append(defaultSkillIDs, skill.ID)
 		}
 		resp.Enabled = true
 		resp.Draft = &AutonomousTeamDraftResponse{
