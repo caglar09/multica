@@ -1172,7 +1172,13 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 
 		skillMode := strings.ToLower(strings.TrimSpace(assignment.SkillMode))
 		if skillMode == "" {
-			skillMode = "inherit"
+			if len(assignment.SkillIDs) > 0 {
+				// Backward compatibility with clients that predate skill_mode:
+				// a non-empty skill_ids list was an explicit custom selection.
+				skillMode = "custom"
+			} else {
+				skillMode = "inherit"
+			}
 		}
 		if skillMode != "inherit" && skillMode != "custom" {
 			writeError(w, http.StatusBadRequest, "skill_mode must be inherit or custom")
