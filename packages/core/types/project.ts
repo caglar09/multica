@@ -2,6 +2,46 @@ export type ProjectStatus = "planned" | "in_progress" | "paused" | "completed" |
 
 export type ProjectPriority = "urgent" | "high" | "medium" | "low" | "none";
 
+export type ProjectAutonomyMode = "standard" | "autonomous";
+export type ProjectAutonomyLevel =
+  | "assisted"
+  | "development"
+  | "delivery"
+  | "closed_loop";
+
+export interface ProjectBootstrapKnowledgeItem {
+  kind:
+    | "prd"
+    | "requirements"
+    | "architecture"
+    | "design"
+    | "api_spec"
+    | "reference"
+    | "note";
+  title: string;
+  content: string;
+}
+
+export interface ProjectBootstrapConfig {
+  autonomy_mode: ProjectAutonomyMode;
+  autonomy_level?: ProjectAutonomyLevel;
+  brief?: string;
+  knowledge?: ProjectBootstrapKnowledgeItem[];
+  approvals?: {
+    database_migration?: boolean;
+    production_deploy?: boolean;
+    major_dependency?: boolean;
+    critical_risk?: boolean;
+  };
+  budget?: {
+    max_parallel_nodes?: number;
+    max_total_attempts?: number;
+    token_limit?: number;
+    runtime_seconds_limit?: number;
+    cost_microunits_limit?: number;
+  };
+}
+
 export interface Project {
   id: string;
   workspace_id: string;
@@ -36,6 +76,7 @@ export interface CreateProjectRequest {
   // Resources to attach in the same transaction as the project. Server returns
   // 4xx (and rolls back) if any one is invalid or duplicate.
   resources?: CreateProjectResourceRequest[];
+  bootstrap?: ProjectBootstrapConfig;
 }
 
 export interface UpdateProjectRequest {
