@@ -463,6 +463,105 @@ func (s *Store) AddUsage(
 	return nil
 }
 
+
+type FailureDisposition string
+
+const (
+	FailureRetry   FailureDisposition = "retry"
+	FailureBlocked FailureDisposition = "blocked"
+)
+
+func (s *Store) FailNodeByIssue(
+	ctx context.Context,
+	workspaceID, issueID pgtype.UUID,
+	reason string,
+) (FailureDisposition, string, pgtype.UUID, error) {
+	if s == nil || s.pool == nil {
+		return "", "", pgtype.UUID{}, errors.New("project orchestration store is not configured")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", "", pgtype.UUID{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var nodeID, projectID pgtype.UUID
+	var nodeKey string
+	var attempt, maxAttempts int
+	err = tx.QueryRow(ctx, `
+		SELECT id, project_id, node_key, attempt, max_attempts
+		FROM autonomous_project_plan_node
+		WHERE workspace_id = $1
+		  AND materialized_issue_id = $2
+		  AND status IN ('running', 'verification', 'ready')
+		ORDER BY updated_at DESC
+		LIMIT 1
+		FOR UPDATE
+	`, workspaceID, issueID).Scan(&nodeID, &projectID, &nodeKey, &attempt, &maxAttempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", pgtype.UUID{}, nil
+	}
+	if err != nil {
+		return "", "", pgtype.UUID{}, err
+	}
+	if len(reason) > 2000 {
+		reason = reason[:2000]
+	}
+
+	disposition := FailureBlocked
+	nextStatus := "blocked"
+	if attempt < maxAttempts {
+		disposition = FailureRetry
+		nextStatus = "ready"
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET status = $3,
+		    blocked_reason = $4,
+		    ready_at = CASE WHEN $3 = 'ready' THEN now() ELSE ready_at END,
+		    updated_at = now()
+		WHERE id = $1 AND workspace_id = $2
+	`, nodeID, workspaceID, nextStatus, reason); err != nil {
+		return "", "", pgtype.UUID{}, err
+	}
+	if disposition == FailureBlocked {
+		if _, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_plan p
+			SET status = 'blocked', updated_at = now()
+			WHERE p.id = (
+				SELECT plan_id FROM autonomous_project_plan_node WHERE id = $1
+			)
+			  AND p.status = 'active'
+		`, nodeID); err != nil {
+			return "", "", pgtype.UUID{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", "", pgtype.UUID{}, err
+	}
+	return disposition, nodeKey, projectID, nil
+}
+
+func (s *ResumePlanAfterNodeRetry(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status = 'active', updated_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND status = 'blocked'
+		  AND EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan_node n
+			WHERE n.plan_id = autonomous_project_plan.id
+			  AND n.status IN ('ready', 'running', 'verification')
+		  )
+	`, workspaceID, projectID)
+	return err
+}
+
 func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pgtype.UUID) error {
 	var projectID, planID pgtype.UUID
 	tag, err := s.pool.Exec(ctx, `
