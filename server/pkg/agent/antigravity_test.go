@@ -30,6 +30,7 @@ func TestBuildAntigravityArgsBasic(t *testing.T) {
 	want := []string{
 		"-p", "hello",
 		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
 		"--print-timeout", "20m0s",
 		"--log-file", "/tmp/agy.log",
 		"--add-dir", "/work",
@@ -56,6 +57,7 @@ func TestBuildAntigravityArgsModel(t *testing.T) {
 	want := []string{
 		"-p", "hello",
 		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
 		"--model", "Claude Opus 4.6 (Thinking)",
 		"--print-timeout", "20m0s",
 		"--log-file", "/tmp/agy.log",
@@ -91,6 +93,7 @@ func TestBuildAntigravityArgsNoCapUsesLargePrintTimeout(t *testing.T) {
 	want := []string{
 		"-p", "hello",
 		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
 		"--print-timeout", antigravityFormatTimeout(antigravityNoCapPrintTimeout),
 		"--log-file", "/tmp/agy.log",
 		"--add-dir", "/work",
@@ -231,6 +234,8 @@ func TestBuildAntigravityArgsFiltersBlockedCustomArgs(t *testing.T) {
 				"--model", "sneaky-model", // managed via ExecOptions.Model
 				"--dangerously-skip-permissions",
 				"--print-timeout", "1h",
+				"--output-format", "text",
+				"--input-format", "stream-json",
 				"--log-file", "/elsewhere.log",
 				"--settings=/tmp/agent-settings.json",
 				"--add-dir", "/extra", // user-added workspace dir should survive
@@ -265,6 +270,12 @@ func TestBuildAntigravityArgsFiltersBlockedCustomArgs(t *testing.T) {
 	}
 	if strings.Contains(joined, "/elsewhere.log") {
 		t.Errorf("custom --log-file value leaked through filter: %v", args)
+	}
+	if strings.Contains(joined, "--output-format text") || strings.Contains(joined, "--input-format") {
+		t.Errorf("custom structured-transport flags leaked through filter: %v", args)
+	}
+	if !strings.Contains(joined, "--output-format stream-json") {
+		t.Errorf("daemon-owned stream-json output format missing: %v", args)
 	}
 	if strings.Contains(joined, "--settings") || strings.Contains(joined, "biz-gate.json") || strings.Contains(joined, "agent-settings.json") {
 		t.Errorf("Antigravity-incompatible --settings flag leaked through filter: %v", args)
