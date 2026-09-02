@@ -215,13 +215,22 @@ func projectPlannerUserPrompt(input PlanningInput) string {
 		raw, _ := json.Marshal(input.CurrentPlan)
 		current = string(raw)
 	}
-	policyJSON, _ := json.Marshal(DefaultPolicy())
+	contextJSON, _ := json.Marshal(input.Context)
+	resourcesJSON, _ := json.Marshal(input.Resources)
+	policyJSON, _ := json.Marshal(input.Policy)
 	return fmt.Sprintf(`Design the durable execution plan for this software project.
 
 Project:
 - id: %s
 - title: %s
 - description: %s
+- bootstrap brief: %s
+
+Project Knowledge / Brain context:
+%s
+
+Attached project sources/resources:
+%s
 
 Provisioned Technology Team:
 %s
@@ -229,7 +238,7 @@ Provisioned Technology Team:
 Current plan (null for first plan):
 %s
 
-Backend-owned safety policy (echo this object exactly; you cannot change it):
+Backend-owned effective safety policy (already clamped to the server ceiling; echo this object exactly):
 %s
 
 Return exactly this JSON shape:
@@ -292,6 +301,6 @@ Planning rules:
 9. Do not invent a specialist family that is absent from the provisioned team unless the plan explicitly exposes the missing capability as a constraint.
 10. Keep the plan minimal: every node must contribute to the stated goal.
 11. Treat production deployment, destructive migrations, credentials and irreversible actions as approval-sensitive even under high autonomy.
-`, util.UUIDToString(input.ProjectID), input.ProjectTitle, input.ProjectDescription, string(teamJSON), current, string(policyJSON))
+`, util.UUIDToString(input.ProjectID), input.ProjectTitle, input.ProjectDescription, input.BootstrapBrief, string(contextJSON), string(resourcesJSON), string(teamJSON), current, string(policyJSON))
 }
 
