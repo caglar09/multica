@@ -233,6 +233,22 @@ func (p *Provisioner) applyPlan(
 			}); err != nil {
 				return Team{}, fmt.Errorf("grant workspace access to %s agent: %w", role.Role, err)
 			}
+			// Later add-only specialists do not pass through the initial runtime/skill
+			// configuration screen. Give them the same explicitly enabled workspace
+			// skills as Mika by default; runtime-local skills are inherited from
+			// their runtime independently and can still be disabled per agent.
+			mikaSkills, err := qtx.ListAgentSkills(ctx, mika.ID)
+			if err != nil {
+				return Team{}, fmt.Errorf("load Mika workspace skills for %s agent: %w", role.Role, err)
+			}
+			for _, skill := range mikaSkills {
+				if err := qtx.AddAgentSkill(ctx, db.AddAgentSkillParams{
+					AgentID: agent.ID,
+					SkillID: skill.ID,
+				}); err != nil {
+					return Team{}, fmt.Errorf("attach workspace skill to %s agent: %w", role.Role, err)
+				}
+			}
 			if _, err := qtx.AddSquadMember(ctx, db.AddSquadMemberParams{
 				SquadID:     lockedTeam.SquadID,
 				MemberType:  "agent",
