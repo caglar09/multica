@@ -34,6 +34,15 @@ func (t Team) Agent(role string) (pgtype.UUID, bool) {
 	return id, ok && id.Valid
 }
 
+func (t Team) RoleSpec(role string) (RoleSpec, bool) {
+	for _, spec := range t.Plan.Roles {
+		if spec.Role == role {
+			return spec, true
+		}
+	}
+	return RoleSpec{}, false
+}
+
 func (t Team) RoleForAgent(agentID pgtype.UUID) (string, bool) {
 	if !agentID.Valid {
 		return "", false
@@ -52,12 +61,12 @@ type Provisioner struct {
 	planner Planner
 }
 
-func New(pool *pgxpool.Pool, queries *db.Queries) *Provisioner {
-	return &Provisioner{
-		pool:    pool,
-		queries: queries,
-		planner: NewHeuristicPlanner(),
+func New(pool *pgxpool.Pool, queries *db.Queries, planners ...Planner) *Provisioner {
+	planner := Planner(NewHeuristicPlanner())
+	if len(planners) > 0 && planners[0] != nil {
+		planner = planners[0]
 	}
+	return &Provisioner{pool: pool, queries: queries, planner: planner}
 }
 
 func (p *Provisioner) ShouldBootstrap(ctx context.Context, workspaceID, projectID pgtype.UUID) (bool, error) {
@@ -111,6 +120,10 @@ func (p *Provisioner) EnsureProject(ctx context.Context, workspaceID, projectID 
 	if err != nil {
 		return Team{}, fmt.Errorf("load project for team provisioning: %w", err)
 	}
+	plan, err := p.planner.Plan(ctx, PlanningInput{Project: project})
+	if err != nil {
+		return Team{}, fmt.Errorf("plan autonomous project team: %w", err)
+	}
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -148,7 +161,6 @@ func (p *Provisioner) EnsureProject(ctx context.Context, workspaceID, projectID 
 		return Team{}, fmt.Errorf("%w: Mika has no runtime", ErrMikaUnavailable)
 	}
 
-	plan := p.planner.PlanProject(project)
 	planJSON, err := json.Marshal(plan)
 	if err != nil {
 		return Team{}, fmt.Errorf("encode project team plan: %w", err)
@@ -191,9 +203,9 @@ func (p *Provisioner) EnsureProject(ctx context.Context, workspaceID, projectID 
 		members[role.Role] = agent.ID
 	}
 
-	leaderID, ok := members[RoleProductManager]
+	leaderID, ok := chooseTeamLeader(plan, members)
 	if !ok {
-		return Team{}, errors.New("project team plan does not contain a product manager")
+		return Team{}, errors.New("project team plan does not contain any provisioned role")
 	}
 	squad, err := qtx.CreateSquad(ctx, db.CreateSquadParams{
 		WorkspaceID: workspaceID,
@@ -286,14 +298,17 @@ func (p *Provisioner) ImplementationAgent(ctx context.Context, issue db.Issue) (
 	if !issue.ProjectID.Valid {
 		return pgtype.UUID{}, Team{}, errors.New("issue has no project for autonomous team routing")
 	}
-	team, err := p.EnsureProject(ctx, issue.WorkspaceID, issue.ProjectID)
+	team, plan, err := p.ReconcileForIssue(ctx, issue)
 	if err != nil {
 		return pgtype.UUID{}, Team{}, err
 	}
-	role := p.planner.ImplementationRole(issue, team.Plan)
+	role := plan.RouteRole
+	if role == "" {
+		role = plan.ImplementationRole
+	}
 	id, ok := team.Agent(role)
 	if !ok {
-		return pgtype.UUID{}, Team{}, fmt.Errorf("project team has no agent for implementation role %q", role)
+		return pgtype.UUID{}, Team{}, fmt.Errorf("project team has no agent for routed role %q", role)
 	}
 	return id, team, nil
 }
@@ -423,6 +438,25 @@ func loadTeamWithQuerier(ctx context.Context, q rowQuerier, workspaceID, project
 		return Team{}, false, err
 	}
 	return team, true, nil
+}
+
+func chooseTeamLeader(plan Plan, members map[string]pgtype.UUID) (pgtype.UUID, bool) {
+	for _, preferredFamily := range []string{"product", "architecture", "fullstack", "backend", "frontend", "mobile"} {
+		for _, role := range plan.Roles {
+			if role.Family != preferredFamily {
+				continue
+			}
+			if id, ok := members[role.Role]; ok && id.Valid {
+				return id, true
+			}
+		}
+	}
+	for _, role := range plan.Roles {
+		if id, ok := members[role.Role]; ok && id.Valid {
+			return id, true
+		}
+	}
+	return pgtype.UUID{}, false
 }
 
 func generatedAgentName(project db.Project, role RoleSpec) string {
