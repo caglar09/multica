@@ -18,15 +18,23 @@ var (
 )
 
 // Event is the normalized input consumed by the workflow engine.
+//
+// Actor metadata is deliberately carried beside Payload: it is orchestration
+// provenance, not prompt content. GetOrCreateRun persists the first known owner,
+// reviewer and accountable human so every later automatic hop uses a stable
+// team even if the issue assignee changes while the workflow is running.
 type Event struct {
-	ID          string
-	Type        string
-	WorkspaceID string
-	ProjectID   string
-	IssueID     string
-	ActorType   string
-	ActorID     string
-	Payload     map[string]any
+	ID                string
+	Type              string
+	WorkspaceID       string
+	ProjectID         string
+	IssueID           string
+	ActorType         string
+	ActorID           string
+	OwnerAgentID      string
+	ReviewerAgentID   string
+	AccountableUserID string
+	Payload           map[string]any
 }
 
 // Definition is a versioned deterministic state machine.
@@ -60,7 +68,7 @@ type Condition struct {
 }
 
 // Action describes a side effect to enqueue after a successful transition.
-// Typical action types are trigger_agent, set_issue_status and notify_human.
+// Built-in runtime actions are set_issue_status and trigger_agent.
 type Action struct {
 	Type   string
 	Params map[string]string
@@ -68,29 +76,39 @@ type Action struct {
 
 // Run is the durable state of one workflow instance.
 type Run struct {
-	ID           string
-	WorkflowName string
-	Version      int
-	WorkspaceID  string
-	ProjectID    string
-	IssueID      string
-	State        string
-	Revision     int64
+	ID                string
+	WorkflowName      string
+	Version           int
+	WorkspaceID       string
+	ProjectID         string
+	IssueID           string
+	State             string
+	Revision          int64
+	OwnerAgentID      string
+	ReviewerAgentID   string
+	AccountableUserID string
+	ReviewCycles      int
 }
 
-// PendingAction is an action durably attached to a transition.
+// PendingAction is a durable side effect attached to a transition.
 type PendingAction struct {
-	ID      string
-	RunID   string
-	EventID string
-	Action  Action
+	ID         string
+	RunID      string
+	EventID    string
+	Position   int
+	Action     Action
+	Status     string
+	Attempts   int
+	MaxAttempts int
+	LeaseToken string
 }
 
 // ApplyRequest is the atomic write contract. A production Store must record the
 // processed event, move the run and enqueue Actions in one transaction.
 type ApplyRequest struct {
-	EventID         string
-	RunID           string
+	EventID          string
+	EventType        string
+	RunID            string
 	ExpectedRevision int64
 	From             string
 	To               string
@@ -104,7 +122,7 @@ type ApplyResult struct {
 	Duplicate bool
 }
 
-// Store is the persistence boundary for the engine.
+// Store is the persistence boundary for the deterministic engine.
 type Store interface {
 	GetOrCreateRun(event Event, definition Definition) (Run, error)
 	Apply(request ApplyRequest) (ApplyResult, error)
