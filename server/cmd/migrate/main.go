@@ -298,6 +298,11 @@ var concurrentIndexCleanups = map[string]string{
 	"443_issue_project_status_index":                            "idx_issue_project_status",
 	"445_comment_delegated_failure_unsettled_index":             "idx_comment_delegated_failure_unsettled",
 	"446_issue_properties_bigm_index":                           "idx_issue_properties_bigm",
+	"449_autonomous_workflow_run_identity_index":               "idx_autonomous_workflow_run_identity",
+	"450_autonomous_workflow_action_claim_index":                "idx_autonomous_workflow_action_claim",
+	"451_autonomous_workflow_action_order_index":                "idx_autonomous_workflow_action_order",
+	"452_autonomous_workflow_processed_run_index":               "idx_autonomous_workflow_processed_run",
+	"456_autonomous_workflow_run_project_index":                  "idx_autonomous_workflow_run_project",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

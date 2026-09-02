@@ -152,6 +152,16 @@ services:
       MULTICA_LLM_BASE_URL: ${MULTICA_LLM_BASE_URL:-}
       MULTICA_LLM_DEFAULT_MODEL: ${MULTICA_LLM_DEFAULT_MODEL:-}
       MULTICA_LLM_MAX_RETRIES: ${MULTICA_LLM_MAX_RETRIES:-}
+      # Deterministic event-driven agent workflow. Explicit opt-in: existing
+      # self-hosts keep their current task behavior until enabled in .env.
+      MULTICA_AUTONOMOUS_WORKFLOW_ENABLED: ${MULTICA_AUTONOMOUS_WORKFLOW_ENABLED:-false}
+      MULTICA_AUTONOMOUS_TEAM_RUNTIME_REQUIRED: ${MULTICA_AUTONOMOUS_TEAM_RUNTIME_REQUIRED:-true}
+      # Legacy alias remains accepted by the server when the runtime flag is unset.
+      MULTICA_AUTONOMOUS_TEAM_LLM_REQUIRED: ${MULTICA_AUTONOMOUS_TEAM_LLM_REQUIRED:-}
+      MULTICA_AUTONOMOUS_TEAM_MAX_AGENTS: ${MULTICA_AUTONOMOUS_TEAM_MAX_AGENTS:-12}
+      MULTICA_AUTONOMOUS_REVIEWER_ROLE: ${MULTICA_AUTONOMOUS_REVIEWER_ROLE:-reviewer}
+      MULTICA_AUTONOMOUS_REVIEWER_AGENT_ID: ${MULTICA_AUTONOMOUS_REVIEWER_AGENT_ID:-}
+      MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES: ${MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES:-3}
       # Lark / Feishu bot integration. MULTICA_LARK_SECRET_KEY is the
       # opt-in: unset = integration disabled. Mainland 飞书 and international
       # Lark are auto-detected per installation and served side by side, so

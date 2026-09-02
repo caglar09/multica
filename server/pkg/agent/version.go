@@ -12,6 +12,7 @@ import (
 // Versions below these will be rejected during daemon registration.
 var MinVersions = map[string]string{
 	"claude":   "2.0.0",
+	"antigravity": "1.1.8", // stream-json init/step_update/result transport added in 1.1.8
 	"codex":    "0.100.0", // app-server --listen stdio:// added in 0.100.0
 	"copilot":  "1.0.0",   // --output-format json envelope stable from 1.0.x
 	"grok":     "0.2.89",  // ACP + authenticate/session-load/set_model/MCP and --effort thinking flag

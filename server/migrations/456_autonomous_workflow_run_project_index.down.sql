@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_autonomous_workflow_run_project;

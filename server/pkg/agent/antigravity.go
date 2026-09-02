@@ -14,14 +14,12 @@ import (
 )
 
 // antigravityBackend implements Backend by spawning Google's Antigravity CLI
-// with a one-shot prompt (`agy -p <prompt>`). Despite the upstream flag name,
-// current agy print mode is still capable of running Antigravity tools; it is
-// the daemon-compatible mode because `agy -i` requires an attached TTY. Unlike
-// Claude / Codex / Cursor / Gemini, the Antigravity CLI does not expose a
-// structured event stream — stdout is plain assistant text (intermediate "I
-// will run X" lines and the final reply, all interleaved). The backend
-// therefore streams stdout line-by-line as `MessageText` events and accumulates
-// the same text as the final `Result.Output`.
+// in one-shot print mode. Antigravity CLI 1.1.8+ exposes a machine-readable
+// NDJSON stream via --output-format stream-json; this backend consumes that
+// stream and normalizes init, response, tool, and result events into Multica's
+// provider-neutral Message/Result contract. A legacy plain-text fallback is
+// intentionally retained for defensive compatibility with wrappers/test
+// fixtures, but registered Antigravity runtimes are version-gated to 1.1.8+.
 //
 // agy 1.0.14's print mode regressed this stdout contract: a turn can run tools
 // and produce a final reply while emitting ZERO bytes to stdout (the log shows
@@ -32,12 +30,160 @@ import (
 // therefore recovers the assistant text agy durably wrote to its per-
 // conversation transcript (see readAntigravityTranscriptOutput).
 //
-// Session resumption uses `--conversation <id>`. The conversation id is not
-// emitted on stdout; we capture it by routing `--log-file` to a temp file and
-// scanning its glog-formatted lines for the `conversation=<uuid>` token that
-// printmode.go logs at message-send time.
+// Session resumption uses `--conversation <id>`. stream-json exposes the
+// conversation id in-band, so the backend pins it as soon as init/step events
+// arrive. The daemon-owned log parser remains as a best-effort fallback for
+// wrappers and older failure modes that end before a structured init event.
 type antigravityBackend struct {
 	cfg Config
+}
+
+type antigravityStreamEvent struct {
+	Event          string                       `json:"event"`
+	ConversationID string                       `json:"conversation_id,omitempty"`
+	StepUpdate     *antigravityStreamStepUpdate `json:"step_update,omitempty"`
+	Result         *antigravityStreamResult     `json:"result,omitempty"`
+}
+
+type antigravityStreamStepUpdate struct {
+	ConversationID string                     `json:"conversation_id"`
+	StepIndex      int                        `json:"step_index"`
+	State          string                     `json:"state"`
+	StepType       string                     `json:"step_type"`
+	ToolName       string                     `json:"tool_name,omitempty"`
+	TextDelta      string                     `json:"text_delta,omitempty"`
+	Usage          antigravityStreamUsage     `json:"usage,omitempty"`
+	ToolInfo       *antigravityStreamToolInfo `json:"tool_info,omitempty"`
+	SubagentInfo   map[string]any             `json:"subagent_info,omitempty"`
+}
+
+type antigravityStreamToolInfo struct {
+	Name       string                  `json:"name"`
+	Parameters map[string]any          `json:"parameters,omitempty"`
+	Output     string                  `json:"output,omitempty"`
+	Error      *antigravityStreamError `json:"error,omitempty"`
+}
+
+type antigravityStreamError struct {
+	Type    string `json:"type,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+type antigravityStreamUsage struct {
+	InputTokens     int64 `json:"input_tokens"`
+	OutputTokens    int64 `json:"output_tokens"`
+	ThinkingTokens  int64 `json:"thinking_tokens"`
+	CacheReadTokens int64 `json:"cache_read_tokens"`
+	TotalTokens     int64 `json:"total_tokens"`
+}
+
+type antigravityStreamResult struct {
+	ConversationID string                 `json:"conversation_id"`
+	Status         string                 `json:"status"`
+	Response       string                 `json:"response"`
+	Error          string                 `json:"error,omitempty"`
+	Usage          antigravityStreamUsage `json:"usage,omitempty"`
+}
+
+func (u antigravityStreamUsage) empty() bool {
+	return u.InputTokens == 0 &&
+		u.OutputTokens == 0 &&
+		u.ThinkingTokens == 0 &&
+		u.CacheReadTokens == 0 &&
+		u.TotalTokens == 0
+}
+
+func (u *antigravityStreamUsage) add(other antigravityStreamUsage) {
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.ThinkingTokens += other.ThinkingTokens
+	u.CacheReadTokens += other.CacheReadTokens
+	u.TotalTokens += other.TotalTokens
+}
+
+func antigravityUsageMap(model string, usage antigravityStreamUsage) map[string]TokenUsage {
+	if usage.empty() {
+		return map[string]TokenUsage{}
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = "unknown"
+	}
+	return map[string]TokenUsage{
+		model: {
+			InputTokens:     usage.InputTokens,
+			OutputTokens:    usage.OutputTokens,
+			CacheReadTokens: usage.CacheReadTokens,
+		},
+	}
+}
+
+func antigravityToolName(step *antigravityStreamStepUpdate) string {
+	if step == nil {
+		return "antigravity_tool"
+	}
+	if strings.TrimSpace(step.ToolName) != "" {
+		return step.ToolName
+	}
+	if step.ToolInfo != nil && strings.TrimSpace(step.ToolInfo.Name) != "" {
+		return step.ToolInfo.Name
+	}
+	if len(step.SubagentInfo) > 0 {
+		return "subagent"
+	}
+	return "antigravity_tool"
+}
+
+func antigravityToolInput(step *antigravityStreamStepUpdate) map[string]any {
+	if step == nil {
+		return nil
+	}
+	if step.ToolInfo != nil && len(step.ToolInfo.Parameters) > 0 {
+		return step.ToolInfo.Parameters
+	}
+	if len(step.SubagentInfo) > 0 {
+		return map[string]any{"subagent_info": step.SubagentInfo}
+	}
+	return nil
+}
+
+func antigravityToolOutput(step *antigravityStreamStepUpdate) string {
+	if step == nil {
+		return ""
+	}
+	if step.ToolInfo != nil {
+		output := step.ToolInfo.Output
+		if step.ToolInfo.Error != nil {
+			errText := strings.TrimSpace(step.ToolInfo.Error.Message)
+			if errText == "" {
+				errText = strings.TrimSpace(step.ToolInfo.Error.Type)
+			}
+			if errText != "" {
+				if output != "" && !strings.HasSuffix(output, "\n") {
+					output += "\n"
+				}
+				output += "error: " + errText
+			}
+		}
+		return output
+	}
+	if len(step.SubagentInfo) > 0 {
+		if raw, err := json.Marshal(step.SubagentInfo); err == nil {
+			return string(raw)
+		}
+	}
+	return ""
+}
+
+func antigravityResultStatus(status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "SUCCESS":
+		return "completed"
+	case "CANCELED", "INTERRUPTED":
+		return "aborted"
+	default:
+		return "failed"
+	}
 }
 
 func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
@@ -120,30 +266,123 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 		defer os.Remove(logPath)
 
 		startTime := time.Now()
-		var output strings.Builder
+		var legacyOutput strings.Builder
+		var streamedOutput strings.Builder
+		var resultResponse string
+		var resultUsage antigravityStreamUsage
+		var turnUsage antigravityStreamUsage
+		var hasTurnUsage bool
 		finalStatus := "completed"
 		var finalError string
+		var sessionID string
+		var sawStructuredEvent bool
+		var sawResult bool
+		toolUseSent := map[int]bool{}
+		toolResultSent := map[int]bool{}
+		usageRecorded := map[int]bool{}
 
 		scanner := newAgentStreamScanner(stdout)
 
 		trySend(msgCh, Message{Type: MessageStatus, Status: "running"})
 
+		pinSession := func(id string) {
+			id = strings.TrimSpace(id)
+			if id == "" || sessionID == id {
+				return
+			}
+			sessionID = id
+			trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: id})
+		}
+
 		for scanner.Scan() {
 			line := scanner.Text()
-			// The daemon concatenates streamed MessageText with no separator
-			// (pendingText.WriteString), so the streamed text must carry the
-			// line breaks itself. Mirror output's construction — prefix the
-			// newline on every line after the first, and stream blank lines
-			// too — so the persisted task_message text reconstructs output
-			// exactly. Emitting bare, blank-skipped lines dropped every newline,
-			// collapsing block markdown (headings, lists) onto one line in
-			// chat (#6149).
+			var event antigravityStreamEvent
+			if err := json.Unmarshal([]byte(line), &event); err == nil && event.Event != "" {
+				sawStructuredEvent = true
+				switch event.Event {
+				case "init":
+					pinSession(event.ConversationID)
+
+				case "step_update":
+					step := event.StepUpdate
+					if step == nil {
+						continue
+					}
+					pinSession(step.ConversationID)
+
+					if strings.EqualFold(step.State, "DONE") && !usageRecorded[step.StepIndex] && !step.Usage.empty() {
+						turnUsage.add(step.Usage)
+						hasTurnUsage = true
+						usageRecorded[step.StepIndex] = true
+					}
+
+					switch step.StepType {
+					case "agent_response":
+						if step.TextDelta != "" {
+							streamedOutput.WriteString(step.TextDelta)
+							trySend(msgCh, Message{Type: MessageText, Content: step.TextDelta})
+						}
+
+					case "tool":
+						callID := fmt.Sprintf("antigravity-step-%d", step.StepIndex)
+						toolName := antigravityToolName(step)
+						if !toolUseSent[step.StepIndex] {
+							trySend(msgCh, Message{
+								Type:   MessageToolUse,
+								Tool:   toolName,
+								CallID: callID,
+								Input:  antigravityToolInput(step),
+							})
+							toolUseSent[step.StepIndex] = true
+						}
+						if strings.EqualFold(step.State, "DONE") && !toolResultSent[step.StepIndex] {
+							trySend(msgCh, Message{
+								Type:   MessageToolResult,
+								Tool:   toolName,
+								CallID: callID,
+								Output: antigravityToolOutput(step),
+							})
+							toolResultSent[step.StepIndex] = true
+						}
+					}
+
+				case "result":
+					if event.Result == nil {
+						continue
+					}
+					sawResult = true
+					pinSession(event.Result.ConversationID)
+					resultResponse = event.Result.Response
+					resultUsage = event.Result.Usage
+					finalStatus = antigravityResultStatus(event.Result.Status)
+					if finalStatus != "completed" {
+						finalError = strings.TrimSpace(event.Result.Error)
+						if finalError == "" {
+							finalError = fmt.Sprintf("agy ended with status %s", event.Result.Status)
+						}
+					}
+				}
+				continue
+			}
+
+			if sawStructuredEvent {
+				// Once the stream contract has been observed, never reinterpret
+				// malformed/non-event stdout as assistant text. Structured mode
+				// reserves stdout for NDJSON and diagnostics belong on stderr.
+				b.cfg.Logger.Warn("agy emitted non-event stdout in stream-json mode", "line_len", len(line))
+				continue
+			}
+
+			// Defensive legacy fallback for wrappers/test fixtures that still
+			// produce plain text. Registered runtimes are version-gated to a
+			// stream-json capable agy release, so production should not take
+			// this branch.
 			chunk := line
-			if output.Len() > 0 {
-				output.WriteByte('\n')
+			if legacyOutput.Len() > 0 {
+				legacyOutput.WriteByte('\n')
 				chunk = "\n" + line
 			}
-			output.WriteString(line)
+			legacyOutput.WriteString(line)
 			if chunk != "" {
 				trySend(msgCh, Message{Type: MessageText, Content: chunk})
 			}
@@ -156,7 +395,9 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 		releaseProcessGroup(cmd)
 		duration := time.Since(startTime)
 
-		sessionID := readAntigravityConversationID(logPath)
+		if sessionID == "" {
+			sessionID = readAntigravityConversationID(logPath)
+		}
 
 		if runCtx.Err() == context.DeadlineExceeded {
 			finalStatus = "timeout"
@@ -168,42 +409,60 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 			finalStatus = "failed"
 			finalError = fmt.Sprintf("agy exited with error: %v", waitErr)
 		} else if finalStatus == "completed" && antigravityPrintTimedOut(logPath) {
-			// agy hit its own --print-timeout: it printed "Error: timed out
-			// waiting for response" to stdout and EXITED 0, so runCtx never
-			// tripped and waitErr is nil — the checks above leave the turn as
-			// "completed". Surface it as a real timeout instead of a truncated
-			// success the user can't distinguish from a finished task (MUL-3570).
 			finalStatus = "timeout"
 			finalError = fmt.Sprintf(
 				"agy --print-timeout elapsed after %s waiting for the agent response; a long-running command likely outlived the print timeout",
 				antigravityPrintTimeout(timeout),
 			)
 		} else if providerErr := antigravityProviderError(logPath); finalStatus == "completed" && providerErr != "" {
-			// agy can also surface terminal model/provider failures only in the
-			// per-run log while exiting 0 with empty stdout. Without promoting
-			// that marker, the daemon records a failed turn as a blank success.
 			finalStatus = "failed"
 			finalError = fmt.Sprintf("agy provider error: %s", providerErr)
+		} else if sawStructuredEvent && !sawResult && finalStatus == "completed" {
+			finalStatus = "failed"
+			finalError = "agy stream-json output ended without a terminal result event"
 		}
 		if finalError != "" {
 			finalError = withAgentStderr(finalError, "agy", stderrBuf.Tail())
 		}
 
-		finalOutput := output.String()
+		finalOutput := legacyOutput.String()
+		if sawStructuredEvent {
+			finalOutput = resultResponse
+			if finalOutput == "" {
+				finalOutput = streamedOutput.String()
+			}
+
+			// result.response is authoritative. Usually text_delta already
+			// reconstructed it exactly; if no delta arrived (or only a strict
+			// prefix arrived), catch the transcript up without duplicating text.
+			streamed := streamedOutput.String()
+			if finalOutput != "" {
+				switch {
+				case streamed == "":
+					trySend(msgCh, Message{Type: MessageText, Content: finalOutput})
+				case strings.HasPrefix(finalOutput, streamed) && len(finalOutput) > len(streamed):
+					trySend(msgCh, Message{Type: MessageText, Content: finalOutput[len(streamed):]})
+				}
+			}
+		}
+
 		if finalStatus == "completed" && strings.TrimSpace(finalOutput) == "" {
-			// agy 1.0.14 print mode can finish a turn (tools executed, reply
-			// produced) without writing anything to stdout, leaving a blank but
-			// "completed" run none of the guards above catch (MUL-3726). Recover
-			// the assistant text agy persisted to its conversation transcript so
-			// the user sees the actual answer instead of an empty result. Also
-			// emit it as a MessageText event so the task transcript catches up;
-			// otherwise Result.Output becomes visible only in the synthesized
-			// final comment while the execution transcript remains blank.
+			// Keep the historical transcript recovery as a final safety net.
 			if recovered := readAntigravityTranscriptOutput(logPath, sessionID); recovered != "" {
 				finalOutput = recovered
 				trySend(msgCh, Message{Type: MessageText, Content: recovered})
 				b.cfg.Logger.Info("agy recovered empty stdout from transcript", "bytes", len(recovered))
 			}
+		}
+
+		usage := resultUsage
+		if hasTurnUsage {
+			usage = turnUsage
+		} else if opts.ResumeSessionID != "" {
+			// The terminal usage envelope may be cumulative for a resumed
+			// conversation. Without per-step usage, reporting it as this task's
+			// usage would double-count prior turns, so fail closed to empty.
+			usage = antigravityStreamUsage{}
 		}
 
 		b.cfg.Logger.Info("agy finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
@@ -214,10 +473,7 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 			Error:      finalError,
 			DurationMs: duration.Milliseconds(),
 			SessionID:  sessionID,
-			// The Antigravity CLI doesn't surface per-turn token usage today;
-			// leave Usage empty rather than report misleading zeros under a
-			// guessed model name.
-			Usage: map[string]TokenUsage{},
+			Usage:      antigravityUsageMap(opts.Model, usage),
 		}
 	}()
 
@@ -426,6 +682,8 @@ var antigravityBlockedArgs = map[string]blockedArgMode{
 	"--conversation":                 blockedWithValue, // managed via ExecOptions.ResumeSessionID
 	"--model":                        blockedWithValue, // managed via ExecOptions.Model / agent.model
 	"--print-timeout":                blockedWithValue,
+	"--output-format":                blockedWithValue, // daemon owns the NDJSON transport
+	"--input-format":                 blockedWithValue, // -p one-shot mode must stay text-input
 	"--dangerously-skip-permissions": blockedStandalone, // always-on in daemon mode
 	"--log-file":                     blockedWithValue,  // daemon needs it for session capture
 	"--settings":                     blockedWithValue,  // Claude Code-only flag; agy rejects it
@@ -434,8 +692,8 @@ var antigravityBlockedArgs = map[string]blockedArgMode{
 // buildAntigravityArgs assembles the argv for a daemon-compatible one-shot agy
 // invocation.
 //
-//	agy -p <prompt> --dangerously-skip-permissions [--model <catalog id>]
-//	    --print-timeout <duration> --log-file <tmp>
+//	agy -p <prompt> --dangerously-skip-permissions --output-format stream-json
+//	    [--model <catalog id>] --print-timeout <duration> --log-file <tmp>
 //	    [--conversation <id>] [--add-dir <cwd>]
 //
 // agy 1.0.6 added a `--model` flag (MUL-3125), so opts.Model is now wired
@@ -455,6 +713,7 @@ func buildAntigravityArgs(prompt, logPath string, timeout time.Duration, opts Ex
 	args := []string{
 		"-p", prompt,
 		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
 	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)

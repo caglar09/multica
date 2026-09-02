@@ -99,6 +99,8 @@
     "add_local_directory_button": "添加本地目录",
     "local_daemon_offline_hint": "启动本地守护进程后才能添加本机目录。",
     "local_daemon_already_attached_hint": "本机已经关联了一个本地目录到该项目，先移除现有目录再添加新目录。",
+    "local_open_tooltip": "在文件管理器中打开",
+    "toast_local_open_failed": "打开目录失败",
     "local_rename_tooltip": "重命名",
     "local_rename_label": "本地目录显示名",
     "local_no_daemon_tooltip": "尚未识别到本机守护进程，智能体暂时无法打开此目录。",

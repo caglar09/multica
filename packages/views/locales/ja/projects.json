@@ -99,6 +99,8 @@
     "add_local_directory_button": "ローカルディレクトリを追加",
     "local_daemon_offline_hint": "このマシンのディレクトリを添付するには、ローカルデーモンを起動してください。",
     "local_daemon_already_attached_hint": "このマシンにはすでにローカルディレクトリが添付されています。新しく追加するには、先に既存のものを削除してください。",
+    "local_open_tooltip": "ファイルマネージャーで開く",
+    "toast_local_open_failed": "ディレクトリを開けませんでした",
     "local_rename_tooltip": "名前を変更",
     "local_rename_label": "ローカルディレクトリのラベル",
     "local_no_daemon_tooltip": "ローカルデーモンがまだ ID を報告していないため、エージェントはこのディレクトリを開けません。",

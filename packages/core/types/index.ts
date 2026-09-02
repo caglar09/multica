@@ -329,3 +329,18 @@ export type {
   WorkspaceSubscriptionSeatReconcileResult,
   CreateWorkspaceSubscriptionPortalResponse,
 } from "./billing";
+
+export type {
+  AutonomousHealthStatus,
+  AutonomousProjectControl,
+  AutonomousTeamMember,
+  AutonomousTeam,
+  AutonomousWorkflowRun,
+  AutonomousWorkflowAction,
+  AutonomousActivityItem,
+  AutonomousTeamPlanRole,
+  AutonomousTeamPlan,
+  AutonomousDecision,
+  AutonomousProjectHealth,
+  AutonomousProjectSnapshot,
+} from "./autonomous";

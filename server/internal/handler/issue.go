@@ -2935,6 +2935,38 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	// Determine creator identity: agent (via X-Agent-ID header) or member.
 	creatorType, actualCreatorID := h.resolveActor(r, creatorID, workspaceID)
 
+	// Autonomous software projects use a two-phase bootstrap: Mika creates the
+	// project, the runtime-backed planner proposes the Technology Team, and a
+	// human chooses the runtime/skills before any implementation backlog exists.
+	// Enforce that ordering at the write boundary instead of trusting Mika's
+	// prompt alone. Other explicit agents/member actions remain valid overrides.
+	if creatorType == "agent" && projectID.Valid {
+		agent, agentErr := h.Queries.GetAgent(r.Context(), actualCreatorID)
+		if agentErr == nil &&
+			agent.WorkspaceID == wsUUID &&
+			agent.SystemKey.Valid &&
+			agent.SystemKey.String == service.MikaSystemKey {
+			var draftStatus string
+			draftErr := h.DB.QueryRow(r.Context(), `
+				SELECT status
+				FROM autonomous_project_team_draft
+				WHERE workspace_id = $1 AND project_id = $2
+			`, wsUUID, projectID).Scan(&draftStatus)
+			if draftErr == nil && (draftStatus == "awaiting_configuration" || draftStatus == "provisioning") {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"code": "autonomous_team_configuration_required",
+					"error": "Configure the proposed Technology Team runtimes and Skills in Project > Autonomous before creating the implementation backlog.",
+				})
+				return
+			}
+			if draftErr != nil && !errors.Is(draftErr, pgx.ErrNoRows) {
+				slog.Warn("autonomous team draft gate failed", "project_id", uuidToString(projectID), "error", draftErr)
+				writeError(w, http.StatusInternalServerError, "failed to verify autonomous team configuration")
+				return
+			}
+		}
+	}
+
 	// Optional origin stamping (quick-create / autopilot). Only the
 	// allowed origin types are accepted; anything else is rejected so a
 	// rogue caller can't mint arbitrary origin labels. Both fields must
