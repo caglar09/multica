@@ -317,6 +317,9 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 		if err := r.processProjectPlanning(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous durable project planning failed", "error", err)
 		}
+		if err := r.processDiscoveredProjectWork(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous discovered project work reconciliation failed", "error", err)
+		}
 		if err := r.processProjectScheduling(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous project scheduling failed", "error", err)
 		}
