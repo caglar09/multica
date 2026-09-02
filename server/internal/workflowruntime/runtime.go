@@ -408,7 +408,8 @@ func (r *Runtime) processTeamDraftProvisioning(ctx context.Context) error {
 				RuntimeID: runtimeID,
 				Model: strings.TrimSpace(selected.Model),
 				SkillIDs: skillIDs,
-				SkillsSpecified: strings.EqualFold(strings.TrimSpace(selected.SkillMode), "custom"),
+				SkillsSpecified: strings.EqualFold(strings.TrimSpace(selected.SkillMode), "custom") ||
+					(strings.TrimSpace(selected.SkillMode) == "" && len(skillIDs) > 0),
 			})
 		}
 
