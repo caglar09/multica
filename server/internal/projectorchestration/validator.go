@@ -187,38 +187,22 @@ func HardenPlan(plan Plan) Plan {
 }
 
 func validateLifecycle(plan Plan) error {
-	hasImplementation := false
-	hasReview := false
-	hasSecurity := false
-	hasQA := false
-	hasIntegration := false
-	requiresSecurity := false
-	requiresAcceptance := false
-	requiresIntegration := false
-
+	byKey := make(map[string]NodeSpec, len(plan.Nodes))
+	adj := make(map[string][]string, len(plan.Nodes))
 	for _, node := range plan.Nodes {
-		impact := AssessImpact(node, plan.Policy)
-		for _, gate := range impact.RequiredGates {
-			switch gate {
-			case "security":
-				requiresSecurity = true
-			case "acceptance":
-				requiresAcceptance = true
-			case "integration_test", "migration":
-				requiresIntegration = true
-			}
+		byKey[node.Key] = node
+	}
+	for _, edge := range plan.Edges {
+		if edge.Type == DependencyHard || edge.Type == DependencyArtifact {
+			adj[edge.From] = append(adj[edge.From], edge.To)
 		}
+	}
+
+	hasImplementation := false
+	for _, node := range plan.Nodes {
 		switch node.Kind {
 		case NodeImplementation, NodeMigration:
 			hasImplementation = true
-		case NodeReview:
-			hasReview = true
-		case NodeSecurity:
-			hasSecurity = true
-		case NodeQA:
-			hasQA = true
-		case NodeIntegration:
-			hasIntegration = true
 		case NodeDeploy:
 			if plan.Policy.Autonomy == AutonomyAssisted || plan.Policy.Autonomy == AutonomyDevelopment {
 				return fmt.Errorf("%w: deploy node requires delivery or closed_loop autonomy", ErrInvalidPlan)
@@ -229,19 +213,58 @@ func validateLifecycle(plan Plan) error {
 			}
 		}
 	}
-	if hasImplementation && !hasReview {
-		return fmt.Errorf("%w: implementation plans require an independent review node", ErrInvalidPlan)
-	}
-	if requiresSecurity && !hasSecurity {
-		return fmt.Errorf("%w: impact analysis requires a security node", ErrInvalidPlan)
-	}
-	if requiresAcceptance && !hasQA {
-		return fmt.Errorf("%w: impact analysis requires a QA/acceptance node", ErrInvalidPlan)
-	}
-	if requiresIntegration && !hasIntegration {
-		return fmt.Errorf("%w: impact analysis requires an integration node", ErrInvalidPlan)
+
+	if hasImplementation {
+		for _, node := range plan.Nodes {
+			if node.Kind != NodeImplementation && node.Kind != NodeMigration && node.Kind != NodeIntegration {
+				continue
+			}
+			if !hasDownstreamKind(node.Key, NodeReview, byKey, adj) {
+				return fmt.Errorf("%w: node %q requires a downstream independent review", ErrInvalidPlan, node.Key)
+			}
+			impact := AssessImpact(node, plan.Policy)
+			for _, gate := range impact.RequiredGates {
+				switch gate {
+				case "security":
+					if !hasDownstreamKind(node.Key, NodeSecurity, byKey, adj) {
+						return fmt.Errorf("%w: node %q requires a downstream security node", ErrInvalidPlan, node.Key)
+					}
+				case "acceptance":
+					if !hasDownstreamKind(node.Key, NodeQA, byKey, adj) {
+						return fmt.Errorf("%w: node %q requires a downstream QA node", ErrInvalidPlan, node.Key)
+					}
+				case "integration_test", "migration":
+					if node.Kind != NodeIntegration && !hasDownstreamKind(node.Key, NodeIntegration, byKey, adj) {
+						return fmt.Errorf("%w: node %q requires a downstream integration node", ErrInvalidPlan, node.Key)
+					}
+				}
+			}
+		}
 	}
 	return nil
+}
+
+func hasDownstreamKind(
+	start string,
+	want NodeKind,
+	nodes map[string]NodeSpec,
+	adj map[string][]string,
+) bool {
+	seen := map[string]struct{}{start: {}}
+	queue := append([]string(nil), adj[start]...)
+	for len(queue) > 0 {
+		key := queue[0]
+		queue = queue[1:]
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		if node, ok := nodes[key]; ok && node.Kind == want {
+			return true
+		}
+		queue = append(queue, adj[key]...)
+	}
+	return false
 }
 
 func requiresAcceptance(kind NodeKind) bool {
