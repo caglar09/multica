@@ -305,6 +305,9 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 		if err := r.reconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous workflow reconciliation failed", "error", err)
 		}
+		if err := r.processProjectBootstrap(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous project bootstrap reconciliation failed", "error", err)
+		}
 		if err := r.processAutomaticTeamConfiguration(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous team automatic configuration failed", "error", err)
 		}
