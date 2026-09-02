@@ -966,6 +966,9 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		}
 		return nil
 	}
+	if effective == issuestatus.Blocked && r.projectStore != nil {
+		return r.syncBlockedProjectNode(ctx, issue)
+	}
 	if effective != issuestatus.InProgress {
 		return nil
 	}
@@ -1162,6 +1165,9 @@ func (r *Runtime) handleTaskFailed(ctx context.Context, event events.Event) erro
 	task, issue, err := r.loadIssueTask(ctx, event)
 	if err != nil || !task.ID.Valid {
 		return err
+	}
+	if handled, projectErr := r.failProjectNodeTask(ctx, task, issue); handled {
+		return projectErr
 	}
 	run, exists, err := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, util.UUIDToString(issue.ID))
 	if err != nil || !exists {
