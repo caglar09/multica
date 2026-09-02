@@ -6,15 +6,14 @@ import (
 )
 
 // MemoryStore is a concurrency-safe reference implementation used by unit tests
-// and local experiments. Production wiring should use a PostgreSQL store whose
-// Apply operation is transactional.
+// and local experiments. Production wiring uses PostgresStore.
 type MemoryStore struct {
-	mu        sync.Mutex
-	runs      map[string]Run
-	runByKey  map[string]string
-	processed map[string]string
-	pending   []PendingAction
-	nextRun   int64
+	mu         sync.Mutex
+	runs       map[string]Run
+	runByKey   map[string]string
+	processed  map[string]string
+	pending    []PendingAction
+	nextRun    int64
 	nextAction int64
 }
 
@@ -32,20 +31,37 @@ func (s *MemoryStore) GetOrCreateRun(event Event, definition Definition) (Run, e
 
 	key := definition.Name + "\x00" + event.WorkspaceID + "\x00" + event.IssueID
 	if id, ok := s.runByKey[key]; ok {
-		return s.runs[id], nil
+		run := s.runs[id]
+		if run.OwnerAgentID == "" {
+			run.OwnerAgentID = event.OwnerAgentID
+		}
+		if run.ReviewerAgentID == "" {
+			run.ReviewerAgentID = event.ReviewerAgentID
+		}
+		if run.AccountableUserID == "" {
+			run.AccountableUserID = event.AccountableUserID
+		}
+		if run.ProjectID == "" {
+			run.ProjectID = event.ProjectID
+		}
+		s.runs[id] = run
+		return run, nil
 	}
 
 	s.nextRun++
 	id := fmt.Sprintf("workflow-run-%d", s.nextRun)
 	run := Run{
-		ID:           id,
-		WorkflowName: definition.Name,
-		Version:      definition.Version,
-		WorkspaceID:  event.WorkspaceID,
-		ProjectID:    event.ProjectID,
-		IssueID:      event.IssueID,
-		State:        definition.InitialState,
-		Revision:     1,
+		ID:                id,
+		WorkflowName:      definition.Name,
+		Version:           definition.Version,
+		WorkspaceID:       event.WorkspaceID,
+		ProjectID:         event.ProjectID,
+		IssueID:           event.IssueID,
+		State:             definition.InitialState,
+		Revision:          1,
+		OwnerAgentID:      event.OwnerAgentID,
+		ReviewerAgentID:   event.ReviewerAgentID,
+		AccountableUserID: event.AccountableUserID,
 	}
 	s.runs[id] = run
 	s.runByKey[key] = id
@@ -74,16 +90,22 @@ func (s *MemoryStore) Apply(request ApplyRequest) (ApplyResult, error) {
 
 	run.State = request.To
 	run.Revision++
+	if request.From == "in_review" && request.To == "in_progress" {
+		run.ReviewCycles++
+	}
 	s.runs[run.ID] = run
 	s.processed[request.EventID] = run.ID
 
-	for _, action := range request.Actions {
+	for position, action := range request.Actions {
 		s.nextAction++
 		s.pending = append(s.pending, PendingAction{
-			ID:      fmt.Sprintf("workflow-action-%d", s.nextAction),
-			RunID:   run.ID,
-			EventID: request.EventID,
-			Action:  action,
+			ID:          fmt.Sprintf("workflow-action-%d", s.nextAction),
+			RunID:       run.ID,
+			EventID:     request.EventID,
+			Position:    position,
+			Action:      action,
+			Status:      "pending",
+			MaxAttempts: 5,
 		})
 	}
 
