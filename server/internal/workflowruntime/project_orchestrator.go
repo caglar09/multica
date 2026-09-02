@@ -604,6 +604,49 @@ func (r *Runtime) openProjectEscalation(
 	return err
 }
 
+
+func (r *Runtime) recordAgentPerformance(
+	ctx context.Context,
+	task db.AgentTaskQueue,
+	issue db.Issue,
+	outcome projectorchestration.AgentOutcome,
+) error {
+	if r.projectStore == nil || !issue.ProjectID.Valid || !task.AgentID.Valid {
+		return nil
+	}
+	var family string
+	err := r.pool.QueryRow(ctx, `
+		SELECT m.role_family
+		FROM autonomous_project_team_member m
+		JOIN autonomous_project_team t ON t.id = m.team_id
+		WHERE t.workspace_id = $1
+		  AND t.project_id = $2
+		  AND t.status = 'active'
+		  AND m.agent_id = $3
+		  AND m.active = TRUE
+		LIMIT 1
+	`, issue.WorkspaceID, issue.ProjectID, task.AgentID).Scan(&family)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	runtime := time.Duration(0)
+	if task.CreatedAt.Valid {
+		end := time.Now()
+		if task.CompletedAt.Valid {
+			end = task.CompletedAt.Time
+		}
+		if end.After(task.CreatedAt.Time) {
+			runtime = end.Sub(task.CreatedAt.Time)
+		}
+	}
+	return r.projectStore.RecordAgentOutcome(
+		ctx, issue.WorkspaceID, task.AgentID, family, outcome, runtime,
+	)
+}
+
 func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) error {
 	var nodeID, planID pgtype.UUID
 	var kind string
