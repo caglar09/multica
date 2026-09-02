@@ -51,6 +51,18 @@ type AutonomousTeamResponse struct {
 	Members       []AutonomousTeamMemberResponse `json:"members"`
 }
 
+type AutonomousActionResponse struct {
+	ID          string  `json:"id"`
+	RunID       string  `json:"run_id"`
+	ActionType  string  `json:"action_type"`
+	Status      string  `json:"status"`
+	Attempts    int     `json:"attempts"`
+	MaxAttempts int     `json:"max_attempts"`
+	LastError   *string `json:"last_error"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+}
+
 type AutonomousWorkflowResponse struct {
 	ID              string  `json:"id"`
 	IssueID         string  `json:"issue_id"`
@@ -102,6 +114,7 @@ type AutonomousProjectResponse struct {
 	Health    AutonomousProjectHealthResponse `json:"health"`
 	Team      *AutonomousTeamResponse         `json:"team"`
 	Workflows []AutonomousWorkflowResponse    `json:"workflows"`
+	Actions   []AutonomousActionResponse      `json:"actions"`
 	Activity  []AutonomousActivityResponse    `json:"activity"`
 	Decisions []AutonomousDecisionResponse    `json:"decisions"`
 }
@@ -153,6 +166,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 
 	resp := AutonomousProjectResponse{
 		Workflows: []AutonomousWorkflowResponse{},
+		Actions:   []AutonomousActionResponse{},
 		Activity:  []AutonomousActivityResponse{},
 		Decisions: []AutonomousDecisionResponse{},
 		Health: AutonomousProjectHealthResponse{Status: "idle"},
@@ -313,6 +327,43 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	}
 	rows.Close()
 	resp.Health.FailedActions = totalFailed
+
+	actionRows, err := h.DB.Query(r.Context(), `
+		SELECT a.id, a.run_id, a.action_type, a.status, a.attempts,
+		       a.max_attempts, a.last_error, a.created_at, a.updated_at
+		FROM autonomous_workflow_action a
+		JOIN autonomous_workflow_run wr ON wr.id = a.run_id
+		WHERE wr.workspace_id = $1 AND wr.project_id = $2
+		  AND a.status IN ('pending','running','failed')
+		ORDER BY a.updated_at DESC
+		LIMIT 100
+	`, workspaceID, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous workflow actions")
+		return
+	}
+	for actionRows.Next() {
+		var action AutonomousActionResponse
+		var id, runID pgtype.UUID
+		var lastError pgtype.Text
+		var createdAt, updatedAt time.Time
+		if err := actionRows.Scan(
+			&id, &runID, &action.ActionType, &action.Status, &action.Attempts,
+			&action.MaxAttempts, &lastError, &createdAt, &updatedAt,
+		); err != nil {
+			actionRows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to decode autonomous workflow action")
+			return
+		}
+		action.ID = uuidToString(id)
+		action.RunID = uuidToString(runID)
+		action.LastError = nullableTextString(lastError)
+		action.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
+		action.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
+		resp.Actions = append(resp.Actions, action)
+	}
+	actionRows.Close()
+
 	switch {
 	case resp.Control.Paused:
 		resp.Health.Status = "paused"
