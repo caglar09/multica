@@ -25,12 +25,12 @@ func TestEffectivePlanningPolicyCannotExceedServerCeiling(t *testing.T) {
 	if got.Budget.MaxTotalAttempts != 100 {
 		t.Fatalf("max attempts = %d, want 100", got.Budget.MaxTotalAttempts)
 	}
-	if !got.Approvals.ProductionDeploy {
-		t.Fatal("server-required production approval was removed")
+	if got.Approvals.ProductionDeploy {
+		t.Fatal("project-scoped production approval should be disabled when bootstrap requests false")
 	}
 }
 
-func TestEffectivePlanningPolicyAllowsStricterProjectPolicy(t *testing.T) {
+func TestEffectivePlanningPolicyAllowsProjectApprovalGuardrails(t *testing.T) {
 	server := DefaultPolicy()
 	server.Autonomy = AutonomyDelivery
 	server.Budget.MaxParallelNodes = 8
