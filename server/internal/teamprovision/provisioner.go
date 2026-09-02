@@ -427,6 +427,7 @@ func loadTeamWithQuerier(ctx context.Context, q rowQuerier, workspaceID, project
 	if err := json.Unmarshal(planJSON, &team.Plan); err != nil {
 		return Team{}, false, fmt.Errorf("decode project team plan: %w", err)
 	}
+	team.Plan = normalizeLegacyPlan(team.Plan)
 
 	rows, err := q.Query(ctx, `
 		SELECT role, agent_id
@@ -451,6 +452,36 @@ func loadTeamWithQuerier(ctx context.Context, q rowQuerier, workspaceID, project
 		return Team{}, false, err
 	}
 	return team, true, nil
+}
+
+func normalizeLegacyPlan(plan Plan) Plan {
+	for i, role := range plan.Roles {
+		if role.Family != "" {
+			continue
+		}
+		known := roleSpec(role.Role)
+		if known.Family == "" || known.Family == "engineering" {
+			continue
+		}
+		if role.DisplayName == "" {
+			role.DisplayName = known.DisplayName
+		}
+		if role.Description == "" {
+			role.Description = known.Description
+		}
+		role.Family = known.Family
+		if len(role.Capabilities) == 0 {
+			role.Capabilities = append([]string(nil), known.Capabilities...)
+		}
+		if role.Instructions == "" {
+			role.Instructions = known.Instructions
+		}
+		plan.Roles[i] = role
+	}
+	if plan.ImplementationRole == "" {
+		plan.ImplementationRole = firstImplementationRole(plan.Roles)
+	}
+	return plan
 }
 
 func chooseTeamLeader(plan Plan, members map[string]pgtype.UUID) (pgtype.UUID, bool) {
