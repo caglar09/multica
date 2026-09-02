@@ -223,6 +223,9 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 		if err := r.reconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous workflow reconciliation failed", "error", err)
 		}
+		if err := r.processRequestedReplans(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous project replan processing failed", "error", err)
+		}
 		if cycle%6 == 0 {
 			if err := r.reconcileUnstartedIssues(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Warn("autonomous unstarted issue reconciliation failed", "error", err)
@@ -235,6 +238,90 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (r *Runtime) isProjectPaused(ctx context.Context, workspaceID, projectID pgtype.UUID) (bool, error) {
+	if !workspaceID.Valid || !projectID.Valid {
+		return false, nil
+	}
+	var paused bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT paused
+		FROM autonomous_project_control
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID).Scan(&paused)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return paused, err
+}
+
+func (r *Runtime) processRequestedReplans(ctx context.Context) error {
+	if r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT project_id, workspace_id, replan_requested_at
+		FROM autonomous_project_control
+		WHERE replan_requested_at IS NOT NULL
+		  AND (replan_completed_at IS NULL OR replan_completed_at < replan_requested_at)
+		ORDER BY replan_requested_at ASC
+		LIMIT 10
+	`)
+	if err != nil {
+		return fmt.Errorf("query requested autonomous replans: %w", err)
+	}
+	type request struct {
+		projectID   pgtype.UUID
+		workspaceID pgtype.UUID
+		requestedAt time.Time
+	}
+	requests := make([]request, 0, 10)
+	for rows.Next() {
+		var item request
+		if err := rows.Scan(&item.projectID, &item.workspaceID, &item.requestedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		requests = append(requests, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, item := range requests {
+		revision := item.requestedAt.UTC().Format(time.RFC3339Nano)
+		_, _, replanErr := r.team.ReconcileProject(ctx, item.workspaceID, item.projectID, revision)
+		if replanErr != nil {
+			message := replanErr.Error()
+			if len(message) > 2000 {
+				message = message[:2000]
+			}
+			_, _ = r.pool.Exec(ctx, `
+				UPDATE autonomous_project_control
+				SET last_error = $4, updated_at = now()
+				WHERE workspace_id = $1
+				  AND project_id = $2
+				  AND replan_requested_at = $3
+			`, item.workspaceID, item.projectID, item.requestedAt, message)
+			continue
+		}
+		_, err := r.pool.Exec(ctx, `
+			UPDATE autonomous_project_control
+			SET replan_completed_at = $3,
+			    last_error = NULL,
+			    updated_at = now()
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND replan_requested_at = $3
+		`, item.workspaceID, item.projectID, item.requestedAt)
+		if err != nil {
+			return fmt.Errorf("mark autonomous replan completed: %w", err)
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) reconcileOnce(ctx context.Context) error {
@@ -259,7 +346,11 @@ func (r *Runtime) reconcileUnstartedIssues(ctx context.Context) error {
 	rows, err := r.pool.Query(ctx, `
 		SELECT i.id, i.workspace_id, i.status, i.revision
 		FROM issue i
+		LEFT JOIN autonomous_project_control pc
+		  ON pc.project_id = i.project_id
+		 AND pc.workspace_id = i.workspace_id
 		WHERE i.project_id IS NOT NULL
+		  AND COALESCE(pc.paused, FALSE) = FALSE
 		  AND i.updated_at < now() - interval '30 seconds'
 		  AND i.updated_at > now() - interval '14 days'
 		  AND NOT EXISTS (
@@ -314,6 +405,15 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 	}
 	if err != nil {
 		return err
+	}
+	if issue.ProjectID.Valid {
+		paused, err := r.isProjectPaused(ctx, issue.WorkspaceID, issue.ProjectID)
+		if err != nil {
+			return fmt.Errorf("check reconciled project pause: %w", err)
+		}
+		if paused {
+			return nil
+		}
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
 
@@ -469,6 +569,16 @@ func (r *Runtime) onProjectDeleted(event events.Event) {
 			"error", err,
 		)
 	}
+	if _, err := r.pool.Exec(ctx, `
+		DELETE FROM autonomous_project_control
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID); err != nil {
+		slog.Warn("autonomous project control cleanup failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
 }
 
 func (r *Runtime) onIssueDeleted(event events.Event) {
@@ -531,6 +641,9 @@ func (r *Runtime) onWorkspaceDeleted(event events.Event) {
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `DELETE FROM autonomous_project_team WHERE workspace_id = $1`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `DELETE FROM autonomous_project_control WHERE workspace_id = $1`, workspaceID)
 	}
 	if err == nil {
 		err = tx.Commit(ctx)
@@ -634,6 +747,15 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 			return nil
 		}
 		return err
+	}
+	if issue.ProjectID.Valid {
+		paused, err := r.isProjectPaused(ctx, issue.WorkspaceID, issue.ProjectID)
+		if err != nil {
+			return fmt.Errorf("check autonomous project pause: %w", err)
+		}
+		if paused {
+			return nil
+		}
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
 	if effective != issuestatus.InProgress {
