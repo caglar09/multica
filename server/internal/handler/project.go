@@ -357,6 +357,10 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bootstrap.autonomy_level is invalid")
 			return
 		}
+		if len(strings.TrimSpace(req.Bootstrap.Brief)) > 20000 {
+			writeError(w, http.StatusBadRequest, "bootstrap.brief exceeds 20000 characters")
+			return
+		}
 		bootstrapKnowledge = req.Bootstrap.Knowledge
 		if len(bootstrapKnowledge) == 0 {
 			bootstrapKnowledge = []byte("[]")
@@ -374,15 +378,36 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			"reference": true,
 			"note": true,
 		}
+		if len(bootstrapKnowledgeItems) > 50 {
+			writeError(w, http.StatusBadRequest, "bootstrap.knowledge supports at most 50 documents")
+			return
+		}
+		totalKnowledgeChars := 0
 		for i, item := range bootstrapKnowledgeItems {
-			if !validKnowledgeKinds[strings.TrimSpace(item.Kind)] {
+			kind := strings.TrimSpace(item.Kind)
+			title := strings.TrimSpace(item.Title)
+			content := strings.TrimSpace(item.Content)
+			if !validKnowledgeKinds[kind] {
 				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"].kind is invalid")
 				return
 			}
-			if strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.Content) == "" {
+			if title == "" || content == "" {
 				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"] requires title and content")
 				return
 			}
+			if len(title) > 200 {
+				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"].title exceeds 200 characters")
+				return
+			}
+			if len(content) > 100000 {
+				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"].content exceeds 100000 characters")
+				return
+			}
+			totalKnowledgeChars += len(content)
+		}
+		if totalKnowledgeChars > 500000 {
+			writeError(w, http.StatusBadRequest, "bootstrap.knowledge exceeds 500000 total characters")
+			return
 		}
 		bootstrapApprovals = req.Bootstrap.Approvals
 		if len(bootstrapApprovals) == 0 {
