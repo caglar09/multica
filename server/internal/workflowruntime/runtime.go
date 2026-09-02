@@ -324,6 +324,12 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 		if run.ReviewCycles >= r.config.MaxReviewCycles {
 			eventType = "review.exhausted"
 		}
+		if eventType == "review.changes_requested" {
+			run, err = r.refreshRunTeam(ctx, run, issue, run.AccountableUserID)
+			if err != nil {
+				return fmt.Errorf("refresh reconciled review team: %w", err)
+			}
+		}
 		_, err := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
 			ID:                fmt.Sprintf("reconcile-review-change:%s:%d", run.IssueID, issue.Revision),
 			Type:              eventType,
@@ -638,6 +644,12 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		if run.ReviewCycles >= r.config.MaxReviewCycles {
 			eventType = "review.exhausted"
 		}
+		if eventType == "review.changes_requested" {
+			run, err = r.refreshRunTeam(ctx, run, issue, accountableFromEvent(event))
+			if err != nil {
+				return fmt.Errorf("refresh team before review retry: %w", err)
+			}
+		}
 		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
 			ID:                issueEventID("review-change", snapshot),
 			Type:              eventType,
@@ -751,6 +763,12 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 			eventType := "review.changes_requested"
 			if run.ReviewCycles >= r.config.MaxReviewCycles {
 				eventType = "review.exhausted"
+			}
+			if eventType == "review.changes_requested" {
+				run, err = r.refreshRunTeam(ctx, run, issue, util.UUIDToString(task.AccountableUserID))
+				if err != nil {
+					return fmt.Errorf("refresh team before completed review retry: %w", err)
+				}
 			}
 			_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
 				ID:                "review-change-completed:" + util.UUIDToString(task.ID),
