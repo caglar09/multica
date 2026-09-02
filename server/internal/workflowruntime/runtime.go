@@ -121,17 +121,19 @@ func definition() workflow.Definition {
 					Type: "trigger_agent",
 					Params: map[string]string{
 						"selector": "owner",
+						"when_state": issuestatus.InProgress,
 						"handoff": "Autonomous workflow: implement or revise this issue according to its acceptance criteria and the latest review feedback. Do not manage the workflow or mention/trigger another agent; finish the assigned implementation task normally. The workflow engine routes the next step.",
 					},
 				}},
 			},
 			issuestatus.InReview: {
 				OnEnter: []workflow.Action{
-					{Type: "set_issue_status", Params: map[string]string{"status": issuestatus.InReview}},
+					{Type: "set_issue_status", Params: map[string]string{"status": issuestatus.InReview, "when_state": issuestatus.InReview}},
 					{
 						Type: "trigger_agent",
 						Params: map[string]string{
 							"selector": "reviewer",
+							"when_state": issuestatus.InReview,
 							"handoff": "Autonomous workflow review: review the implementation against the issue acceptance criteria and project standards. If changes are required, move the issue to In Progress and explain the requested changes in a comment; the workflow engine will automatically return it to the implementation agent. If approved, finish the review task normally; the workflow engine will mark the issue Done. Do not mention or trigger another agent.",
 						},
 					},
@@ -140,13 +142,13 @@ func definition() workflow.Definition {
 			issuestatus.Done: {
 				OnEnter: []workflow.Action{{
 					Type: "set_issue_status",
-					Params: map[string]string{"status": issuestatus.Done},
+					Params: map[string]string{"status": issuestatus.Done, "when_state": issuestatus.Done},
 				}},
 			},
 			issuestatus.Blocked: {
 				OnEnter: []workflow.Action{{
 					Type: "set_issue_status",
-					Params: map[string]string{"status": issuestatus.Blocked},
+					Params: map[string]string{"status": issuestatus.Blocked, "when_state": issuestatus.Blocked},
 				}},
 			},
 		},
@@ -531,6 +533,12 @@ func (r *Runtime) ExecuteWorkflowAction(ctx context.Context, run workflow.Run, p
 	if err != nil {
 		return err
 	}
+	if expected := strings.TrimSpace(pending.Action.Params["when_state"]); expected != "" && run.State != expected {
+		// A slow/reclaimed action from an older transition is obsolete once the
+		// run has advanced. Treating it as complete prevents a crash window from
+		// dispatching yesterday's owner/reviewer task again.
+		return nil
+	}
 	switch pending.Action.Type {
 	case "set_issue_status":
 		status := strings.TrimSpace(pending.Action.Params["status"])
@@ -570,12 +578,34 @@ func (r *Runtime) ExecuteWorkflowAction(ctx context.Context, run workflow.Run, p
 		if err != nil {
 			return err
 		}
+
+		// Make the side effect idempotent across the narrow crash window between
+		// TaskService committing the queued task and this worker marking its
+		// durable action completed. The marker lives in handoff_note, which is
+		// already task execution metadata and survives terminal task history.
+		marker := "[workflow-action:" + pending.ID + "]"
+		var alreadyDispatched bool
+		if err := r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM agent_task_queue
+				WHERE issue_id = $1
+				  AND agent_id = $2
+				  AND handoff_note LIKE $3 || '%'
+			)
+		`, issueID, agentID, marker).Scan(&alreadyDispatched); err != nil {
+			return fmt.Errorf("check workflow dispatch receipt: %w", err)
+		}
+		if alreadyDispatched {
+			return nil
+		}
+		handoff := marker + "\n" + pending.Action.Params["handoff"]
 		_, err = r.taskSvc.EnqueueTaskForWorkflow(
 			ctx,
 			issue,
 			agentID,
 			accountableID,
-			pending.Action.Params["handoff"],
+			handoff,
 		)
 		if errors.Is(err, service.ErrDuplicatePendingTask) {
 			return nil
