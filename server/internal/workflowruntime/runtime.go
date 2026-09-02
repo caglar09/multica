@@ -41,6 +41,7 @@ type Config struct {
 	PollInterval      time.Duration
 	ActionLease       time.Duration
 	ProjectPolicy     projectorchestration.Policy
+	AdapterConfig     projectorchestration.WebhookAdapterConfig
 }
 
 func ConfigFromEnv() Config {
@@ -51,6 +52,12 @@ func ConfigFromEnv() Config {
 		PollInterval:    500 * time.Millisecond,
 		ActionLease:     30 * time.Second,
 		ProjectPolicy:   projectorchestration.DefaultPolicy(),
+		AdapterConfig: projectorchestration.WebhookAdapterConfig{
+			DeploymentURL:  strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_DEPLOYMENT_WEBHOOK_URL")),
+			ObservationURL: strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_OBSERVATION_WEBHOOK_URL")),
+			BearerToken:    strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_WEBHOOK_BEARER_TOKEN")),
+			Timeout:        2 * time.Minute,
+		},
 	}
 	if cfg.ReviewerRole == "" {
 		cfg.ReviewerRole = "reviewer"
@@ -101,6 +108,13 @@ func ConfigFromEnv() Config {
 			slog.Warn("invalid MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES; using default", "value", raw, "default", cfg.MaxReviewCycles)
 		}
 	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_WEBHOOK_TIMEOUT")); raw != "" {
+		if value, err := time.ParseDuration(raw); err == nil && value > 0 && value <= 15*time.Minute {
+			cfg.AdapterConfig.Timeout = value
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_WEBHOOK_TIMEOUT; using default", "value", raw)
+		}
+	}
 	return cfg
 }
 
@@ -113,9 +127,11 @@ type Runtime struct {
 	engine         *workflow.Engine
 	team           *teamprovision.Provisioner
 	projectStore   *projectorchestration.Store
-	projectPlanner *projectorchestration.Planner
-	planningSem    chan struct{}
-	config         Config
+	projectPlanner      *projectorchestration.Planner
+	deploymentAdapter   projectorchestration.DeploymentAdapter
+	observationAdapter  projectorchestration.ObservationAdapter
+	planningSem         chan struct{}
+	config              Config
 }
 
 func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config) (*Runtime, error) {
@@ -155,9 +171,11 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		engine: engine,
 		team: teamprovision.New(pool, taskSvc.Queries, planner),
 		projectStore: projectorchestration.NewStore(pool),
-		projectPlanner: projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
-		planningSem: make(chan struct{}, 4),
-		config: cfg,
+		projectPlanner:     projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
+		deploymentAdapter:  projectorchestration.NewWebhookDeploymentAdapter(cfg.AdapterConfig),
+		observationAdapter: projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
+		planningSem:        make(chan struct{}, 4),
+		config:             cfg,
 	}
 
 	for _, eventType := range []string{protocol.EventIssueCreated, protocol.EventIssueUpdated} {
