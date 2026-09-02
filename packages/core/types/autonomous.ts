@@ -95,6 +95,21 @@ export interface AutonomousTeamPlan {
   roles?: AutonomousTeamPlanRole[];
 }
 
+export interface AutonomousProjectBootstrap {
+  autonomy_mode: "standard" | "autonomous";
+  autonomy_level: "assisted" | "development" | "delivery" | "closed_loop";
+  brief: string;
+  knowledge: Array<{
+    kind: string;
+    title: string;
+    content: string;
+  }>;
+  policy: Record<string, unknown>;
+  budget: Record<string, unknown>;
+  status: string;
+  updated_at: string;
+}
+
 export interface AutonomousTeamDraft {
   status: "awaiting_configuration" | "provisioning";
   planner_name: string;
@@ -234,6 +249,7 @@ export interface AutonomousProjectSnapshot {
   enabled: boolean;
   control: AutonomousProjectControl;
   health: AutonomousProjectHealth;
+  bootstrap: AutonomousProjectBootstrap | null;
   draft: AutonomousTeamDraft | null;
   runtimes: AutonomousRuntimeOption[];
   skills: AutonomousSkillOption[];
