@@ -668,6 +668,125 @@ func projectQualityGateType(kind projectorchestration.NodeKind) string {
 	}
 }
 
+
+func (r *Runtime) failProjectNodeTask(
+	ctx context.Context,
+	task db.AgentTaskQueue,
+	issue db.Issue,
+) (bool, error) {
+	if r.projectStore == nil {
+		return false, nil
+	}
+	var kind string
+	err := r.pool.QueryRow(ctx, `
+		SELECT kind
+		FROM autonomous_project_plan_node
+		WHERE workspace_id = $1
+		  AND materialized_issue_id = $2
+		  AND status IN ('running', 'verification', 'ready')
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, issue.WorkspaceID, issue.ID).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if projectNodeUsesIssueWorkflow(projectorchestration.NodeKind(kind)) {
+		return false, nil
+	}
+
+	reason := "autonomous project stage task failed"
+	if task.Error.Valid && strings.TrimSpace(task.Error.String) != "" {
+		reason += ": " + strings.TrimSpace(task.Error.String)
+	}
+	disposition, nodeKey, projectID, err := r.projectStore.FailNodeByIssue(
+		ctx, issue.WorkspaceID, issue.ID, reason,
+	)
+	if err != nil {
+		return true, err
+	}
+	switch disposition {
+	case projectorchestration.FailureRetry:
+		slog.Info("autonomous project node queued for bounded retry",
+			"project_id", util.UUIDToString(projectID),
+			"node", nodeKey,
+			"issue_id", util.UUIDToString(issue.ID),
+		)
+		return true, nil
+	case projectorchestration.FailureBlocked:
+		if _, statusErr := r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked); statusErr != nil {
+			return true, statusErr
+		}
+		contextJSON, _ := json.Marshal(map[string]any{
+			"node_key": nodeKey,
+			"issue_id": util.UUIDToString(issue.ID),
+			"task_id": util.UUIDToString(task.ID),
+			"error": reason,
+		})
+		_, escErr := r.pool.Exec(ctx, `
+			INSERT INTO autonomous_project_escalation (
+				workspace_id, project_id, category, severity, summary, context
+			)
+			VALUES ($1, $2, 'technical_failure', 'high', $3, $4)
+		`, issue.WorkspaceID, projectID,
+			"Project node exhausted its retry budget: "+nodeKey, contextJSON)
+		return true, escErr
+	default:
+		return false, nil
+	}
+}
+
+func (r *Runtime) syncBlockedProjectNode(
+	ctx context.Context,
+	issue db.Issue,
+) error {
+	if r.projectStore == nil || !issue.ProjectID.Valid {
+		return nil
+	}
+	disposition, nodeKey, projectID, err := r.projectStore.FailNodeByIssue(
+		ctx, issue.WorkspaceID, issue.ID, "materialized issue moved to Blocked",
+	)
+	if err != nil {
+		return err
+	}
+	if disposition == projectorchestration.FailureRetry {
+		// Existing issue-level workflow exhaustion is authoritative: a Blocked
+		// implementation issue is not silently restarted. Convert the retryable
+		// node into a durable escalation so a replan/human can decide.
+		_, _ = r.pool.Exec(ctx, `
+			UPDATE autonomous_project_plan_node
+			SET status = 'blocked',
+			    blocked_reason = 'issue workflow blocked before project retry',
+			    updated_at = now()
+			WHERE workspace_id = $1 AND materialized_issue_id = $2
+		`, issue.WorkspaceID, issue.ID)
+	}
+	if nodeKey == "" {
+		return nil
+	}
+	contextJSON, _ := json.Marshal(map[string]any{
+		"node_key": nodeKey,
+		"issue_id": util.UUIDToString(issue.ID),
+	})
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_escalation (
+			workspace_id, project_id, category, severity, summary, context
+		)
+		SELECT $1, $2, 'technical_failure', 'high', $3, $4
+		WHERE NOT EXISTS (
+			SELECT 1 FROM autonomous_project_escalation
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND status IN ('open', 'acknowledged')
+			  AND context ->> 'node_key' = $5
+		)
+	`, issue.WorkspaceID, projectID,
+		"Implementation workflow blocked project node: "+nodeKey, contextJSON, nodeKey)
+	return err
+}
+
 func (r *Runtime) completeNonImplementationProjectNode(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) (bool, error) {
 	if r.projectStore == nil {
 		return false, nil
