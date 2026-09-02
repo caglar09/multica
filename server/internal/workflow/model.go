@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 var (
@@ -88,6 +89,7 @@ type Run struct {
 	ReviewerAgentID   string
 	AccountableUserID string
 	ReviewCycles      int
+	UpdatedAt         time.Time
 }
 
 // PendingAction is a durable side effect attached to a transition.
