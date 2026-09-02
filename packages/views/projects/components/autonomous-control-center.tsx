@@ -391,7 +391,13 @@ function DecisionCard({ decision }: { decision: AutonomousDecision }) {
   );
 }
 
-export function AutonomousControlCenter({ projectId }: { projectId: string }) {
+export function AutonomousControlCenter({
+  projectId,
+  canControl = false,
+}: {
+  projectId: string;
+  canControl?: boolean;
+}) {
   const wsId = useWorkspaceId();
   const wsPaths = useWorkspacePaths();
   const router = useNavigation();
@@ -530,24 +536,28 @@ export function AutonomousControlCenter({ projectId }: { projectId: string }) {
               <RefreshCw className={cn(isFetching && "animate-spin")} />
               Refresh
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleReplan}
-              disabled={controlMutationPending || replanPending}
-            >
-              <Brain />
-              {replanPending ? "Replanning…" : "Replan team"}
-            </Button>
-            <Button
-              variant={data.control.paused ? "default" : "secondary"}
-              size="sm"
-              onClick={handlePauseResume}
-              disabled={controlMutationPending}
-            >
-              {data.control.paused ? <Play /> : <Pause />}
-              {data.control.paused ? "Resume" : "Pause"}
-            </Button>
+            {canControl ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleReplan}
+                  disabled={controlMutationPending || replanPending}
+                >
+                  <Brain />
+                  {replanPending ? "Replanning…" : "Replan team"}
+                </Button>
+                <Button
+                  variant={data.control.paused ? "default" : "secondary"}
+                  size="sm"
+                  onClick={handlePauseResume}
+                  disabled={controlMutationPending}
+                >
+                  {data.control.paused ? <Play /> : <Pause />}
+                  {data.control.paused ? "Resume" : "Pause"}
+                </Button>
+              </>
+            ) : null}
           </div>
         </div>
 
@@ -814,7 +824,9 @@ export function AutonomousControlCenter({ projectId }: { projectId: string }) {
                           variant="outline"
                           size="sm"
                           disabled={
-                            retryAction.isPending || data.control.paused
+                            !canControl ||
+                            retryAction.isPending ||
+                            data.control.paused
                           }
                           onClick={() =>
                             retryAction.mutate(
