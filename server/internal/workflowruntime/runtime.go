@@ -334,18 +334,6 @@ func (r *Runtime) onProjectCreated(event events.Event) {
 	if err != nil {
 		return
 	}
-	shouldBootstrap, err := r.team.ShouldBootstrap(ctx, workspaceID, projectID)
-	if err != nil {
-		slog.Warn("autonomous project bootstrap classification failed",
-			"project_id", projectIDValue,
-			"workspace_id", event.WorkspaceID,
-			"error", err,
-		)
-		return
-	}
-	if !shouldBootstrap {
-		return
-	}
 	team, err := r.team.EnsureProject(ctx, workspaceID, projectID)
 	if err != nil {
 		if errors.Is(err, teamprovision.ErrMikaUnavailable) {
