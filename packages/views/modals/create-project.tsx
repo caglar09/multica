@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Brain, CalendarClock, CalendarDays, ChevronRight, FolderOpen, GitBranch, Maximize2, Minimize2, MoreHorizontal, Pencil, Search, ShieldCheck, Sparkles, X as XIcon, UserMinus } from "lucide-react";
+import { Brain, CalendarClock, CalendarDays, ChevronRight, FileText, FolderOpen, GitBranch, Maximize2, Minimize2, MoreHorizontal, Pencil, Plus, Search, ShieldCheck, Sparkles, Trash2, X as XIcon, UserMinus } from "lucide-react";
 
 /**
  * GitHub mark — lucide-react v1 dropped brand icons, so we inline the
@@ -33,7 +33,12 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import { useActorName } from "@multica/core/workspace/hooks";
-import type { ProjectAutonomyLevel, ProjectStatus, ProjectPriority } from "@multica/core/types";
+import type {
+  ProjectAutonomyLevel,
+  ProjectBootstrapKnowledgeItem,
+  ProjectStatus,
+  ProjectPriority,
+} from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogTitle } from "@multica/ui/components/ui/dialog";
@@ -166,11 +171,41 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   // Project Bootstrap. Explicit mode separates normal project tracking from
   // Project OS orchestration; development remains the safe/default autonomous
   // level and server policy clamps any stronger project request.
-  const [autonomous, setAutonomous] = useState(true);
+  const [autonomous, setAutonomous] = useState(false);
   const [autonomyLevel, setAutonomyLevel] =
     useState<ProjectAutonomyLevel>("development");
   const [bootstrapBrief, setBootstrapBrief] = useState("");
-  const [bootstrapKnowledge, setBootstrapKnowledge] = useState("");
+  const [bootstrapKnowledge, setBootstrapKnowledge] = useState<
+    ProjectBootstrapKnowledgeItem[]
+  >([
+    {
+      kind: "prd",
+      title: "Product requirements",
+      content: "",
+    },
+  ]);
+  const updateBootstrapKnowledge = (
+    index: number,
+    patch: Partial<ProjectBootstrapKnowledgeItem>,
+  ) => {
+    setBootstrapKnowledge((current) =>
+      current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    );
+  };
+  const addBootstrapKnowledge = () => {
+    setBootstrapKnowledge((current) => [
+      ...current,
+      { kind: "reference", title: "", content: "" },
+    ]);
+  };
+  const removeBootstrapKnowledge = (index: number) => {
+    setBootstrapKnowledge((current) =>
+      current.filter((_, itemIndex) => itemIndex !== index),
+    );
+  };
+
   const [approvalDatabaseMigration, setApprovalDatabaseMigration] = useState(true);
   const [approvalProductionDeploy, setApprovalProductionDeploy] = useState(true);
   const [approvalMajorDependency, setApprovalMajorDependency] = useState(true);
@@ -381,15 +416,13 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
           autonomy_mode: autonomous ? "autonomous" : "standard",
           autonomy_level: autonomyLevel,
           brief: bootstrapBrief.trim() || undefined,
-          knowledge: bootstrapKnowledge.trim()
-            ? [
-                {
-                  kind: "prd",
-                  title: "Project bootstrap knowledge",
-                  content: bootstrapKnowledge.trim(),
-                },
-              ]
-            : [],
+          knowledge: bootstrapKnowledge
+            .map((item) => ({
+              ...item,
+              title: item.title.trim(),
+              content: item.content.trim(),
+            }))
+            .filter((item) => item.title && item.content),
           approvals: {
             database_migration: approvalDatabaseMigration,
             production_deploy: approvalProductionDeploy,
@@ -561,18 +594,89 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                     className="min-h-24 w-full resize-y rounded-md border bg-background px-2.5 py-2 text-body outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   />
                 </label>
-                <label className="block">
-                  <span className="mb-1 flex items-center gap-1 text-caption font-medium">
-                    <Brain className="size-3.5" />
-                    PRD / project knowledge
-                  </span>
-                  <textarea
-                    value={bootstrapKnowledge}
-                    onChange={(event) => setBootstrapKnowledge(event.target.value)}
-                    placeholder="Requirements, architecture notes, API contracts, design decisions, references…"
-                    className="min-h-24 w-full resize-y rounded-md border bg-background px-2.5 py-2 text-body outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  />
-                </label>
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1 text-caption font-medium">
+                      <Brain className="size-3.5" />
+                      Project knowledge
+                    </span>
+                    <button
+                      type="button"
+                      onClick={addBootstrapKnowledge}
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <Plus className="size-3" />
+                      Add document
+                    </button>
+                  </div>
+                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                    {bootstrapKnowledge.map((item, index) => (
+                      <div
+                        key={index}
+                        className="rounded-md border bg-background p-2"
+                      >
+                        <div className="mb-2 grid grid-cols-[120px_1fr_auto] gap-2">
+                          <select
+                            value={item.kind}
+                            onChange={(event) =>
+                              updateBootstrapKnowledge(index, {
+                                kind: event.target
+                                  .value as ProjectBootstrapKnowledgeItem["kind"],
+                              })
+                            }
+                            className="h-8 rounded-md border bg-background px-2 text-caption"
+                          >
+                            <option value="prd">PRD</option>
+                            <option value="requirements">Requirements</option>
+                            <option value="architecture">Architecture</option>
+                            <option value="design">Design</option>
+                            <option value="api_spec">API spec</option>
+                            <option value="reference">Reference</option>
+                            <option value="note">Note</option>
+                          </select>
+                          <input
+                            value={item.title}
+                            onChange={(event) =>
+                              updateBootstrapKnowledge(index, {
+                                title: event.target.value,
+                              })
+                            }
+                            placeholder="Document title"
+                            className="h-8 min-w-0 rounded-md border bg-background px-2 text-caption"
+                          />
+                          <button
+                            type="button"
+                            aria-label="Remove knowledge document"
+                            onClick={() => removeBootstrapKnowledge(index)}
+                            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </div>
+                        <textarea
+                          value={item.content}
+                          onChange={(event) =>
+                            updateBootstrapKnowledge(index, {
+                              content: event.target.value,
+                            })
+                          }
+                          placeholder="Paste requirements, decisions, contracts, constraints, or reference material…"
+                          className="min-h-20 w-full resize-y rounded-md border-0 bg-muted/20 px-2.5 py-2 text-caption outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        />
+                      </div>
+                    ))}
+                    {bootstrapKnowledge.length === 0 ? (
+                      <button
+                        type="button"
+                        onClick={addBootstrapKnowledge}
+                        className="flex min-h-24 w-full items-center justify-center gap-2 rounded-md border border-dashed text-caption text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                      >
+                        <FileText className="size-4" />
+                        Add PRD, architecture, API spec, or reference
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
               </div>
 
               <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_220px]">
