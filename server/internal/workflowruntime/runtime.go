@@ -426,6 +426,17 @@ func (r *Runtime) onWorkspaceDeleted(event events.Event) {
 		_, err = tx.Exec(ctx, `DELETE FROM autonomous_workflow_run WHERE workspace_id = $1`, workspaceID)
 	}
 	if err == nil {
+		_, err = tx.Exec(ctx, `
+			DELETE FROM autonomous_project_team_member
+			WHERE team_id IN (
+				SELECT id FROM autonomous_project_team WHERE workspace_id = $1
+			)
+		`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `DELETE FROM autonomous_project_team WHERE workspace_id = $1`, workspaceID)
+	}
+	if err == nil {
 		err = tx.Commit(ctx)
 	}
 	if err != nil {
