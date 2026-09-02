@@ -434,6 +434,61 @@ func (s *Store) MarkNodeMaterialized(
 	return tx.Commit(ctx)
 }
 
+func (s *Store) AccountTaskUsage(
+	ctx context.Context,
+	workspaceID, projectID, taskID pgtype.UUID,
+	tokens, runtimeSeconds, costMicrounits int64,
+) error {
+	if s == nil || s.pool == nil {
+		return errors.New("project orchestration store is not configured")
+	}
+	if !workspaceID.Valid || !projectID.Valid || !taskID.Valid {
+		return nil
+	}
+	if tokens < 0 || runtimeSeconds < 0 || costMicrounits < 0 {
+		return errors.New("project usage deltas cannot be negative")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO autonomous_project_usage_accounting (
+			task_id, workspace_id, project_id, tokens, runtime_seconds, cost_microunits
+		)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (task_id) DO NOTHING
+	`, taskID, workspaceID, projectID, tokens, runtimeSeconds, costMicrounits)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
+
+	tag, err = tx.Exec(ctx, `
+		UPDATE autonomous_project_budget
+		SET tokens_used = tokens_used + $3,
+		    runtime_seconds_used = runtime_seconds_used + $4,
+		    cost_microunits_used = cost_microunits_used + $5,
+		    updated_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND (token_limit IS NULL OR tokens_used + $3 <= token_limit)
+		  AND (runtime_seconds_limit IS NULL OR runtime_seconds_used + $4 <= runtime_seconds_limit)
+		  AND (cost_microunits_limit IS NULL OR cost_microunits_used + $5 <= cost_microunits_limit)
+	`, workspaceID, projectID, tokens, runtimeSeconds, costMicrounits)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrBudgetExceeded
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) AddUsage(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
@@ -940,6 +995,7 @@ func (s *Store) CleanupProject(
 		`DELETE FROM autonomous_project_plan_edge WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_plan_node WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_plan WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_usage_accounting WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_budget WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_bootstrap WHERE workspace_id = $1 AND project_id = $2`,
 	}
@@ -970,6 +1026,7 @@ func (s *Store) CleanupWorkspace(ctx context.Context, workspaceID pgtype.UUID) e
 		`DELETE FROM autonomous_project_plan_edge WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_plan_node WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_plan WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_usage_accounting WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_budget WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_bootstrap WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_agent_performance WHERE workspace_id = $1`,
