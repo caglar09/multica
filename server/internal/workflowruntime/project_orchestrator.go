@@ -270,6 +270,9 @@ func (r *Runtime) materializeProjectNode(
 	workspaceID, projectID pgtype.UUID,
 	node projectorchestration.ReadyNode,
 ) error {
+	if err := r.enforceProjectNodePolicy(ctx, workspaceID, projectID, node); err != nil {
+		return err
+	}
 	team, ok, err := r.team.FindProject(ctx, workspaceID, projectID)
 	if err != nil {
 		return err
@@ -280,6 +283,22 @@ func (r *Runtime) materializeProjectNode(
 	agentID, role, family, err := selectProjectNodeAgent(team, node)
 	if err != nil {
 		return err
+	}
+
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan_node n
+		SET assigned_role = $4,
+		    assigned_agent_id = $5,
+		    updated_at = now()
+		FROM autonomous_project_plan p
+		WHERE n.plan_id = p.id
+		  AND n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND n.node_key = $3
+		  AND p.status = 'active'
+		  AND n.status = 'ready'
+	`, workspaceID, projectID, node.Key, role, agentID); err != nil {
+		return fmt.Errorf("stamp project node assignment: %w", err)
 	}
 
 	var ownerUserID pgtype.UUID
