@@ -3588,6 +3588,21 @@ export class ApiClient {
     });
   }
 
+  async resolveProjectAutonomousEscalation(
+    id: string,
+    escalationId: string,
+    decision: "approved" | "rejected",
+    note?: string,
+  ): Promise<{ resolved: boolean; decision: string }> {
+    return this.fetch(
+      `/api/projects/${id}/autonomous/escalations/${escalationId}/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ decision, note }),
+      },
+    );
+  }
+
   async createProject(data: CreateProjectRequest): Promise<Project> {
     return this.fetch("/api/projects", {
       method: "POST",
