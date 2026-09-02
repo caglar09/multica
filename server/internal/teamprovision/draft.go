@@ -191,9 +191,10 @@ func selectionJSON(assignments []RoleRuntimeSelection) []byte {
 }
 
 // ProvisionDraft materializes the proposed team after the member chooses a
-// runtime for every role. Workspace skills are explicit per-role bindings.
-// Runtime-local skills remain inherited by the selected runtime unless disabled
-// later from the agent detail page.
+// runtime for every role. Skill mode defaults to inherit: all workspace skills
+// are available to the generated agent, while runtime-local skills remain
+// inherited from the selected runtime. Custom mode narrows workspace skills to
+// the explicitly selected IDs.
 func (p *Provisioner) ProvisionDraft(
 	ctx context.Context,
 	workspaceID, projectID, confirmedBy pgtype.UUID,
@@ -271,14 +272,29 @@ func (p *Provisioner) ProvisionDraft(
 		return Team{}, fmt.Errorf("%w: Mika has no runtime", ErrMikaUnavailable)
 	}
 
-	defaultSkills, err := qtx.ListAgentSkills(ctx, mika.ID)
+	skillRows, err := tx.Query(ctx, `
+		SELECT id
+		FROM skill
+		WHERE workspace_id = $1
+		ORDER BY name
+	`, workspaceID)
 	if err != nil {
-		return Team{}, fmt.Errorf("load Mika workspace skills: %w", err)
+		return Team{}, fmt.Errorf("load workspace skills for inheritance: %w", err)
 	}
-	defaultSkillIDs := make([]pgtype.UUID, 0, len(defaultSkills))
-	for _, skill := range defaultSkills {
-		defaultSkillIDs = append(defaultSkillIDs, skill.ID)
+	defaultSkillIDs := make([]pgtype.UUID, 0)
+	for skillRows.Next() {
+		var skillID pgtype.UUID
+		if err := skillRows.Scan(&skillID); err != nil {
+			skillRows.Close()
+			return Team{}, fmt.Errorf("decode workspace skill for inheritance: %w", err)
+		}
+		defaultSkillIDs = append(defaultSkillIDs, skillID)
 	}
+	if err := skillRows.Err(); err != nil {
+		skillRows.Close()
+		return Team{}, fmt.Errorf("iterate workspace skills for inheritance: %w", err)
+	}
+	skillRows.Close()
 
 	byRole := make(map[string]RoleRuntimeSelection, len(assignments))
 	for _, assignment := range assignments {
