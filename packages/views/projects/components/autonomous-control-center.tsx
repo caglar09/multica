@@ -496,7 +496,7 @@ export function AutonomousControlCenter({
 
   const handleReplan = () => {
     replan.mutate(projectId, {
-      onSuccess: () => toast.success("LLM team replan requested"),
+      onSuccess: () => toast.success("Runtime team replan requested"),
       onError: () => toast.error("Could not request team replan"),
     });
   };
@@ -703,7 +703,7 @@ export function AutonomousControlCenter({
                     <span>{data.team?.planner_name ?? "—"}</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">Model</span>
+                    <span className="text-muted-foreground">Runtime / model</span>
                     <span className="truncate">
                       {data.team?.planner_model ?? "default / fallback"}
                     </span>
@@ -902,7 +902,7 @@ export function AutonomousControlCenter({
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <ShieldCheck className="size-4" />
-                  LLM decision history
+                  Team planner decision history
                 </CardTitle>
                 <CardDescription>
                   Each issue revision and manual replan is cached as a durable
@@ -916,7 +916,7 @@ export function AutonomousControlCenter({
                   ))
                 ) : (
                   <div className="py-8 text-center text-muted-foreground">
-                    No LLM team decisions recorded yet.
+                    No team planner decisions recorded yet.
                   </div>
                 )}
               </CardContent>
