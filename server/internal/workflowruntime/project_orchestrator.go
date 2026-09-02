@@ -156,6 +156,9 @@ func (r *Runtime) planProject(ctx context.Context, workspaceID, projectID pgtype
 	if err != nil {
 		return fmt.Errorf("load project for durable planning: %w", err)
 	}
+	if err := r.enforceProjectNodePolicy(ctx, workspaceID, projectID, node); err != nil {
+		return err
+	}
 	team, ok, err := r.team.FindProject(ctx, workspaceID, projectID)
 	if err != nil {
 		return err
@@ -250,6 +253,8 @@ func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 	}
 	return nil
 }
+
+var errProjectApprovalRequired = errors.New("autonomous project node requires approval")
 
 func (r *Runtime) materializeProjectNode(
 	ctx context.Context,
@@ -421,12 +426,75 @@ func selectProjectNodeAgent(
 	)
 }
 
+func (r *Runtime) enforceProjectNodePolicy(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	node projectorchestration.ReadyNode,
+) error {
+	var raw []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT policy
+		FROM autonomous_project_plan
+		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
+		ORDER BY revision DESC
+		LIMIT 1
+	`, workspaceID, projectID).Scan(&raw)
+	if err != nil {
+		return err
+	}
+	var policy projectorchestration.Policy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return fmt.Errorf("decode autonomous project policy: %w", err)
+	}
+	requiresApproval := false
+	switch {
+	case node.Kind == projectorchestration.NodeMigration && policy.Approvals.DatabaseMigration:
+		requiresApproval = true
+	case node.Kind == projectorchestration.NodeDeploy && policy.Approvals.ProductionDeploy:
+		requiresApproval = true
+	case node.Risk == projectorchestration.RiskCritical && policy.Approvals.CriticalRisk:
+		requiresApproval = true
+	}
+	if !requiresApproval {
+		return nil
+	}
+	var approved bool
+	err = r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_escalation
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND category = 'approval_required'
+			  AND status = 'resolved'
+			  AND context ->> 'node_key' = $3
+			  AND resolution ->> 'decision' = 'approved'
+		)
+	`, workspaceID, projectID, node.Key).Scan(&approved)
+	if err != nil {
+		return err
+	}
+	if !approved {
+		return errProjectApprovalRequired
+	}
+	return nil
+}
+
 func (r *Runtime) openProjectEscalation(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
 	node projectorchestration.ReadyNode,
 	cause error,
 ) error {
+	category := "technical_failure"
+	summary := "Project node could not be scheduled: " + node.Title
+	if errors.Is(cause, errProjectApprovalRequired) {
+		category = "approval_required"
+		summary = "Project node requires approval: " + node.Title
+	} else if errors.Is(cause, projectorchestration.ErrBudgetExceeded) {
+		category = "budget_exceeded"
+		summary = "Project budget prevents scheduling: " + node.Title
+	}
 	contextJSON, _ := json.Marshal(map[string]any{
 		"node_key": node.Key,
 		"kind": node.Kind,
@@ -438,7 +506,7 @@ func (r *Runtime) openProjectEscalation(
 		INSERT INTO autonomous_project_escalation (
 			workspace_id, project_id, category, severity, summary, context
 		)
-		SELECT $1, $2, 'technical_failure',
+		SELECT $1, $2, $7,
 		       CASE WHEN $3 IN ('high', 'critical') THEN $3 ELSE 'medium' END,
 		       $4, $5
 		WHERE NOT EXISTS (
@@ -450,7 +518,7 @@ func (r *Runtime) openProjectEscalation(
 			  AND context ->> 'node_key' = $6
 		)
 	`, workspaceID, projectID, string(node.Risk),
-		"Project node could not be scheduled: "+node.Title, contextJSON, node.Key)
+		summary, contextJSON, node.Key, category)
 	return err
 }
 
