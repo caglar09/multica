@@ -477,13 +477,13 @@ func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 		FROM autonomous_project_plan p
 		LEFT JOIN autonomous_project_control c
 		  ON c.project_id = p.project_id AND c.workspace_id = p.workspace_id
-		WHERE p.status = 'active'
+		WHERE p.status IN ('active', 'blocked')
 		  AND COALESCE(c.paused, FALSE) = FALSE
 		ORDER BY p.project_id
 		LIMIT 20
 	`)
 	if err != nil {
-		return fmt.Errorf("query active project plans: %w", err)
+		return fmt.Errorf("query schedulable project plans: %w", err)
 	}
 	type projectRef struct{ workspaceID, projectID pgtype.UUID }
 	projects := make([]projectRef, 0, 20)
@@ -502,13 +502,56 @@ func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 	rows.Close()
 
 	for _, project := range projects {
+		// Board projection is intentionally eager: every issue-backed DAG node
+		// becomes visible as soon as the plan exists. Execution is a separate
+		// claim below, so pending dependencies stay parked in Backlog.
+		planned, err := r.projectStore.ListPlanNodes(ctx, project.workspaceID, project.projectID, 200)
+		if err != nil {
+			slog.Warn("project conductor plan projection failed",
+				"project_id", util.UUIDToString(project.projectID), "error", err)
+			continue
+		}
+		materialized := false
+		for _, node := range planned {
+			if node.Kind == projectorchestration.NodeDeploy || node.Kind == projectorchestration.NodeObserve {
+				continue
+			}
+			if node.MaterializedIssueID == "" {
+				if err := r.ensureProjectNodeIssue(ctx, project.workspaceID, project.projectID, node); err != nil {
+					if escalationErr := r.openProjectEscalation(ctx, project.workspaceID, project.projectID, node.ReadyNode, err); escalationErr != nil {
+						slog.Warn("project conductor materialization escalation failed",
+							"project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", escalationErr)
+					}
+					continue
+				}
+				materialized = true
+				continue
+			}
+			if err := r.syncProjectNodeBoardState(ctx, node); err != nil {
+				slog.Warn("project conductor board projection failed",
+					"project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", err)
+			}
+		}
+		// Give newly materialized plan issues one reconciliation interval as a
+		// stable board projection before dispatching them. This also avoids a
+		// create/backlog -> in_progress transition racing the issue-created
+		// event on slow clients.
+		if materialized {
+			continue
+		}
+
+		if err := r.reconcileProjectBlockedNodes(ctx, project.workspaceID, project.projectID); err != nil {
+			slog.Warn("project conductor blocked-node reconciliation failed",
+				"project_id", util.UUIDToString(project.projectID), "error", err)
+		}
+
 		ready, err := r.projectStore.ListReadyNodes(ctx, project.workspaceID, project.projectID, 20)
 		if err != nil {
 			slog.Warn("project scheduler readiness failed", "project_id", util.UUIDToString(project.projectID), "error", err)
 			continue
 		}
 		for _, node := range ready {
-			if err := r.materializeProjectNode(ctx, project.workspaceID, project.projectID, node); err != nil {
+			if err := r.startReadyProjectNode(ctx, project.workspaceID, project.projectID, node); err != nil {
 				if escalationErr := r.openProjectEscalation(ctx, project.workspaceID, project.projectID, node, err); escalationErr != nil {
 					slog.Warn("project scheduler escalation failed", "project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", escalationErr)
 				}
@@ -518,28 +561,11 @@ func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 	return nil
 }
 
-var errProjectApprovalRequired = errors.New("autonomous project node requires approval")
-
-func (r *Runtime) materializeProjectNode(
+func (r *Runtime) ensureProjectNodeIssue(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
-	node projectorchestration.ReadyNode,
+	node projectorchestration.PlannedNode,
 ) error {
-	if err := r.enforceProjectNodePolicy(ctx, workspaceID, projectID, node); err != nil {
-		return err
-	}
-	switch node.Kind {
-	case projectorchestration.NodeDeploy:
-		if r.deploymentAdapter == nil {
-			return projectorchestration.ErrAdapterNotConfigured
-		}
-		return r.executeDeploymentNode(ctx, workspaceID, projectID, node)
-	case projectorchestration.NodeObserve:
-		if r.observationAdapter == nil {
-			return projectorchestration.ErrAdapterNotConfigured
-		}
-		return r.executeObservationNode(ctx, workspaceID, projectID, node)
-	}
 	team, ok, err := r.team.FindProject(ctx, workspaceID, projectID)
 	if err != nil {
 		return err
@@ -547,27 +573,10 @@ func (r *Runtime) materializeProjectNode(
 	if !ok {
 		return errors.New("project team unavailable")
 	}
-	agentID, role, family, err := r.selectProjectNodeAgent(ctx, team, node)
+	agentID, role, family, err := r.selectProjectNodeAgent(ctx, team, node.ReadyNode)
 	if err != nil {
 		return err
 	}
-
-	if _, err := r.pool.Exec(ctx, `
-		UPDATE autonomous_project_plan_node n
-		SET assigned_role = $4,
-		    assigned_agent_id = $5,
-		    updated_at = now()
-		FROM autonomous_project_plan p
-		WHERE n.plan_id = p.id
-		  AND n.workspace_id = $1
-		  AND n.project_id = $2
-		  AND n.node_key = $3
-		  AND p.status = 'active'
-		  AND n.status = 'ready'
-	`, workspaceID, projectID, node.Key, role, agentID); err != nil {
-		return fmt.Errorf("stamp project node assignment: %w", err)
-	}
-
 	var ownerUserID pgtype.UUID
 	if err := r.pool.QueryRow(ctx, `
 		SELECT owner_user_id
@@ -592,12 +601,11 @@ func (r *Runtime) materializeProjectNode(
 		"[autonomous-project-node:%s]\nStage: %s\nRisk: %s\nRequired role: %s (%s)\n\n%s%s",
 		node.Key, node.Kind, node.Risk, role, family, node.Description, criteria,
 	)
-
 	res, err := r.issueSvc.Create(ctx, service.IssueCreateParams{
 		WorkspaceID: workspaceID,
 		Title: node.Title,
 		Description: pgtype.Text{String: description, Valid: true},
-		Status: "backlog",
+		Status: issuestatus.Backlog,
 		Priority: projectNodePriority(node.Priority),
 		AssigneeType: pgtype.Text{String: "agent", Valid: true},
 		AssigneeID: agentID,
@@ -610,20 +618,144 @@ func (r *Runtime) materializeProjectNode(
 		AnalyticsAgentID: util.UUIDToString(agentID),
 		Platform: "autonomous",
 	})
-	if errors.Is(err, service.ErrActiveDuplicate) && res.DuplicateIssue != nil {
-		if err := r.projectStore.MarkNodeMaterialized(ctx, workspaceID, projectID, node.Key, res.DuplicateIssue.ID); err != nil {
-			return err
-		}
-		return r.startMaterializedNode(ctx, *res.DuplicateIssue, node, agentID, ownerUserID)
-	}
-	if err != nil {
+	var issue db.Issue
+	switch {
+	case errors.Is(err, service.ErrActiveDuplicate) && res.DuplicateIssue != nil:
+		issue = *res.DuplicateIssue
+	case err != nil:
 		return fmt.Errorf("materialize project node %q: %w", node.Key, err)
+	default:
+		issue = res.Issue
 	}
-	if err := r.projectStore.MarkNodeMaterialized(ctx, workspaceID, projectID, node.Key, res.Issue.ID); err != nil {
+	if err := r.projectStore.BindNodeIssue(
+		ctx, workspaceID, projectID, node.Key, issue.ID, role, agentID,
+	); err != nil {
 		return err
 	}
-	return r.startMaterializedNode(ctx, res.Issue, node, agentID, ownerUserID)
+	if node.Status == "ready" && issue.Status == issuestatus.Backlog {
+		if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Todo); err != nil {
+			return fmt.Errorf("promote ready project node to todo: %w", err)
+		}
+	}
+	return nil
 }
+
+func (r *Runtime) syncProjectNodeBoardState(
+	ctx context.Context,
+	node projectorchestration.PlannedNode,
+) error {
+	if node.MaterializedIssueID == "" {
+		return nil
+	}
+	issueID, err := util.ParseUUID(node.MaterializedIssueID)
+	if err != nil {
+		return err
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return r.projectStore.ResetDeletedIssue(ctx, issue.WorkspaceID, issueID)
+		}
+		return err
+	}
+	target := ""
+	switch node.Status {
+	case "pending":
+		target = issuestatus.Backlog
+	case "ready":
+		if issue.Status != issuestatus.Blocked {
+			target = issuestatus.Todo
+		}
+	case "running":
+		target = issuestatus.InProgress
+	case "verification":
+		target = issuestatus.InReview
+	case "blocked":
+		target = issuestatus.Blocked
+	}
+	if target == "" || issue.Status == target {
+		return nil
+	}
+	_, err = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, target)
+	return err
+}
+
+func (r *Runtime) startReadyProjectNode(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	node projectorchestration.ReadyNode,
+) error {
+	if err := r.enforceProjectNodePolicy(ctx, workspaceID, projectID, node); err != nil {
+		return err
+	}
+	switch node.Kind {
+	case projectorchestration.NodeDeploy:
+		if r.deploymentAdapter == nil {
+			return projectorchestration.ErrAdapterNotConfigured
+		}
+		return r.executeDeploymentNode(ctx, workspaceID, projectID, node)
+	case projectorchestration.NodeObserve:
+		if r.observationAdapter == nil {
+			return projectorchestration.ErrAdapterNotConfigured
+		}
+		return r.executeObservationNode(ctx, workspaceID, projectID, node)
+	}
+
+	var issueID, agentID pgtype.UUID
+	var assignedRole string
+	if err := r.pool.QueryRow(ctx, `
+		SELECT materialized_issue_id, assigned_agent_id, COALESCE(assigned_role, '')
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND n.node_key = $3
+		  AND n.status = 'ready'
+		  AND p.status IN ('active', 'blocked')
+		ORDER BY p.revision DESC
+		LIMIT 1
+	`, workspaceID, projectID, node.Key).Scan(&issueID, &agentID, &assignedRole); err != nil {
+		return err
+	}
+	if !issueID.Valid || !agentID.Valid {
+		return fmt.Errorf("ready project node %q is not fully materialized", node.Key)
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	if issue.Status == issuestatus.Blocked {
+		return nil
+	}
+	if issue.Status == issuestatus.Backlog {
+		issue, err = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Todo)
+		if err != nil {
+			return err
+		}
+	}
+
+	var ownerUserID pgtype.UUID
+	if err := r.pool.QueryRow(ctx, `
+		SELECT owner_user_id
+		FROM autonomous_project_team
+		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
+	`, workspaceID, projectID).Scan(&ownerUserID); err != nil {
+		return fmt.Errorf("resolve project accountable user: %w", err)
+	}
+
+	if err := r.projectStore.ClaimReadyNode(ctx, workspaceID, projectID, node.Key); err != nil {
+		return err
+	}
+	if err := r.startMaterializedNode(ctx, issue, node, agentID, ownerUserID); err != nil {
+		_ = r.projectStore.ReleaseNodeClaim(ctx, workspaceID, projectID, node.Key, "dispatch failed: "+err.Error())
+		_, _ = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Todo)
+		return err
+	}
+	_ = assignedRole // retained for durable assignment/debug projection.
+	return nil
+}
+
+var errProjectApprovalRequired = errors.New("autonomous project node requires approval")
 
 func (r *Runtime) executeDeploymentNode(
 	ctx context.Context,
