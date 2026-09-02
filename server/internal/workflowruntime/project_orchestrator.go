@@ -28,7 +28,10 @@ func (r *Runtime) processProjectBootstrap(ctx context.Context) error {
 		SELECT b.workspace_id, b.project_id
 		FROM autonomous_project_bootstrap b
 		WHERE b.autonomy_mode = 'autonomous'
-		  AND b.status IN ('ready', 'started')
+		  AND (
+			b.status = 'ready'
+			OR (b.status = 'started' AND b.updated_at < now() - interval '30 seconds')
+		  )
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM autonomous_project_team t
