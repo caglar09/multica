@@ -11,6 +11,14 @@ type ActionExecutor interface {
 	ExecuteWorkflowAction(ctx context.Context, run Run, action PendingAction) error
 }
 
+// ActionExhaustedHandler is optional. Runtimes that implement it can move a
+// workflow into a safe human-visible state after the durable retry budget is
+// exhausted instead of leaving an issue looking healthy while orchestration is
+// permanently stuck.
+type ActionExhaustedHandler interface {
+	WorkflowActionExhausted(ctx context.Context, run Run, action PendingAction, cause error)
+}
+
 type WorkerOptions struct {
 	PollInterval time.Duration
 	Lease        time.Duration
@@ -65,6 +73,7 @@ func (w *ActionWorker) Run(ctx context.Context) {
 				err = w.executor.ExecuteWorkflowAction(ctx, run, *action)
 			}
 			if err != nil {
+				exhausted := action.Attempts >= action.MaxAttempts
 				if failErr := w.store.FailAction(ctx, *action, err); failErr != nil {
 					slog.Error("workflow action retry bookkeeping failed",
 						"action_id", action.ID,
@@ -79,6 +88,11 @@ func (w *ActionWorker) Run(ctx context.Context) {
 					"max_attempts", action.MaxAttempts,
 					"error", err,
 				)
+				if exhausted {
+					if handler, ok := w.executor.(ActionExhaustedHandler); ok {
+						handler.WorkflowActionExhausted(ctx, run, *action, err)
+					}
+				}
 				continue
 			}
 			if err := w.store.CompleteAction(ctx, action.ID, action.LeaseToken); err != nil {
