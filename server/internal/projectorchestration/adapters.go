@@ -42,6 +42,29 @@ type ChangeImpactEvidence struct {
 	Evidence        map[string]any
 }
 
+type QualityGateRequest struct {
+	WorkspaceID pgtype.UUID
+	ProjectID   pgtype.UUID
+	PlanID      pgtype.UUID
+	NodeID      pgtype.UUID
+	IssueID     pgtype.UUID
+	GateType    string
+	Artifact    map[string]any
+}
+
+type QualityGateResult struct {
+	Passed   bool
+	Evidence map[string]any
+	Error    string
+}
+
+// QualityGateRunner is the deterministic verifier boundary for build/lint/test/
+// security/etc. The runner returns evidence only; backend state transitions
+// remain deterministic and durable.
+type QualityGateRunner interface {
+	Run(ctx context.Context, request QualityGateRequest) (QualityGateResult, error)
+}
+
 // DeploymentAdapter is deliberately capability-limited. A provider adapter
 // receives a validated release request from the backend; LLMs never receive
 // provider credentials and never shell out directly to production.
