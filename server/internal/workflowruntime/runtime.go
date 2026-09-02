@@ -448,6 +448,9 @@ func (r *Runtime) processRequestedReplans(ctx context.Context) error {
 		revision := item.requestedAt.UTC().Format(time.RFC3339Nano)
 		planCtx, cancel := context.WithTimeout(ctx, autonomousPlanningTimeout)
 		_, _, replanErr := r.team.ReconcileProject(planCtx, item.workspaceID, item.projectID, revision)
+		if replanErr == nil && r.projectPlanner != nil && r.projectStore != nil {
+			replanErr = r.planProjectRevision(planCtx, item.workspaceID, item.projectID, "replan:"+revision)
+		}
 		cancel()
 		if replanErr != nil {
 			message := replanErr.Error()
