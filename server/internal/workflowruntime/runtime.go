@@ -556,6 +556,13 @@ func (r *Runtime) cleanupWorkflowIssue(ctx context.Context, workspaceIDValue, is
 	defer tx.Rollback(ctx)
 
 	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_project_team_analysis
+		WHERE source_type = 'issue' AND source_id = $1
+	`, issueID); err != nil {
+		return err
+	}
+
+	if _, err = tx.Exec(ctx, `
 		DELETE FROM autonomous_workflow_action
 		WHERE run_id IN (
 			SELECT id FROM autonomous_workflow_run
