@@ -152,6 +152,110 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 	return nil
 }
 
+func (r *Runtime) loadProjectPlanningBootstrap(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) (string, []projectorchestration.PlanningContextItem, []projectorchestration.PlanningResource, projectorchestration.Policy, error) {
+	requested := r.config.ProjectPolicy
+	var level string
+	var brief string
+	var knowledgeJSON, approvalsJSON, budgetJSON []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT autonomy_level, brief, knowledge, policy, budget
+		FROM autonomous_project_bootstrap
+		WHERE workspace_id = $1 AND project_id = $2 AND autonomy_mode = 'autonomous'
+	`, workspaceID, projectID).Scan(&level, &brief, &knowledgeJSON, &approvalsJSON, &budgetJSON)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil, nil, requested, nil
+		}
+		return "", nil, nil, requested, err
+	}
+	requested.Autonomy = projectorchestration.AutonomyLevel(level)
+	_ = json.Unmarshal(approvalsJSON, &requested.Approvals)
+	_ = json.Unmarshal(budgetJSON, &requested.Budget)
+
+	contextItems := make([]projectorchestration.PlanningContextItem, 0)
+	var knowledge []struct {
+		Kind    string `json:"kind"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+	if len(knowledgeJSON) > 0 && json.Unmarshal(knowledgeJSON, &knowledge) == nil {
+		for _, item := range knowledge {
+			if strings.TrimSpace(item.Content) == "" {
+				continue
+			}
+			contextItems = append(contextItems, projectorchestration.PlanningContextItem{
+				Type: strings.TrimSpace(item.Kind),
+				Title: strings.TrimSpace(item.Title),
+				Content: strings.TrimSpace(item.Content),
+			})
+		}
+	}
+
+	brainRows, brainErr := r.pool.Query(ctx, `
+		SELECT entry_type, subject, content
+		FROM autonomous_project_brain_entry
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND superseded_by IS NULL
+		ORDER BY created_at ASC
+		LIMIT 200
+	`, workspaceID, projectID)
+	if brainErr != nil {
+		return "", nil, nil, requested, brainErr
+	}
+	for brainRows.Next() {
+		var entryType, subject string
+		var contentJSON []byte
+		if err := brainRows.Scan(&entryType, &subject, &contentJSON); err != nil {
+			brainRows.Close()
+			return "", nil, nil, requested, err
+		}
+		contextItems = append(contextItems, projectorchestration.PlanningContextItem{
+			Type: entryType,
+			Title: subject,
+			Content: string(contentJSON),
+		})
+	}
+	if err := brainRows.Err(); err != nil {
+		brainRows.Close()
+		return "", nil, nil, requested, err
+	}
+	brainRows.Close()
+
+	resources := make([]projectorchestration.PlanningResource, 0)
+	resourceRows, resourceErr := r.pool.Query(ctx, `
+		SELECT resource_type, resource_ref
+		FROM project_resource
+		WHERE workspace_id = $1 AND project_id = $2
+		ORDER BY position ASC, created_at ASC
+	`, workspaceID, projectID)
+	if resourceErr != nil {
+		return "", nil, nil, requested, resourceErr
+	}
+	for resourceRows.Next() {
+		var resourceType string
+		var ref []byte
+		if err := resourceRows.Scan(&resourceType, &ref); err != nil {
+			resourceRows.Close()
+			return "", nil, nil, requested, err
+		}
+		resources = append(resources, projectorchestration.PlanningResource{
+			Type: resourceType,
+			Ref: append(json.RawMessage(nil), ref...),
+		})
+	}
+	if err := resourceRows.Err(); err != nil {
+		resourceRows.Close()
+		return "", nil, nil, requested, err
+	}
+	resourceRows.Close()
+
+	return brief, contextItems, resources, requested, nil
+}
+
 func (r *Runtime) planProjectRevision(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
@@ -191,13 +295,21 @@ func (r *Runtime) planProjectRevision(
 		current := stored.Plan
 		currentPlan = &current
 	}
+	brief, planningContext, resources, requestedPolicy, err := r.loadProjectPlanningBootstrap(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("load autonomous project bootstrap context: %w", err)
+	}
 	plan, execution, err := r.projectPlanner.Plan(ctx, projectorchestration.PlanningInput{
 		WorkspaceID: workspaceID,
 		ProjectID: projectID,
 		ProjectTitle: project.Title,
 		ProjectDescription: description,
+		BootstrapBrief: brief,
+		Context: planningContext,
+		Resources: resources,
 		Team: roles,
 		CurrentPlan: currentPlan,
+		Policy: requestedPolicy,
 	})
 	if err != nil {
 		return err
