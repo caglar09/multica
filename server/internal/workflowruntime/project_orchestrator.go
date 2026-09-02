@@ -20,6 +20,94 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+func (r *Runtime) processProjectBootstrap(ctx context.Context) error {
+	if r == nil || r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT b.workspace_id, b.project_id
+		FROM autonomous_project_bootstrap b
+		WHERE b.autonomy_mode = 'autonomous'
+		  AND b.status IN ('ready', 'started')
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM autonomous_project_team t
+			WHERE t.workspace_id = b.workspace_id
+			  AND t.project_id = b.project_id
+			  AND t.status = 'active'
+		  )
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM autonomous_project_team_draft d
+			WHERE d.workspace_id = b.workspace_id
+			  AND d.project_id = b.project_id
+			  AND d.status IN ('awaiting_configuration', 'provisioning', 'applied')
+		  )
+		ORDER BY b.updated_at ASC
+		LIMIT 10
+	`)
+	if err != nil {
+		return fmt.Errorf("query autonomous project bootstraps: %w", err)
+	}
+	type bootstrapProject struct {
+		workspaceID pgtype.UUID
+		projectID   pgtype.UUID
+	}
+	items := make([]bootstrapProject, 0, 10)
+	for rows.Next() {
+		var item bootstrapProject
+		if err := rows.Scan(&item.workspaceID, &item.projectID); err != nil {
+			rows.Close()
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, item := range items {
+		if _, err := r.pool.Exec(ctx, `
+			UPDATE autonomous_project_bootstrap
+			SET status = 'started', updated_at = now()
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND autonomy_mode = 'autonomous'
+			  AND status IN ('ready', 'started')
+		`, item.workspaceID, item.projectID); err != nil {
+			return fmt.Errorf("mark project bootstrap started: %w", err)
+		}
+		if _, err := r.team.PrepareProject(ctx, item.workspaceID, item.projectID); err != nil {
+			message := err.Error()
+			if len(message) > 2000 {
+				message = message[:2000]
+			}
+			_, _ = r.pool.Exec(ctx, `
+				INSERT INTO autonomous_project_control (
+					project_id, workspace_id, last_error, updated_at
+				)
+				VALUES ($1, $2, $3, now())
+				ON CONFLICT (project_id) DO UPDATE
+				SET last_error = EXCLUDED.last_error, updated_at = now()
+				WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
+			`, item.projectID, item.workspaceID, "Project bootstrap failed: "+message)
+			continue
+		}
+		_, _ = r.pool.Exec(ctx, `
+			INSERT INTO autonomous_project_control (
+				project_id, workspace_id, last_error, updated_at
+			)
+			VALUES ($1, $2, NULL, now())
+			ON CONFLICT (project_id) DO UPDATE
+			SET last_error = NULL, updated_at = now()
+			WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
+		`, item.projectID, item.workspaceID)
+	}
+	return nil
+}
+
 func (r *Runtime) processAutomaticTeamConfiguration(ctx context.Context) error {
 	if r == nil || !r.config.AutoConfigureTeam || r.team == nil {
 		return nil
