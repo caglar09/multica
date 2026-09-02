@@ -92,3 +92,33 @@ export function useConfirmAutonomousTeam() {
     },
   });
 }
+
+export function useResolveAutonomousEscalation() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      escalationId,
+      decision,
+      note,
+    }: {
+      projectId: string;
+      escalationId: string;
+      decision: "approved" | "rejected";
+      note?: string;
+    }) =>
+      api.resolveProjectAutonomousEscalation(
+        projectId,
+        escalationId,
+        decision,
+        note,
+      ),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
+}
