@@ -1007,6 +1007,99 @@ func (r *Runtime) recordAgentPerformance(
 	)
 }
 
+func (r *Runtime) accountProjectTaskUsage(
+	ctx context.Context,
+	task db.AgentTaskQueue,
+	issue db.Issue,
+) (bool, error) {
+	if r.projectStore == nil || !issue.ProjectID.Valid {
+		return false, nil
+	}
+	var nodeKey string
+	err := r.pool.QueryRow(ctx, `
+		SELECT node_key
+		FROM autonomous_project_plan_node
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND materialized_issue_id = $3
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, issue.WorkspaceID, issue.ProjectID, issue.ID).Scan(&nodeKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	var tokens, costTicks int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT
+			COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0)::bigint,
+			COALESCE(SUM(cost_usd_ticks), 0)::bigint
+		FROM task_usage
+		WHERE task_id = $1
+	`, task.ID).Scan(&tokens, &costTicks); err != nil {
+		return false, err
+	}
+	var runtimeSeconds int64
+	if task.StartedAt.Valid && task.CompletedAt.Valid && task.CompletedAt.Time.After(task.StartedAt.Time) {
+		runtimeSeconds = int64(task.CompletedAt.Time.Sub(task.StartedAt.Time).Seconds())
+	}
+	// task_usage cost is stored in 1e-10 USD ticks; Project OS budget uses
+	// micro-USD, so 10,000 ticks = 1 micro-USD. Round up so tiny authoritative
+	// charges are never silently treated as free.
+	costMicrounits := int64(0)
+	if costTicks > 0 {
+		costMicrounits = (costTicks + 9999) / 10000
+	}
+	err = r.projectStore.AccountTaskUsage(
+		ctx,
+		issue.WorkspaceID,
+		issue.ProjectID,
+		task.ID,
+		tokens,
+		runtimeSeconds,
+		costMicrounits,
+	)
+	if err == nil {
+		return false, nil
+	}
+	if !errors.Is(err, projectorchestration.ErrBudgetExceeded) {
+		return false, err
+	}
+
+	reason := "project token/runtime/cost budget exceeded after task " + util.UUIDToString(task.ID)
+	_, _ = r.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET status = 'blocked', blocked_reason = $4, updated_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND materialized_issue_id = $3
+		  AND status NOT IN ('completed', 'cancelled')
+	`, issue.WorkspaceID, issue.ProjectID, issue.ID, reason)
+	_, _ = r.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status = 'blocked', updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
+	`, issue.WorkspaceID, issue.ProjectID)
+	contextJSON, _ := json.Marshal(map[string]any{
+		"node_key": nodeKey,
+		"task_id": util.UUIDToString(task.ID),
+		"tokens": tokens,
+		"runtime_seconds": runtimeSeconds,
+		"cost_microunits": costMicrounits,
+	})
+	_, _ = r.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_escalation (
+			workspace_id, project_id, category, severity, summary, context
+		)
+		VALUES ($1, $2, 'budget_exceeded', 'high', $3, $4)
+	`, issue.WorkspaceID, issue.ProjectID, "Project usage budget exceeded: "+nodeKey, contextJSON)
+	_, _ = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked)
+	return true, nil
+}
+
 func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) (bool, error) {
 	var nodeID, planID pgtype.UUID
 	var kind string
