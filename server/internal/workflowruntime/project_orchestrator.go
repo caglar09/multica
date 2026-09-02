@@ -1006,6 +1006,36 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 		return fmt.Errorf("record project task artifact: %w", err)
 	}
 
+	if brainType := projectBrainEntryType(projectorchestration.NodeKind(kind)); brainType != "" {
+		brainContent, _ := json.Marshal(map[string]any{
+			"artifact_type": artifactType,
+			"task_id": util.UUIDToString(task.ID),
+			"issue_id": util.UUIDToString(issue.ID),
+			"result": taskResult,
+		})
+		if _, err := r.pool.Exec(ctx, `
+			INSERT INTO autonomous_project_brain_entry (
+				workspace_id, project_id, plan_id, node_id, entry_type,
+				subject, content, source_type, source_id, confidence,
+				created_by_type, created_by_id
+			)
+			SELECT $1, $2, $3, $4, $5, $6, $7,
+			       'artifact', $8, 0.9, 'agent', $9
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM autonomous_project_brain_entry
+				WHERE workspace_id = $1
+				  AND project_id = $2
+				  AND source_type = 'artifact'
+				  AND source_id = $8
+				  AND entry_type = $5
+			)
+		`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, brainType,
+			issue.Title, brainContent, util.UUIDToString(task.ID), task.AgentID); err != nil {
+			return fmt.Errorf("record project brain artifact knowledge: %w", err)
+		}
+	}
+
 	gateType := projectQualityGateType(projectorchestration.NodeKind(kind))
 	if gateType != "" {
 		evidence, _ := json.Marshal(map[string]any{
@@ -1056,6 +1086,23 @@ func projectArtifactType(kind projectorchestration.NodeKind) string {
 		return "incident_report"
 	default:
 		return "implementation_handoff"
+	}
+}
+
+func projectBrainEntryType(kind projectorchestration.NodeKind) string {
+	switch kind {
+	case projectorchestration.NodeProduct:
+		return "product_decision"
+	case projectorchestration.NodeArchitecture:
+		return "architecture_decision"
+	case projectorchestration.NodeResearch:
+		return "fact"
+	case projectorchestration.NodeSecurity:
+		return "risk"
+	case projectorchestration.NodeReview, projectorchestration.NodeQA, projectorchestration.NodeIntegration:
+		return "lesson"
+	default:
+		return ""
 	}
 }
 
