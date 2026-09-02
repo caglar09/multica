@@ -335,6 +335,11 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	bootstrapMode := "standard"
 	bootstrapLevel := "development"
 	var bootstrapKnowledge, bootstrapApprovals, bootstrapBudget []byte
+	var bootstrapKnowledgeItems []struct {
+		Kind    string `json:"kind"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
 	if req.Bootstrap != nil {
 		if strings.TrimSpace(req.Bootstrap.AutonomyMode) != "" {
 			bootstrapMode = strings.TrimSpace(req.Bootstrap.AutonomyMode)
@@ -356,16 +361,11 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		if len(bootstrapKnowledge) == 0 {
 			bootstrapKnowledge = []byte("[]")
 		}
-		var knowledgeItems []struct {
-			Kind    string `json:"kind"`
-			Title   string `json:"title"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal(bootstrapKnowledge, &knowledgeItems); err != nil {
+		if err := json.Unmarshal(bootstrapKnowledge, &bootstrapKnowledgeItems); err != nil {
 			writeError(w, http.StatusBadRequest, "bootstrap.knowledge must be a JSON array")
 			return
 		}
-		for i, item := range knowledgeItems {
+		for i, item := range bootstrapKnowledgeItems {
 			if strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.Content) == "" {
 				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"] requires title and content")
 				return
@@ -490,6 +490,46 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to persist project bootstrap")
 			return
+		}
+		if bootstrapMode == "autonomous" {
+			if brief := strings.TrimSpace(req.Bootstrap.Brief); brief != "" {
+				content, _ := json.Marshal(map[string]any{"text": brief, "kind": "brief"})
+				if _, err := tx.Exec(r.Context(), `
+					INSERT INTO autonomous_project_brain_entry (
+						workspace_id, project_id, entry_type, subject, content,
+						source_type, source_id, confidence, created_by_type, created_by_id
+					)
+					VALUES ($1, $2, 'requirement', 'Bootstrap brief', $3,
+					        'bootstrap', 'brief', 1.0, 'member', $4)
+				`, project.WorkspaceID, project.ID, content, creator); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to seed project brain brief")
+					return
+				}
+			}
+			for index, item := range bootstrapKnowledgeItems {
+				content, _ := json.Marshal(map[string]any{
+					"kind": strings.TrimSpace(item.Kind),
+					"title": strings.TrimSpace(item.Title),
+					"text": strings.TrimSpace(item.Content),
+				})
+				if _, err := tx.Exec(r.Context(), `
+					INSERT INTO autonomous_project_brain_entry (
+						workspace_id, project_id, entry_type, subject, content,
+						source_type, source_id, confidence, created_by_type, created_by_id
+					)
+					VALUES ($1, $2, 'fact', $3, $4, 'bootstrap', $5, 1.0, 'member', $6)
+				`,
+					project.WorkspaceID,
+					project.ID,
+					strings.TrimSpace(item.Title),
+					content,
+					fmt.Sprintf("knowledge:%d", index),
+					creator,
+				); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to seed project brain knowledge")
+					return
+				}
+			}
 		}
 	}
 	resourceRows := make([]db.ProjectResource, 0, len(req.Resources))
