@@ -222,6 +222,36 @@ func (s *PostgresStore) GetRun(ctx context.Context, runID string) (Run, error) {
 	return scanRun(s.pool.QueryRow(ctx, runByIDSQL, id))
 }
 
+// UpdateRunActors refreshes the delivery/review routing for a live run after
+// an LLM team replan. It does not change workflow state or revision: state
+// transitions remain owned by Engine.Apply.
+func (s *PostgresStore) UpdateRunActors(ctx context.Context, runID, ownerAgentID, reviewerAgentID, accountableUserID string) (Run, error) {
+	id, err := parseUUID(runID)
+	if err != nil {
+		return Run{}, err
+	}
+	owner, err := optionalUUID(ownerAgentID)
+	if err != nil {
+		return Run{}, fmt.Errorf("parse workflow owner agent: %w", err)
+	}
+	reviewer, err := optionalUUID(reviewerAgentID)
+	if err != nil {
+		return Run{}, fmt.Errorf("parse workflow reviewer agent: %w", err)
+	}
+	accountable, err := optionalUUID(accountableUserID)
+	if err != nil {
+		return Run{}, fmt.Errorf("parse workflow accountable user: %w", err)
+	}
+	return scanRun(s.pool.QueryRow(ctx, `
+		UPDATE autonomous_workflow_run
+		SET owner_agent_id = COALESCE($2, owner_agent_id),
+		    reviewer_agent_id = COALESCE($3, reviewer_agent_id),
+		    accountable_user_id = COALESCE($4, accountable_user_id),
+		    updated_at = now()
+		WHERE id = $1
+		RETURNING `+runColumns, id, nullableUUID(owner), nullableUUID(reviewer), nullableUUID(accountable)))
+}
+
 // ListActiveRuns returns bounded non-terminal runs for restart reconciliation.
 func (s *PostgresStore) ListActiveRuns(ctx context.Context, limit int) ([]Run, error) {
 	if limit <= 0 {
