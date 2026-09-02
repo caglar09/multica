@@ -10,7 +10,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 var (
