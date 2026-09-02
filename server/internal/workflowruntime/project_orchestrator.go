@@ -280,7 +280,7 @@ func (r *Runtime) materializeProjectNode(
 	if !ok {
 		return errors.New("project team unavailable")
 	}
-	agentID, role, family, err := selectProjectNodeAgent(team, node)
+	agentID, role, family, err := r.selectProjectNodeAgent(ctx, team, node)
 	if err != nil {
 		return err
 	}
@@ -408,50 +408,104 @@ func projectNodePriority(priority int) string {
 	}
 }
 
-func selectProjectNodeAgent(
+func (r *Runtime) selectProjectNodeAgent(
+	ctx context.Context,
 	team teamprovision.Team,
 	node projectorchestration.ReadyNode,
 ) (pgtype.UUID, string, string, error) {
 	families := []string{}
-	if strings.TrimSpace(node.RequiredRoleFamily) != "" {
-		families = append(families, strings.TrimSpace(node.RequiredRoleFamily))
+	addFamily := func(family string) {
+		family = strings.TrimSpace(family)
+		if family == "" {
+			return
+		}
+		for _, existing := range families {
+			if existing == family {
+				return
+			}
+		}
+		families = append(families, family)
 	}
+	addFamily(node.RequiredRoleFamily)
 	switch node.Kind {
 	case projectorchestration.NodeResearch, projectorchestration.NodeProduct:
-		families = append(families, "product")
+		addFamily("product")
 	case projectorchestration.NodeArchitecture:
-		families = append(families, "architecture")
+		addFamily("architecture")
 	case projectorchestration.NodeDesign:
-		families = append(families, "design", "frontend")
+		addFamily("design"); addFamily("frontend")
 	case projectorchestration.NodeReview:
-		families = append(families, "review")
+		addFamily("review")
 	case projectorchestration.NodeQA:
-		families = append(families, "qa", "review")
+		addFamily("qa"); addFamily("review")
 	case projectorchestration.NodeSecurity:
-		families = append(families, "security")
+		addFamily("security")
 	case projectorchestration.NodeRelease:
-		families = append(families, "release", "devops")
+		addFamily("release"); addFamily("devops")
 	case projectorchestration.NodeDeploy:
-		families = append(families, "devops", "release", "sre")
+		addFamily("devops"); addFamily("release"); addFamily("sre")
 	case projectorchestration.NodeObserve, projectorchestration.NodeIncident:
-		families = append(families, "sre", "devops")
+		addFamily("sre"); addFamily("devops")
 	}
-	for _, family := range families {
-		if id, spec, ok := team.AgentByFamily(family); ok {
-			return id, spec.Role, spec.Family, nil
+
+	type candidate struct {
+		id     pgtype.UUID
+		role   string
+		family string
+		score  float64
+	}
+	candidates := []candidate{}
+	for familyIndex, family := range families {
+		for _, spec := range team.Plan.Roles {
+			if spec.Family != family {
+				continue
+			}
+			id, ok := team.Agent(spec.Role)
+			if !ok {
+				continue
+			}
+			if projectNodeUsesIssueWorkflow(node.Kind) && !teamprovision.IsImplementationFamily(spec.Family) {
+				continue
+			}
+			performance, err := r.projectStore.AgentPerformance(ctx, team.WorkspaceID, id, spec.Family)
+			if err != nil {
+				return pgtype.UUID{}, "", "", err
+			}
+			var active int
+			if err := r.pool.QueryRow(ctx, `
+				SELECT COUNT(*)
+				FROM agent_task_queue
+				WHERE agent_id = $1
+				  AND status IN ('queued','dispatched','running','waiting_local_directory','deferred')
+			`, id).Scan(&active); err != nil {
+				return pgtype.UUID{}, "", "", err
+			}
+			// Earlier family preferences are a weak tiebreaker; live queue load
+			// dominates history so a strong but saturated agent does not hoard work.
+			score := performance.Score() - float64(active*25) - float64(familyIndex)
+			candidates = append(candidates, candidate{id: id, role: spec.Role, family: spec.Family, score: score})
 		}
 	}
-	if projectNodeUsesIssueWorkflow(node.Kind) && team.Plan.ImplementationRole != "" {
+	if len(candidates) == 0 && projectNodeUsesIssueWorkflow(node.Kind) && team.Plan.ImplementationRole != "" {
 		if id, ok := team.Agent(team.Plan.ImplementationRole); ok {
 			if spec, found := team.RoleSpec(team.Plan.ImplementationRole); found {
 				return id, spec.Role, spec.Family, nil
 			}
 		}
 	}
-	return pgtype.UUID{}, "", "", fmt.Errorf(
-		"no provisioned specialist can execute node %q (kind=%s family=%q capabilities=%v)",
-		node.Key, node.Kind, node.RequiredRoleFamily, node.RequiredCapabilities,
-	)
+	if len(candidates) == 0 {
+		return pgtype.UUID{}, "", "", fmt.Errorf(
+			"no provisioned specialist can execute node %q (kind=%s family=%q capabilities=%v)",
+			node.Key, node.Kind, node.RequiredRoleFamily, node.RequiredCapabilities,
+		)
+	}
+	best := candidates[0]
+	for _, current := range candidates[1:] {
+		if current.score > best.score {
+			best = current
+		}
+	}
+	return best.id, best.role, best.family, nil
 }
 
 func (r *Runtime) enforceProjectNodePolicy(
