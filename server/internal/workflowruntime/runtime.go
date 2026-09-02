@@ -218,10 +218,17 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
+	cycle := 0
 	for {
 		if err := r.reconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous workflow reconciliation failed", "error", err)
 		}
+		if cycle%6 == 0 {
+			if err := r.reconcileUnstartedIssues(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Warn("autonomous unstarted issue reconciliation failed", "error", err)
+			}
+		}
+		cycle++
 		select {
 		case <-ctx.Done():
 			return
@@ -246,6 +253,54 @@ func (r *Runtime) reconcileOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) reconcileUnstartedIssues(ctx context.Context) error {
+	rows, err := r.pool.Query(ctx, `
+		SELECT i.id, i.workspace_id, i.status, i.revision
+		FROM issue i
+		WHERE i.project_id IS NOT NULL
+		  AND i.updated_at < now() - interval '30 seconds'
+		  AND i.updated_at > now() - interval '14 days'
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM autonomous_workflow_run wr
+			WHERE wr.issue_id = i.id
+			  AND wr.workspace_id = i.workspace_id
+			  AND wr.workflow_name = $1
+		  )
+		ORDER BY i.updated_at DESC
+		LIMIT 50
+	`, softwareDevelopmentWorkflow)
+	if err != nil {
+		return fmt.Errorf("query unstarted autonomous issues: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var issueID, workspaceID pgtype.UUID
+		var status string
+		var revision int64
+		if err := rows.Scan(&issueID, &workspaceID, &status, &revision); err != nil {
+			return err
+		}
+		if issuestatus.Effective(ctx, r.taskSvc.Queries, workspaceID, status) != issuestatus.InProgress {
+			continue
+		}
+		event := events.Event{
+			Type: protocol.EventIssueUpdated,
+			WorkspaceID: util.UUIDToString(workspaceID),
+			Payload: map[string]any{
+				"issue": map[string]any{
+					"id": util.UUIDToString(issueID),
+					"status": status,
+					"revision": revision,
+				},
+			},
+		}
+		r.onIssueEvent(event)
+	}
+	return rows.Err()
 }
 
 func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
