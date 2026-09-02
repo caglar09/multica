@@ -249,6 +249,14 @@ func (p *Provisioner) EnsureProject(ctx context.Context, workspaceID, projectID 
 	}, nil
 }
 
+// FindProject returns an already-provisioned active team without creating one.
+func (p *Provisioner) FindProject(ctx context.Context, workspaceID, projectID pgtype.UUID) (Team, bool, error) {
+	if p == nil || p.pool == nil || !workspaceID.Valid || !projectID.Valid {
+		return Team{}, false, nil
+	}
+	return p.loadTeam(ctx, workspaceID, projectID)
+}
+
 func (p *Provisioner) ImplementationAgent(ctx context.Context, issue db.Issue) (pgtype.UUID, Team, error) {
 	if !issue.ProjectID.Valid {
 		return pgtype.UUID{}, Team{}, errors.New("issue has no project for autonomous team routing")
