@@ -765,6 +765,15 @@ func (r *Runtime) onProjectDeleted(event events.Event) {
 			"error", err,
 		)
 	}
+	if r.projectStore != nil {
+		if err := r.projectStore.CleanupProject(ctx, workspaceID, projectID); err != nil {
+			slog.Warn("autonomous project os cleanup failed",
+				"project_id", projectIDValue,
+				"workspace_id", event.WorkspaceID,
+				"error", err,
+			)
+		}
+	}
 	var continuationTaskID pgtype.UUID
 	if err := r.pool.QueryRow(ctx, `
 		SELECT continuation_task_id
@@ -825,6 +834,15 @@ func (r *Runtime) onIssueDeleted(event events.Event) {
 	if err := r.cleanupWorkflowIssue(ctx, event.WorkspaceID, issueID); err != nil {
 		slog.Warn("autonomous workflow issue cleanup failed", "issue_id", issueID, "error", err)
 	}
+	if r.projectStore != nil {
+		workspaceID, workspaceErr := util.ParseUUID(event.WorkspaceID)
+		deletedIssueID, issueErr := util.ParseUUID(issueID)
+		if workspaceErr == nil && issueErr == nil {
+			if err := r.projectStore.ResetDeletedIssue(ctx, workspaceID, deletedIssueID); err != nil {
+				slog.Warn("autonomous project node issue reset failed", "issue_id", issueID, "error", err)
+			}
+		}
+	}
 }
 
 func (r *Runtime) onWorkspaceDeleted(event events.Event) {
@@ -883,6 +901,9 @@ func (r *Runtime) onWorkspaceDeleted(event events.Event) {
 	}
 	if err == nil {
 		err = tx.Commit(ctx)
+	}
+	if err == nil && r.projectStore != nil {
+		err = r.projectStore.CleanupWorkspace(ctx, workspaceID)
 	}
 	if err != nil {
 		slog.Warn("autonomous workflow workspace cleanup failed", "workspace_id", event.WorkspaceID, "error", err)
