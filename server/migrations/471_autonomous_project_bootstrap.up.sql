@@ -15,6 +15,3 @@ CREATE TABLE autonomous_project_bootstrap (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE INDEX idx_autonomous_project_bootstrap_workspace
-    ON autonomous_project_bootstrap(workspace_id, autonomy_mode, status);
