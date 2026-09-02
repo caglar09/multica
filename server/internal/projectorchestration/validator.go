@@ -186,6 +186,114 @@ func HardenPlan(plan Plan) Plan {
 	return plan
 }
 
+// EnsureLifecycle deterministically completes mandatory safety/quality stages
+// that the planner omitted. The LLM remains responsible for decomposition, but
+// backend-owned safeguards must not depend on a second model repair succeeding.
+//
+// Synthesized nodes are terminal/downstream nodes with deterministic keys, so
+// adding them cannot create a cycle. A later validator pass remains
+// authoritative and rejects the plan if any other invariant is still broken.
+func EnsureLifecycle(plan Plan) Plan {
+	for pass := 0; pass < 3; pass++ {
+		byKey := make(map[string]NodeSpec, len(plan.Nodes))
+		adj := make(map[string][]string, len(plan.Nodes))
+		for _, node := range plan.Nodes {
+			byKey[node.Key] = node
+		}
+		for _, edge := range plan.Edges {
+			if edge.Type == DependencyHard || edge.Type == DependencyArtifact {
+				adj[edge.From] = append(adj[edge.From], edge.To)
+			}
+		}
+
+		changed := false
+		addGate := func(source NodeSpec, kind NodeKind, suffix, title, family string, risk RiskLevel, criteria string) {
+			if hasDownstreamKind(source.Key, kind, byKey, adj) {
+				return
+			}
+			key := source.Key + "__" + suffix
+			if _, exists := byKey[key]; exists {
+				// A deterministic synthesized key already exists. Make sure the
+				// source can reach it; the fresh edge is safe because synthesized
+				// gates have no path back to their source.
+				edgeExists := false
+				for _, edge := range plan.Edges {
+					if edge.From == source.Key && edge.To == key &&
+						(edge.Type == DependencyHard || edge.Type == DependencyArtifact) {
+						edgeExists = true
+						break
+					}
+				}
+				if !edgeExists {
+					plan.Edges = append(plan.Edges, EdgeSpec{
+						From: source.Key, To: key, Type: DependencyHard,
+					})
+					changed = true
+				}
+				return
+			}
+			gate := NodeSpec{
+				Key: key,
+				Kind: kind,
+				Title: title + ": " + source.Title,
+				Description: "Backend-synthesized mandatory lifecycle gate for " + source.Key + ".",
+				Priority: source.Priority,
+				RequiredRoleFamily: family,
+				RequiredCapabilities: []string{suffix},
+				AcceptanceCriteria: []string{criteria},
+				Risk: risk,
+				MaxAttempts: 3,
+			}
+			plan.Nodes = append(plan.Nodes, gate)
+			plan.Edges = append(plan.Edges, EdgeSpec{
+				From: source.Key, To: key, Type: DependencyHard,
+			})
+			byKey[key] = gate
+			adj[source.Key] = append(adj[source.Key], key)
+			changed = true
+		}
+
+		// Snapshot the pass input; newly synthesized integration nodes are
+		// processed on the next pass and receive their own independent review.
+		nodes := append([]NodeSpec(nil), plan.Nodes...)
+		for _, node := range nodes {
+			if node.Kind != NodeImplementation && node.Kind != NodeMigration && node.Kind != NodeIntegration {
+				continue
+			}
+			addGate(
+				node, NodeReview, "independent_review", "Independent review", "review",
+				RiskMedium, "Independent reviewer verifies acceptance criteria and reports a pass/fail verdict.",
+			)
+			impact := AssessImpact(node, plan.Policy)
+			for _, gate := range impact.RequiredGates {
+				switch gate {
+				case "security":
+					addGate(
+						node, NodeSecurity, "security_gate", "Security verification", "security",
+						RiskHigh, "Security-sensitive behavior is verified with recorded evidence.",
+					)
+				case "acceptance":
+					addGate(
+						node, NodeQA, "qa_gate", "Acceptance QA", "qa",
+						RiskMedium, "Acceptance criteria are verified with reproducible evidence.",
+					)
+				case "integration_test", "migration":
+					if node.Kind != NodeIntegration {
+						addGate(
+							node, NodeIntegration, "integration_gate", "Integration verification", "",
+							RiskMedium, "Affected components integrate successfully and regression checks pass.",
+						)
+					}
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return plan
+}
+
 func validateLifecycle(plan Plan) error {
 	byKey := make(map[string]NodeSpec, len(plan.Nodes))
 	adj := make(map[string][]string, len(plan.Nodes))
