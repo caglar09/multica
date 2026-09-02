@@ -47,27 +47,95 @@ func (p *Provisioner) ReconcileForIssue(ctx context.Context, issue db.Issue) (Te
 	}
 	current := team.Plan
 	desired, err := p.planner.Plan(ctx, PlanningInput{
-		Project: project,
-		Issue: &issue,
+		Project:     project,
+		Issue:       &issue,
 		CurrentPlan: &current,
 	})
 	if err != nil {
 		return Team{}, Plan{}, fmt.Errorf("LLM team reconciliation failed: %w", err)
 	}
 
-	updated, err := p.applyIssuePlan(ctx, project, issue, team, desired, revision)
+	updated, err := p.applyPlan(
+		ctx,
+		project,
+		team,
+		desired,
+		"issue",
+		issue.ID,
+		revision,
+	)
 	if err != nil {
 		return Team{}, Plan{}, err
 	}
 	return updated, desired, nil
 }
 
-func (p *Provisioner) applyIssuePlan(
+// ReconcileProject is the explicit control-plane replan used by the Autonomous
+// Control Center. It sends the project plus the current team to the LLM even if
+// neither the project nor its issues changed. sourceRevision should be a stable
+// request token (the replan_requested_at timestamp is used by the runtime), so
+// retries/restarts reuse the same recorded decision.
+func (p *Provisioner) ReconcileProject(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	sourceRevision string,
+) (Team, Plan, error) {
+	if p == nil || p.pool == nil || p.queries == nil || p.planner == nil {
+		return Team{}, Plan{}, errors.New("team provisioner is not configured")
+	}
+	if !workspaceID.Valid || !projectID.Valid {
+		return Team{}, Plan{}, errors.New("workspace_id and project_id are required for team reconciliation")
+	}
+	if sourceRevision == "" {
+		return Team{}, Plan{}, errors.New("project replan source revision is required")
+	}
+
+	team, err := p.EnsureProject(ctx, workspaceID, projectID)
+	if err != nil {
+		return Team{}, Plan{}, err
+	}
+	if cached, ok, err := p.loadAnalysisPlan(ctx, team.ID, "project", projectID, sourceRevision); err != nil {
+		return Team{}, Plan{}, err
+	} else if ok {
+		return team, cached, nil
+	}
+
+	project, err := p.queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
+		ID: projectID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return Team{}, Plan{}, fmt.Errorf("load project for explicit team replan: %w", err)
+	}
+	current := team.Plan
+	desired, err := p.planner.Plan(ctx, PlanningInput{
+		Project:     project,
+		CurrentPlan: &current,
+	})
+	if err != nil {
+		return Team{}, Plan{}, fmt.Errorf("LLM project team replan failed: %w", err)
+	}
+	updated, err := p.applyPlan(
+		ctx,
+		project,
+		team,
+		desired,
+		"project",
+		projectID,
+		sourceRevision,
+	)
+	if err != nil {
+		return Team{}, Plan{}, err
+	}
+	return updated, desired, nil
+}
+
+func (p *Provisioner) applyPlan(
 	ctx context.Context,
 	project db.Project,
-	issue db.Issue,
 	current Team,
 	desired Plan,
+	sourceType string,
+	sourceID pgtype.UUID,
 	sourceRevision string,
 ) (Team, error) {
 	tx, err := p.pool.Begin(ctx)
@@ -77,12 +145,12 @@ func (p *Provisioner) applyIssuePlan(
 	defer tx.Rollback(ctx)
 	qtx := p.queries.WithTx(tx)
 
-	lockKey := "autonomous-project-team:" + util.UUIDToString(issue.WorkspaceID) + ":" + util.UUIDToString(issue.ProjectID)
+	lockKey := "autonomous-project-team:" + util.UUIDToString(project.WorkspaceID) + ":" + util.UUIDToString(project.ID)
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lockKey); err != nil {
 		return Team{}, fmt.Errorf("lock team reconciliation: %w", err)
 	}
 
-	lockedTeam, ok, err := loadTeamWithQuerier(ctx, tx, issue.WorkspaceID, issue.ProjectID)
+	lockedTeam, ok, err := loadTeamWithQuerier(ctx, tx, project.WorkspaceID, project.ID)
 	if err != nil {
 		return Team{}, err
 	}
@@ -106,7 +174,7 @@ func (p *Provisioner) applyIssuePlan(
 		}
 	}
 
-	if cached, ok, err := loadAnalysisPlanWithQuerier(ctx, tx, lockedTeam.ID, "issue", issue.ID, sourceRevision); err != nil {
+	if cached, ok, err := loadAnalysisPlanWithQuerier(ctx, tx, lockedTeam.ID, sourceType, sourceID, sourceRevision); err != nil {
 		return Team{}, err
 	} else if ok {
 		if err := tx.Commit(ctx); err != nil {
@@ -117,8 +185,8 @@ func (p *Provisioner) applyIssuePlan(
 	}
 
 	mika, err := qtx.GetAgentBySystemKey(ctx, db.GetAgentBySystemKeyParams{
-		WorkspaceID: issue.WorkspaceID,
-		SystemKey: pgtype.Text{String: service.MikaSystemKey, Valid: true},
+		WorkspaceID: project.WorkspaceID,
+		SystemKey:   pgtype.Text{String: service.MikaSystemKey, Valid: true},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Team{}, ErrMikaUnavailable
@@ -134,42 +202,42 @@ func (p *Provisioner) applyIssuePlan(
 		agentID, exists := lockedTeam.Members[role.Role]
 		if !exists || !agentID.Valid {
 			agent, err := qtx.CreateAgent(ctx, db.CreateAgentParams{
-				WorkspaceID: issue.WorkspaceID,
-				Name: generatedAgentName(project, role),
-				Description: role.Description,
-				AvatarUrl: pgtype.Text{},
-				RuntimeMode: mika.RuntimeMode,
-				RuntimeConfig: []byte("{}"),
-				RuntimeID: mika.RuntimeID,
-				Visibility: "workspace",
-				MaxConcurrentTasks: 2,
-				OwnerID: mika.OwnerID,
-				Instructions: role.Instructions,
-				CustomEnv: []byte("{}"),
-				CustomArgs: []byte("[]"),
-				McpConfig: nil,
-				Model: mika.Model,
-				ThinkingLevel: mika.ThinkingLevel,
-				ServiceTier: mika.ServiceTier,
+				WorkspaceID:          project.WorkspaceID,
+				Name:                 generatedAgentName(project, role),
+				Description:          role.Description,
+				AvatarUrl:            pgtype.Text{},
+				RuntimeMode:          mika.RuntimeMode,
+				RuntimeConfig:        []byte("{}"),
+				RuntimeID:            mika.RuntimeID,
+				Visibility:           "workspace",
+				MaxConcurrentTasks:   2,
+				OwnerID:              mika.OwnerID,
+				Instructions:         role.Instructions,
+				CustomEnv:            []byte("{}"),
+				CustomArgs:           []byte("[]"),
+				McpConfig:            nil,
+				Model:                mika.Model,
+				ThinkingLevel:        mika.ThinkingLevel,
+				ServiceTier:          mika.ServiceTier,
 				ConversationStarters: []byte("[]"),
-				PermissionMode: "public_to",
+				PermissionMode:       "public_to",
 			})
 			if err != nil {
 				return Team{}, fmt.Errorf("create missing %s agent: %w", role.Role, err)
 			}
 			if err := qtx.CreateAgentInvocationTarget(ctx, db.CreateAgentInvocationTargetParams{
-				AgentID: agent.ID,
+				AgentID:    agent.ID,
 				TargetType: "workspace",
-				TargetID: issue.WorkspaceID,
-				CreatedBy: mika.OwnerID,
+				TargetID:   project.WorkspaceID,
+				CreatedBy:  mika.OwnerID,
 			}); err != nil {
 				return Team{}, fmt.Errorf("grant workspace access to %s agent: %w", role.Role, err)
 			}
 			if _, err := qtx.AddSquadMember(ctx, db.AddSquadMemberParams{
-				SquadID: lockedTeam.SquadID,
-				MemberType: "agent",
-				MemberID: agent.ID,
-				Role: role.Role,
+				SquadID:     lockedTeam.SquadID,
+				MemberType:  "agent",
+				MemberID:    agent.ID,
+				Role:        role.Role,
 			}); err != nil {
 				return Team{}, fmt.Errorf("add missing %s agent to squad: %w", role.Role, err)
 			}
@@ -186,27 +254,12 @@ func (p *Provisioner) applyIssuePlan(
 				WHERE id = $1
 				  AND workspace_id = $4
 				  AND archived_at IS NULL
-			`, agentID, role.Description, role.Instructions, issue.WorkspaceID); err != nil {
+			`, agentID, role.Description, role.Instructions, project.WorkspaceID); err != nil {
 				return Team{}, fmt.Errorf("refresh %s agent profile: %w", role.Role, err)
 			}
 		}
 
-		capabilities, _ := json.Marshal(role.Capabilities)
-		responsibilities, _ := json.Marshal(role.Responsibilities)
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO autonomous_project_team_member (
-				team_id, role, agent_id, role_family, capabilities,
-				responsibilities, reason, active
-			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
-			ON CONFLICT (team_id, role) DO UPDATE
-			SET agent_id = EXCLUDED.agent_id,
-			    role_family = EXCLUDED.role_family,
-			    capabilities = EXCLUDED.capabilities,
-			    responsibilities = EXCLUDED.responsibilities,
-			    reason = EXCLUDED.reason,
-			    active = TRUE
-		`, lockedTeam.ID, role.Role, agentID, role.Family, capabilities, responsibilities, role.Reason); err != nil {
+		if err := upsertTeamMemberRegistry(ctx, tx, lockedTeam.ID, role, agentID); err != nil {
 			return Team{}, fmt.Errorf("upsert %s team registry entry: %w", role.Role, err)
 		}
 	}
@@ -235,21 +288,21 @@ func (p *Provisioner) applyIssuePlan(
 
 	analysisJSON, err := json.Marshal(desired)
 	if err != nil {
-		return Team{}, fmt.Errorf("encode issue team analysis: %w", err)
+		return Team{}, fmt.Errorf("encode team analysis: %w", err)
 	}
-	inputHash := "issue:" + util.UUIDToString(issue.ID) + ":" + sourceRevision
+	inputHash := sourceType + ":" + util.UUIDToString(sourceID) + ":" + sourceRevision
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO autonomous_project_team_analysis (
 			id, team_id, source_type, source_id, source_revision,
 			input_hash, planner_name, planner_model, plan
 		)
 		VALUES (
-			gen_random_uuid(), $1, 'issue', $2, $3,
-			$4, $5, NULLIF($6, ''), $7
+			gen_random_uuid(), $1, $2, $3, $4,
+			$5, $6, NULLIF($7, ''), $8
 		)
 		ON CONFLICT (team_id, source_type, source_id, source_revision) DO NOTHING
-	`, lockedTeam.ID, issue.ID, sourceRevision, inputHash, desired.PlannerName, desired.PlannerModel, analysisJSON); err != nil {
-		return Team{}, fmt.Errorf("record issue team analysis: %w", err)
+	`, lockedTeam.ID, sourceType, sourceID, sourceRevision, inputHash, desired.PlannerName, desired.PlannerModel, analysisJSON); err != nil {
+		return Team{}, fmt.Errorf("record team analysis: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
