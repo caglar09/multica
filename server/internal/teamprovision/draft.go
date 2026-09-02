@@ -461,14 +461,18 @@ func (p *Provisioner) ProvisionDraft(
 		}
 	}
 
+	// Project leads are intentionally limited by the core project contract to
+	// members or agents. The autonomous squad remains linked through
+	// autonomous_project_team.squad_id; expose its deterministic leader agent
+	// as the project lead rather than inventing an unsupported lead_type.
 	if _, err := tx.Exec(ctx, `
 		UPDATE project
-		SET lead_type = 'squad', lead_id = $3, updated_at = now()
+		SET lead_type = 'agent', lead_id = $3, updated_at = now()
 		WHERE id = $1
 		  AND workspace_id = $2
 		  AND lead_id IS NULL
-	`, projectID, workspaceID, squad.ID); err != nil {
-		return Team{}, fmt.Errorf("attach project team as project lead: %w", err)
+	`, projectID, workspaceID, leaderID); err != nil {
+		return Team{}, fmt.Errorf("attach autonomous team leader as project lead: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, `
