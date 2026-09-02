@@ -2,7 +2,6 @@ package teamprovision
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -158,4 +157,3 @@ func extractPlannerJSONObject(raw string) (string, error) {
 }
 
 var _ Planner = (*RuntimeBackedPlanner)(nil)
-var _ = errors.Is
