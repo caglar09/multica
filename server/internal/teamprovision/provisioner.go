@@ -264,6 +264,26 @@ func (p *Provisioner) EnsureProject(ctx context.Context, workspaceID, projectID 
 	if err := stampInitialTeamPlan(ctx, tx, teamID, plan); err != nil {
 		return Team{}, fmt.Errorf("stamp initial project team plan: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO autonomous_project_team_analysis (
+			id, team_id, source_type, source_id, source_revision,
+			input_hash, planner_name, planner_model, plan
+		)
+		VALUES (
+			gen_random_uuid(), $1, 'project', $2, 'initial',
+			$3, $4, NULLIF($5, ''), $6
+		)
+		ON CONFLICT (team_id, source_type, source_id, source_revision) DO NOTHING
+	`,
+		teamID,
+		projectID,
+		"project:"+util.UUIDToString(projectID)+":initial",
+		plan.PlannerName,
+		plan.PlannerModel,
+		planJSON,
+	); err != nil {
+		return Team{}, fmt.Errorf("record initial project team analysis: %w", err)
+	}
 
 	for _, role := range plan.Roles {
 		agentID := members[role.Role]
