@@ -542,7 +542,7 @@ func (s *Store) FailNodeByIssue(
 	return disposition, nodeKey, projectID, nil
 }
 
-func (s *ResumePlanAfterNodeRetry(
+func (s *Store) ResumePlanAfterNodeRetry(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
 ) error {
