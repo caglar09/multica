@@ -539,11 +539,6 @@ export function AgentTranscriptDialog({
       ? Math.max(0, (timeMs(selectedStep.startedAt) ?? runStartMs) - runStartMs)
       : undefined;
 
-  // Keyed on the run having produced nothing at all, not on the filtered view
-  // being empty — a filter that hides every step is not a runtime limitation.
-  const isAntigravityLiveEmpty =
-    isLive && steps.length === 0 && runtimeInfo?.provider === "antigravity";
-
   // Newest-first shows live events as PREPENDS, and Virtuoso items opt out of
   // native scroll anchoring (`overflow-anchor: none`), so without compensation
   // every 500ms flush shifts the reading position. Virtuoso's contract: a
@@ -1199,12 +1194,7 @@ export function AgentTranscriptDialog({
           <div className="flex min-w-0 flex-1 flex-col">
             {displayRows.length === 0 ? (
               <div className="flex h-full items-center justify-center text-body text-muted-foreground">
-                {isAntigravityLiveEmpty ? (
-                  <div className="flex max-w-md items-center gap-2 px-4 text-center">
-                    <Clock className="h-4 w-4 shrink-0" />
-                    {t(($) => $.transcript.antigravity_live_unavailable)}
-                  </div>
-                ) : isLive && steps.length === 0 ? (
+                {isLive && steps.length === 0 ? (
                   <div className="flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     {t(($) => $.transcript.waiting_events)}
