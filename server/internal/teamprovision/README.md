@@ -4,8 +4,9 @@ This package is the project-level organization layer for autonomous software
 delivery.
 
 The user supplies the project/product idea. Mika turns that intent into project
-and issue artifacts. Team composition itself is owned centrally by the
-server-side LLM planner, not by agent prompt choreography.
+and issue artifacts. Team composition itself is owned by a hidden control-plane
+planner that executes through Mika's selected daemon runtime/provider, not by
+agent prompt choreography or a separately configured server-side model.
 
 ```text
 User idea
@@ -14,7 +15,7 @@ User idea
 Mika -> Project / Issues
               |
               v
-       LLM Team Planner
+    Runtime Team Planner
               |
      validated TeamPlan
               |
@@ -76,8 +77,9 @@ Hard policy includes:
 - per-issue-revision plan caching/audit.
 
 Invalid model output gets one semantic repair attempt. When
-`MULTICA_AUTONOMOUS_TEAM_LLM_REQUIRED=true`, an unavailable/invalid planner
-fails closed instead of silently inventing a heuristic team.
+`MULTICA_AUTONOMOUS_TEAM_RUNTIME_REQUIRED=true`, an unavailable Mika runtime
+or invalid planner result fails closed instead of silently inventing a
+heuristic team.
 
 ## Prompt-injection boundary
 
@@ -104,8 +106,15 @@ Team reconciliation is add-only during an active project:
    not merely one LLM response.
 
 Generated specialists reuse Mika's runtime/model/thinking/service-tier for task
-execution. The control-plane team planner uses Multica's existing internal
-OpenAI-compatible `pkg/llm` client.
+execution. The control-plane Team Planner now follows the same rule: a hidden
+`kind=system` carrier inherits Mika's current runtime ID, runtime mode, model,
+thinking level and service tier, then runs through the normal daemon task path.
+This means Codex, Antigravity, OpenCode and custom runtime profiles can back team
+planning without separate `MULTICA_LLM_*` credentials.
+
+The hidden planner carrier does not copy Mika's MCP/Composio integrations. Its
+instruction is reasoning-only and JSON-only; backend validation remains the
+authority before any team mutation.
 
 ## Dynamic routing
 
@@ -139,26 +148,24 @@ The autonomous workflow must be enabled:
 MULTICA_AUTONOMOUS_WORKFLOW_ENABLED=true
 ```
 
-LLM-controlled team management defaults to fail-closed:
+Runtime-controlled team management defaults to fail-closed:
 
 ```env
-MULTICA_AUTONOMOUS_TEAM_LLM_REQUIRED=true
+MULTICA_AUTONOMOUS_TEAM_RUNTIME_REQUIRED=true
 MULTICA_AUTONOMOUS_TEAM_MAX_AGENTS=12
-MULTICA_AUTONOMOUS_TEAM_MODEL=
 ```
 
-The planner reuses the existing internal LLM configuration:
+No autonomous Team Planner provider/API-key configuration is required. Select
+Mika's runtime/tool in the normal Multica UI; every planning pass inherits that
+selection. If Mika is moved from Codex to Antigravity (or another runtime
+profile), the hidden planner carrier is rebound on its next planning request.
 
-```env
-MULTICA_LLM_API_KEY=
-MULTICA_LLM_BASE_URL=
-MULTICA_LLM_DEFAULT_MODEL=
-MULTICA_LLM_MAX_RETRIES=
-```
+`MULTICA_LLM_*` remains an independent optional server feature used by
+unrelated helpers such as chat auto-titling/follow-up suggestions. It is not
+used by autonomous team planning.
 
-`MULTICA_AUTONOMOUS_TEAM_MODEL` overrides the model only for team planning.
-An empty value uses `MULTICA_LLM_DEFAULT_MODEL`.
-
-Setting `MULTICA_AUTONOMOUS_TEAM_LLM_REQUIRED=false` permits the deterministic
-heuristic planner as a degraded fallback; that is intended for development, not
-for the fully LLM-managed mode.
+For upgrade compatibility,
+`MULTICA_AUTONOMOUS_TEAM_LLM_REQUIRED` is still read only when
+`MULTICA_AUTONOMOUS_TEAM_RUNTIME_REQUIRED` is unset. Setting the required flag
+to false permits the deterministic heuristic planner as a degraded development
+fallback.
