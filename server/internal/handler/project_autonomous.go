@@ -145,7 +145,85 @@ type AutonomousProjectResponse struct {
 	Workflows []AutonomousWorkflowResponse       `json:"workflows"`
 	Actions   []AutonomousActionResponse         `json:"actions"`
 	Activity  []AutonomousActivityResponse       `json:"activity"`
-	Decisions []AutonomousDecisionResponse       `json:"decisions"`
+	Decisions    []AutonomousDecisionResponse       `json:"decisions"`
+	Plan         *AutonomousProjectPlanResponse      `json:"plan"`
+	QualityGates []AutonomousQualityGateResponse     `json:"quality_gates"`
+	Escalations  []AutonomousEscalationResponse      `json:"escalations"`
+	Budget       *AutonomousBudgetResponse            `json:"budget"`
+}
+
+type AutonomousProjectPlanNodeResponse struct {
+	ID                  string          `json:"id"`
+	Key                 string          `json:"key"`
+	Kind                string          `json:"kind"`
+	Title               string          `json:"title"`
+	Status              string          `json:"status"`
+	Priority            int             `json:"priority"`
+	Risk                string          `json:"risk"`
+	RequiredRoleFamily  *string         `json:"required_role_family"`
+	AssignedRole        *string         `json:"assigned_role"`
+	AssignedAgentID     *string         `json:"assigned_agent_id"`
+	MaterializedIssueID *string         `json:"materialized_issue_id"`
+	Attempt             int             `json:"attempt"`
+	MaxAttempts         int             `json:"max_attempts"`
+	AcceptanceCriteria  json.RawMessage `json:"acceptance_criteria"`
+	UpdatedAt           string          `json:"updated_at"`
+}
+
+type AutonomousProjectPlanEdgeResponse struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Type string `json:"type"`
+}
+
+type AutonomousProjectPlanResponse struct {
+	ID            string                              `json:"id"`
+	Revision      int64                               `json:"revision"`
+	Goal          string                              `json:"goal"`
+	Status        string                              `json:"status"`
+	PlannerName   string                              `json:"planner_name"`
+	PlannerModel  *string                             `json:"planner_model"`
+	Specification json.RawMessage                     `json:"specification"`
+	Policy        json.RawMessage                     `json:"policy"`
+	Nodes         []AutonomousProjectPlanNodeResponse `json:"nodes"`
+	Edges         []AutonomousProjectPlanEdgeResponse `json:"edges"`
+	UpdatedAt     string                              `json:"updated_at"`
+}
+
+type AutonomousQualityGateResponse struct {
+	ID        string          `json:"id"`
+	NodeID    string          `json:"node_id"`
+	GateType  string          `json:"gate_type"`
+	Status    string          `json:"status"`
+	Required  bool            `json:"required"`
+	Evidence  json.RawMessage `json:"evidence"`
+	LastError *string         `json:"last_error"`
+	UpdatedAt string          `json:"updated_at"`
+}
+
+type AutonomousEscalationResponse struct {
+	ID         string          `json:"id"`
+	NodeID     *string         `json:"node_id"`
+	Category   string          `json:"category"`
+	Status     string          `json:"status"`
+	Severity   string          `json:"severity"`
+	Summary    string          `json:"summary"`
+	Context    json.RawMessage `json:"context"`
+	Resolution json.RawMessage `json:"resolution,omitempty"`
+	OpenedAt   string          `json:"opened_at"`
+	ResolvedAt *string         `json:"resolved_at"`
+}
+
+type AutonomousBudgetResponse struct {
+	TokenLimit         *int64 `json:"token_limit"`
+	RuntimeSecondsLimit *int64 `json:"runtime_seconds_limit"`
+	CostMicrounitsLimit *int64 `json:"cost_microunits_limit"`
+	MaxParallelNodes   int    `json:"max_parallel_nodes"`
+	MaxTotalAttempts   int    `json:"max_total_attempts"`
+	TokensUsed         int64  `json:"tokens_used"`
+	RuntimeSecondsUsed int64  `json:"runtime_seconds_used"`
+	CostMicrounitsUsed int64  `json:"cost_microunits_used"`
+	TotalAttempts      int    `json:"total_attempts"`
 }
 
 type autonomousActivitySortable struct {
@@ -201,6 +279,8 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		Actions:   []AutonomousActionResponse{},
 		Activity:  []AutonomousActivityResponse{},
 		Decisions: []AutonomousDecisionResponse{},
+		QualityGates: []AutonomousQualityGateResponse{},
+		Escalations: []AutonomousEscalationResponse{},
 		Health: AutonomousProjectHealthResponse{Status: "idle"},
 	}
 
@@ -431,6 +511,181 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		resp.Team = &team
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to load autonomous project team")
+		return
+	}
+
+	// Project OS projection: durable plan/DAG, evidence, escalations and budget.
+	var projectPlanID pgtype.UUID
+	var projectPlan AutonomousProjectPlanResponse
+	var projectPlanModel pgtype.Text
+	var specJSON, policyJSON []byte
+	var projectPlanUpdatedAt time.Time
+	planErr := h.DB.QueryRow(r.Context(), `
+		SELECT id, revision, goal, status, planner_name, planner_model,
+		       specification, policy, updated_at
+		FROM autonomous_project_plan
+		WHERE workspace_id = $1 AND project_id = $2
+		ORDER BY revision DESC
+		LIMIT 1
+	`, workspaceID, projectID).Scan(
+		&projectPlanID, &projectPlan.Revision, &projectPlan.Goal, &projectPlan.Status,
+		&projectPlan.PlannerName, &projectPlanModel, &specJSON, &policyJSON, &projectPlanUpdatedAt,
+	)
+	if planErr == nil {
+		resp.Enabled = true
+		projectPlan.ID = uuidToString(projectPlanID)
+		projectPlan.PlannerModel = nullableTextString(projectPlanModel)
+		projectPlan.Specification = append(json.RawMessage(nil), specJSON...)
+		projectPlan.Policy = append(json.RawMessage(nil), policyJSON...)
+		projectPlan.UpdatedAt = projectPlanUpdatedAt.UTC().Format(time.RFC3339Nano)
+		projectPlan.Nodes = []AutonomousProjectPlanNodeResponse{}
+		projectPlan.Edges = []AutonomousProjectPlanEdgeResponse{}
+
+		nodeRows, queryErr := h.DB.Query(r.Context(), `
+			SELECT id, node_key, kind, title, status, priority, risk_level,
+			       required_role_family, assigned_role, assigned_agent_id,
+			       materialized_issue_id, attempt, max_attempts, acceptance_criteria, updated_at
+			FROM autonomous_project_plan_node
+			WHERE plan_id = $1
+			ORDER BY priority DESC, created_at ASC
+		`, projectPlanID)
+		if queryErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load autonomous project plan nodes")
+			return
+		}
+		for nodeRows.Next() {
+			var node AutonomousProjectPlanNodeResponse
+			var nodeID, agentID, issueID pgtype.UUID
+			var family, assignedRole pgtype.Text
+			var criteria []byte
+			var updatedAt time.Time
+			if err := nodeRows.Scan(
+				&nodeID, &node.Key, &node.Kind, &node.Title, &node.Status, &node.Priority, &node.Risk,
+				&family, &assignedRole, &agentID, &issueID, &node.Attempt, &node.MaxAttempts,
+				&criteria, &updatedAt,
+			); err != nil {
+				nodeRows.Close()
+				writeError(w, http.StatusInternalServerError, "failed to decode autonomous project plan node")
+				return
+			}
+			node.ID = uuidToString(nodeID)
+			node.RequiredRoleFamily = nullableTextString(family)
+			node.AssignedRole = nullableTextString(assignedRole)
+			node.AssignedAgentID = nullableUUIDString(agentID)
+			node.MaterializedIssueID = nullableUUIDString(issueID)
+			node.AcceptanceCriteria = append(json.RawMessage(nil), criteria...)
+			node.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
+			projectPlan.Nodes = append(projectPlan.Nodes, node)
+		}
+		nodeRows.Close()
+
+		edgeRows, queryErr := h.DB.Query(r.Context(), `
+			SELECT from_node_key, to_node_key, dependency_type
+			FROM autonomous_project_plan_edge
+			WHERE plan_id = $1
+			ORDER BY created_at ASC
+		`, projectPlanID)
+		if queryErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load autonomous project plan edges")
+			return
+		}
+		for edgeRows.Next() {
+			var edge AutonomousProjectPlanEdgeResponse
+			if edgeRows.Scan(&edge.From, &edge.To, &edge.Type) == nil {
+				projectPlan.Edges = append(projectPlan.Edges, edge)
+			}
+		}
+		edgeRows.Close()
+		resp.Plan = &projectPlan
+	} else if !errors.Is(planErr, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous project plan")
+		return
+	}
+
+	gateRows, gateErr := h.DB.Query(r.Context(), `
+		SELECT g.id, g.node_id, g.gate_type, g.status, g.required,
+		       g.evidence, g.last_error, g.updated_at
+		FROM autonomous_project_quality_gate_run g
+		WHERE g.workspace_id = $1 AND g.project_id = $2
+		ORDER BY g.updated_at DESC
+		LIMIT 100
+	`, workspaceID, projectID)
+	if gateErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous quality gates")
+		return
+	}
+	for gateRows.Next() {
+		var gate AutonomousQualityGateResponse
+		var id, nodeID pgtype.UUID
+		var lastError pgtype.Text
+		var evidence []byte
+		var updatedAt time.Time
+		if gateRows.Scan(&id, &nodeID, &gate.GateType, &gate.Status, &gate.Required,
+			&evidence, &lastError, &updatedAt) == nil {
+			gate.ID = uuidToString(id)
+			gate.NodeID = uuidToString(nodeID)
+			gate.Evidence = append(json.RawMessage(nil), evidence...)
+			gate.LastError = nullableTextString(lastError)
+			gate.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
+			resp.QualityGates = append(resp.QualityGates, gate)
+		}
+	}
+	gateRows.Close()
+
+	escalationRows, escalationErr := h.DB.Query(r.Context(), `
+		SELECT id, node_id, category, status, severity, summary, context,
+		       resolution, opened_at, resolved_at
+		FROM autonomous_project_escalation
+		WHERE workspace_id = $1 AND project_id = $2
+		ORDER BY CASE WHEN status IN ('open','acknowledged') THEN 0 ELSE 1 END,
+		         opened_at DESC
+		LIMIT 100
+	`, workspaceID, projectID)
+	if escalationErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous escalations")
+		return
+	}
+	for escalationRows.Next() {
+		var item AutonomousEscalationResponse
+		var id, nodeID pgtype.UUID
+		var contextJSON, resolutionJSON []byte
+		var openedAt time.Time
+		var resolvedAt pgtype.Timestamptz
+		if escalationRows.Scan(&id, &nodeID, &item.Category, &item.Status, &item.Severity,
+			&item.Summary, &contextJSON, &resolutionJSON, &openedAt, &resolvedAt) == nil {
+			item.ID = uuidToString(id)
+			item.NodeID = nullableUUIDString(nodeID)
+			item.Context = append(json.RawMessage(nil), contextJSON...)
+			if len(resolutionJSON) > 0 {
+				item.Resolution = append(json.RawMessage(nil), resolutionJSON...)
+			}
+			item.OpenedAt = openedAt.UTC().Format(time.RFC3339Nano)
+			item.ResolvedAt = nullableTimestampString(resolvedAt)
+			resp.Escalations = append(resp.Escalations, item)
+		}
+	}
+	escalationRows.Close()
+
+	var tokenLimit, runtimeLimit, costLimit pgtype.Int8
+	var budget AutonomousBudgetResponse
+	budgetErr := h.DB.QueryRow(r.Context(), `
+		SELECT token_limit, runtime_seconds_limit, cost_microunits_limit,
+		       max_parallel_nodes, max_total_attempts, tokens_used,
+		       runtime_seconds_used, cost_microunits_used, total_attempts
+		FROM autonomous_project_budget
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID).Scan(
+		&tokenLimit, &runtimeLimit, &costLimit, &budget.MaxParallelNodes,
+		&budget.MaxTotalAttempts, &budget.TokensUsed, &budget.RuntimeSecondsUsed,
+		&budget.CostMicrounitsUsed, &budget.TotalAttempts,
+	)
+	if budgetErr == nil {
+		if tokenLimit.Valid { v := tokenLimit.Int64; budget.TokenLimit = &v }
+		if runtimeLimit.Valid { v := runtimeLimit.Int64; budget.RuntimeSecondsLimit = &v }
+		if costLimit.Valid { v := costLimit.Int64; budget.CostMicrounitsLimit = &v }
+		resp.Budget = &budget
+	} else if !errors.Is(budgetErr, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous project budget")
 		return
 	}
 
@@ -1057,4 +1312,62 @@ func (h *Handler) RetryProjectAutonomousAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"retried": true})
+}
+
+func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	escalationID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "escalationId"), "escalation id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	userID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		Decision string `json:"decision"`
+		Note     string `json:"note,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid escalation resolution")
+		return
+	}
+	req.Decision = strings.ToLower(strings.TrimSpace(req.Decision))
+	if req.Decision != "approved" && req.Decision != "rejected" {
+		writeError(w, http.StatusBadRequest, "decision must be approved or rejected")
+		return
+	}
+	resolution, _ := json.Marshal(map[string]any{
+		"decision": req.Decision,
+		"note": strings.TrimSpace(req.Note),
+		"resolved_by": uuidToString(userID),
+	})
+	tag, err := h.DB.Exec(r.Context(), `
+		UPDATE autonomous_project_escalation
+		SET status = 'resolved',
+		    resolution = $4,
+		    resolved_at = now()
+		WHERE id = $1
+		  AND workspace_id = $2
+		  AND project_id = $3
+		  AND category = 'approval_required'
+		  AND status IN ('open', 'acknowledged')
+	`, escalationID, workspaceID, projectID, resolution)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve autonomous escalation")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "open approval escalation not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "decision": req.Decision})
 }
