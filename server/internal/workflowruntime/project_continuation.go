@@ -320,13 +320,15 @@ func (r *Runtime) ensureProjectCoordinator(ctx context.Context, workspaceID, pro
 		nullableText(mika.ThinkingLevel), nullableText(mika.ServiceTier), customEnv, customArgs, autonomousCoordinatorInstructions); err != nil {
 		return db.Agent{}, fmt.Errorf("inherit Mika execution profile for autonomous project coordinator: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_skill WHERE agent_id = $1`, carrier.ID); err != nil {
+		return db.Agent{}, fmt.Errorf("clear autonomous project coordinator workspace skills: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `
-		DELETE FROM agent_skill WHERE agent_id = $1;
 		INSERT INTO agent_skill (agent_id, skill_id, enabled)
 		SELECT $1, skill_id, enabled
 		FROM agent_skill
 		WHERE agent_id = $2 AND enabled = TRUE
-		ON CONFLICT (agent_id, skill_id) DO UPDATE SET enabled = EXCLUDED.enabled;
+		ON CONFLICT (agent_id, skill_id) DO UPDATE SET enabled = EXCLUDED.enabled
 	`, carrier.ID, mika.ID); err != nil {
 		return db.Agent{}, fmt.Errorf("inherit Mika workspace skills for autonomous project coordinator: %w", err)
 	}
