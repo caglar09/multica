@@ -179,6 +179,15 @@ func (HeuristicPlanner) ImplementationRole(issue db.Issue, plan Plan) string {
 	return preferRole(plan, plan.ImplementationRole)
 }
 
+func IsImplementationRole(role string) bool {
+	switch role {
+	case RoleBackendEngineer, RoleFrontendEngineer, RoleMobileEngineer, RoleFullstackEngineer:
+		return true
+	default:
+		return false
+	}
+}
+
 func preferRole(plan Plan, requested string) string {
 	for _, role := range plan.Roles {
 		if role.Role == requested {
