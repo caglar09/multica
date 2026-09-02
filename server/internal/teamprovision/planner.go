@@ -99,33 +99,39 @@ func (HeuristicPlanner) PlanProject(project db.Project) Plan {
 		roleSpec(RoleProductManager),
 		roleSpec(RoleSolutionArchitect),
 	}
-	switch {
-	case mobile:
+	engineerDomains := 0
+	if mobile {
 		roles = append(roles, roleSpec(RoleMobileEngineer))
-	case frontend && backend:
-		roles = append(roles, roleSpec(RoleFrontendEngineer), roleSpec(RoleBackendEngineer))
-	case frontend:
+		engineerDomains++
+	}
+	if frontend {
 		roles = append(roles, roleSpec(RoleFrontendEngineer))
-	case backend:
+		engineerDomains++
+	}
+	if backend {
 		roles = append(roles, roleSpec(RoleBackendEngineer))
-	default:
+		engineerDomains++
+	}
+	if engineerDomains == 0 {
+		roles = append(roles, roleSpec(RoleFullstackEngineer))
+	} else if engineerDomains > 1 {
+		// Cross-cutting issues such as auth, release plumbing or shared contracts
+		// should not be forced onto one specialist merely because the project
+		// spans several technical surfaces.
 		roles = append(roles, roleSpec(RoleFullstackEngineer))
 	}
 	roles = append(roles, roleSpec(RoleCodeReviewer), roleSpec(RoleQAEngineer))
 
 	implementation := RoleFullstackEngineer
 	switch {
+	case engineerDomains > 1:
+		implementation = RoleFullstackEngineer
 	case mobile:
 		implementation = RoleMobileEngineer
-	case backend && !frontend:
+	case backend:
 		implementation = RoleBackendEngineer
-	case frontend && !backend:
+	case frontend:
 		implementation = RoleFrontendEngineer
-	case frontend && backend:
-		implementation = RoleFullstackEngineer
-		// The project needs both specialties. Individual issues are routed by
-		// ImplementationRole below; fullstack is only the plan-level fallback.
-		roles = append(roles, roleSpec(RoleFullstackEngineer))
 	}
 
 	return Plan{
