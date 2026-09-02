@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -19,6 +18,65 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+func (r *Runtime) processAutomaticTeamConfiguration(ctx context.Context) error {
+	if r == nil || !r.config.AutoConfigureTeam || r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT d.workspace_id, d.project_id, a.owner_id
+		FROM autonomous_project_team_draft d
+		JOIN agent a
+		  ON a.workspace_id = d.workspace_id
+		 AND a.system_key = $1
+		 AND a.archived_at IS NULL
+		WHERE d.status = 'awaiting_configuration'
+		ORDER BY d.updated_at ASC
+		LIMIT 10
+	`, service.MikaSystemKey)
+	if err != nil {
+		return fmt.Errorf("query team drafts for automatic configuration: %w", err)
+	}
+	type draft struct{ workspaceID, projectID, ownerID pgtype.UUID }
+	items := make([]draft, 0, 10)
+	for rows.Next() {
+		var item draft
+		if err := rows.Scan(&item.workspaceID, &item.projectID, &item.ownerID); err != nil {
+			rows.Close()
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, item := range items {
+		tag, err := r.pool.Exec(ctx, `
+			UPDATE autonomous_project_team_draft
+			SET status = 'provisioning',
+			    selections = '{}'::jsonb,
+			    confirmed_at = now(),
+			    confirmed_by = $3,
+			    updated_at = now()
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND status = 'awaiting_configuration'
+		`, item.workspaceID, item.projectID, item.ownerID)
+		if err != nil {
+			return fmt.Errorf("auto-configure autonomous team draft: %w", err)
+		}
+		if tag.RowsAffected() > 0 {
+			slog.Info("autonomous team draft auto-configured from Mika runtime",
+				"workspace_id", util.UUIDToString(item.workspaceID),
+				"project_id", util.UUIDToString(item.projectID),
+			)
+		}
+	}
+	return nil
+}
 
 func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 	if r.projectPlanner == nil || r.projectStore == nil || r.team == nil {
