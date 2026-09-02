@@ -78,3 +78,6 @@ data/
 # Python (agent tooling)
 __pycache__/
 *.pyc
+
+# Local support bundles
+multica-support-bundle-*.zip
