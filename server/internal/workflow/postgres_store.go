@@ -142,7 +142,7 @@ func (s *PostgresStore) Apply(request ApplyRequest) (ApplyResult, error) {
 		RETURNING
 			id, workflow_name, workflow_version, workspace_id, project_id, issue_id,
 			state, revision, owner_agent_id, reviewer_agent_id, accountable_user_id,
-			review_cycles
+			review_cycles, updated_at
 	`, runID, request.To, request.From, request.ExpectedRevision))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApplyResult{}, ErrRevisionConflict
