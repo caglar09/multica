@@ -72,7 +72,11 @@ func (e *MikaTeamPlanExecutor) ExecuteTeamPlan(
 		AgentID:     carrier.ID,
 		CreatorID:   carrier.OwnerID,
 		Title:       "Autonomous Team Planning",
-		ProjectID:   input.Project.ID,
+		// Deliberately do not bind the hidden control-plane session to the
+		// project. Project requirements are already in the planning prompt, and
+		// binding would make a reasoning-only task contend for the project's
+		// local-directory/worktree serialization.
+		ProjectID: pgtype.UUID{},
 	})
 	if err != nil {
 		return teamprovision.RuntimePlanExecution{}, fmt.Errorf("create hidden team planner session: %w", err)
