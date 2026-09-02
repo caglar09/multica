@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,7 @@ type TeamDraft struct {
 type RoleRuntimeSelection struct {
 	Role            string
 	RuntimeID       pgtype.UUID
+	Model           string
 	SkillIDs        []pgtype.UUID
 	SkillsSpecified bool
 }
@@ -173,8 +175,14 @@ func selectionJSON(assignments []RoleRuntimeSelection) []byte {
 				skills = append(skills, util.UUIDToString(skillID))
 			}
 		}
+		skillMode := "inherit"
+		if assignment.SkillsSpecified {
+			skillMode = "custom"
+		}
 		payload[assignment.Role] = map[string]any{
 			"runtime_id": util.UUIDToString(assignment.RuntimeID),
+			"model": strings.TrimSpace(assignment.Model),
+			"skill_mode": skillMode,
 			"skill_ids": skills,
 		}
 	}
@@ -318,6 +326,11 @@ func (p *Provisioner) ProvisionDraft(
 			model = mika.Model
 			thinking = mika.ThinkingLevel
 			serviceTier = mika.ServiceTier
+		}
+		if hasAssignment {
+			if selectedModel := strings.TrimSpace(assignment.Model); selectedModel != "" {
+				model = pgtype.Text{String: selectedModel, Valid: true}
+			}
 		}
 
 		agent, err := qtx.CreateAgent(ctx, db.CreateAgentParams{
