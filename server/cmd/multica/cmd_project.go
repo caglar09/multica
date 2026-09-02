@@ -138,6 +138,12 @@ func init() {
 	projectCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
 	projectCreateCmd.Flags().String("due-date", "", "Due date (calendar day, YYYY-MM-DD)")
 	projectCreateCmd.Flags().StringArray("repo", nil, "Attach a github_repo resource by URL (may be repeated)")
+	projectCreateCmd.Flags().Bool("autonomous", false, "Create as an autonomous software project and start Project Bootstrap")
+	projectCreateCmd.Flags().String("autonomy-level", "development", "Autonomy level: assisted, development, delivery, or closed_loop (with --autonomous)")
+	projectCreateCmd.Flags().String("brief", "", "Autonomous project brief (with --autonomous)")
+	projectCreateCmd.Flags().String("knowledge", "", "PRD / project knowledge text to seed Project Brain (with --autonomous)")
+	projectCreateCmd.Flags().Int("max-parallel-nodes", 4, "Maximum parallel Project OS nodes (server policy remains the hard ceiling)")
+	projectCreateCmd.Flags().Int("max-project-attempts", 100, "Maximum Project OS attempts (server policy remains the hard ceiling)")
 	projectCreateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// project resource list
@@ -343,6 +349,53 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 	}
 	if v, _ := cmd.Flags().GetString("due-date"); v != "" {
 		body["due_date"] = v
+	}
+
+	if autonomous, _ := cmd.Flags().GetBool("autonomous"); autonomous {
+		level, _ := cmd.Flags().GetString("autonomy-level")
+		level = strings.TrimSpace(level)
+		switch level {
+		case "assisted", "development", "delivery", "closed_loop":
+		default:
+			return fmt.Errorf("invalid --autonomy-level %q; valid values: assisted, development, delivery, closed_loop", level)
+		}
+		maxParallel, _ := cmd.Flags().GetInt("max-parallel-nodes")
+		maxAttempts, _ := cmd.Flags().GetInt("max-project-attempts")
+		if maxParallel <= 0 {
+			return fmt.Errorf("--max-parallel-nodes must be greater than zero")
+		}
+		if maxAttempts <= 0 {
+			return fmt.Errorf("--max-project-attempts must be greater than zero")
+		}
+		brief, _ := cmd.Flags().GetString("brief")
+		knowledge, _ := cmd.Flags().GetString("knowledge")
+		knowledgeItems := []map[string]any{}
+		if strings.TrimSpace(knowledge) != "" {
+			knowledgeItems = append(knowledgeItems, map[string]any{
+				"kind": "prd",
+				"title": "Project bootstrap knowledge",
+				"content": strings.TrimSpace(knowledge),
+			})
+		}
+		// Approval defaults are intentionally conservative. The project can
+		// request stricter policy in the UI/API, while the server remains the
+		// final safety ceiling/floor.
+		body["bootstrap"] = map[string]any{
+			"autonomy_mode": "autonomous",
+			"autonomy_level": level,
+			"brief": strings.TrimSpace(brief),
+			"knowledge": knowledgeItems,
+			"approvals": map[string]bool{
+				"database_migration": true,
+				"production_deploy": true,
+				"major_dependency": true,
+				"critical_risk": true,
+			},
+			"budget": map[string]int{
+				"max_parallel_nodes": maxParallel,
+				"max_total_attempts": maxAttempts,
+			},
+		}
 	}
 
 	// Bundle resources into the create payload so the server attaches them in
