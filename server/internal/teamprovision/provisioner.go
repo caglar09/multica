@@ -43,6 +43,18 @@ func (t Team) RoleSpec(role string) (RoleSpec, bool) {
 	return RoleSpec{}, false
 }
 
+func (t Team) AgentByFamily(family string) (pgtype.UUID, RoleSpec, bool) {
+	for _, spec := range t.Plan.Roles {
+		if spec.Family != family {
+			continue
+		}
+		if id, ok := t.Agent(spec.Role); ok {
+			return id, spec, true
+		}
+	}
+	return pgtype.UUID{}, RoleSpec{}, false
+}
+
 func (t Team) RoleForAgent(agentID pgtype.UUID) (string, bool) {
 	if !agentID.Valid {
 		return "", false
