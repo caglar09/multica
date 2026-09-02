@@ -95,6 +95,37 @@ export interface AutonomousTeamPlan {
   roles?: AutonomousTeamPlanRole[];
 }
 
+export interface AutonomousTeamDraft {
+  status: "awaiting_configuration" | "provisioning";
+  planner_name: string;
+  planner_model: string | null;
+  plan: AutonomousTeamPlan;
+  default_runtime_id: string | null;
+  default_skill_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutonomousRuntimeOption {
+  id: string;
+  name: string;
+  provider: string;
+  runtime_mode: string;
+  status: string;
+}
+
+export interface AutonomousSkillOption {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface AutonomousRoleRuntimeAssignment {
+  role: string;
+  runtime_id: string;
+  skill_ids: string[];
+}
+
 export interface AutonomousDecision {
   id: string;
   source_type: string;
@@ -117,6 +148,9 @@ export interface AutonomousProjectSnapshot {
   enabled: boolean;
   control: AutonomousProjectControl;
   health: AutonomousProjectHealth;
+  draft: AutonomousTeamDraft | null;
+  runtimes: AutonomousRuntimeOption[];
+  skills: AutonomousSkillOption[];
   team: AutonomousTeam | null;
   workflows: AutonomousWorkflowRun[];
   actions: AutonomousWorkflowAction[];
