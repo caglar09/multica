@@ -94,6 +94,8 @@ func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc 
 	}
 	bus.Subscribe(protocol.EventTaskCompleted, r.onTaskCompleted)
 	bus.Subscribe(protocol.EventTaskFailed, r.onTaskFailed)
+	bus.Subscribe(protocol.EventIssueDeleted, r.onIssueDeleted)
+	bus.Subscribe(protocol.EventWorkspaceDeleted, r.onWorkspaceDeleted)
 
 	worker := workflow.NewActionWorker(store, r, workflow.WorkerOptions{
 		PollInterval: cfg.PollInterval,
@@ -296,6 +298,98 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 		WorkspaceID: run.WorkspaceID,
 		TaskID:      util.UUIDToString(terminalTaskID),
 	})
+}
+
+func (r *Runtime) onIssueDeleted(event events.Event) {
+	payload, _ := event.Payload.(map[string]any)
+	issueID, _ := payload["issue_id"].(string)
+	if issueID == "" || event.WorkspaceID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.cleanupWorkflowIssue(ctx, event.WorkspaceID, issueID); err != nil {
+		slog.Warn("autonomous workflow issue cleanup failed", "issue_id", issueID, "error", err)
+	}
+}
+
+func (r *Runtime) onWorkspaceDeleted(event events.Event) {
+	if event.WorkspaceID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	workspaceID, err := util.ParseUUID(event.WorkspaceID)
+	if err != nil {
+		return
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		slog.Warn("autonomous workflow workspace cleanup begin failed", "error", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_workflow_action
+		WHERE run_id IN (SELECT id FROM autonomous_workflow_run WHERE workspace_id = $1)
+	`, workspaceID); err == nil {
+		_, err = tx.Exec(ctx, `
+			DELETE FROM autonomous_workflow_processed_event
+			WHERE run_id IN (SELECT id FROM autonomous_workflow_run WHERE workspace_id = $1)
+		`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `DELETE FROM autonomous_workflow_run WHERE workspace_id = $1`, workspaceID)
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		slog.Warn("autonomous workflow workspace cleanup failed", "workspace_id", event.WorkspaceID, "error", err)
+	}
+}
+
+func (r *Runtime) cleanupWorkflowIssue(ctx context.Context, workspaceIDValue, issueIDValue string) error {
+	workspaceID, err := util.ParseUUID(workspaceIDValue)
+	if err != nil {
+		return err
+	}
+	issueID, err := util.ParseUUID(issueIDValue)
+	if err != nil {
+		return err
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_workflow_action
+		WHERE run_id IN (
+			SELECT id FROM autonomous_workflow_run
+			WHERE workspace_id = $1 AND issue_id = $2
+		)
+	`, workspaceID, issueID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_workflow_processed_event
+		WHERE run_id IN (
+			SELECT id FROM autonomous_workflow_run
+			WHERE workspace_id = $1 AND issue_id = $2
+		)
+	`, workspaceID, issueID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_workflow_run
+		WHERE workspace_id = $1 AND issue_id = $2
+	`, workspaceID, issueID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *Runtime) onIssueEvent(event events.Event) {
