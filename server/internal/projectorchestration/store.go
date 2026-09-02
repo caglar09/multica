@@ -331,7 +331,7 @@ func (s *Store) AppendPlanDelta(
 				workspace_id, project_id, plan_id, entry_type, subject, content,
 				source_type, source_id, confidence, created_by_type
 			)
-			SELECT $1, $2, $3, 'discovered_work', $4, $5,
+			SELECT $1, $2, $3, 'fact', $4, $5,
 			       'discovered_issue', $6, 0.9, 'agent'
 			WHERE NOT EXISTS (
 				SELECT 1
@@ -1352,7 +1352,7 @@ func (s *Store) StartExternalNode(
 		  AND n.node_key = $3
 		  AND n.status = 'ready'
 		  AND n.attempt < n.max_attempts
-		  AND p.status = 'active'
+		  AND p.status IN ('active', 'blocked')
 	`, workspaceID, projectID, nodeKey)
 	if err != nil {
 		return pgtype.UUID{}, pgtype.UUID{}, err
@@ -1374,6 +1374,13 @@ func (s *Store) StartExternalNode(
 		SET total_attempts = total_attempts + 1, updated_at = now()
 		WHERE workspace_id = $1 AND project_id = $2
 	`, workspaceID, projectID); err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status = 'active', updated_at = now()
+		WHERE id = $1 AND status = 'blocked'
+	`, planID); err != nil {
 		return pgtype.UUID{}, pgtype.UUID{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1412,7 +1419,7 @@ func (s *Store) CompleteExternalNode(
 		SET status = 'completed', updated_at = now()
 		WHERE p.workspace_id = $1
 		  AND p.project_id = $2
-		  AND p.status = 'active'
+		  AND p.status IN ('active', 'blocked')
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM autonomous_project_plan_node n
