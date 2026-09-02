@@ -27,7 +27,9 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-const softwareDevelopmentWorkflow = "software-development"\n\nconst autonomousPlanningTimeout = 3 * time.Minute
+const softwareDevelopmentWorkflow = "software-development"
+
+const autonomousPlanningTimeout = 3 * time.Minute
 
 type Config struct {
 	Enabled         bool
