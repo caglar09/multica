@@ -177,3 +177,9 @@ type PlannedNode struct {
 	AssignedRole        string
 	AssignedAgentID     string
 }
+
+type BlockedNode struct {
+	PlannedNode
+	Category string
+	Reason   string
+}
