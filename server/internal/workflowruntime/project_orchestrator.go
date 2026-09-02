@@ -197,6 +197,92 @@ func (r *Runtime) refreshRepositoryIntelligence(
 	return err
 }
 
+func bootstrapBrainEntryType(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "requirements":
+		return "requirement"
+	case "architecture", "api_spec":
+		return "architecture_decision"
+	case "design", "prd":
+		return "product_decision"
+	default:
+		return "fact"
+	}
+}
+
+func (r *Runtime) seedProjectBootstrapBrain(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	createdBy pgtype.UUID,
+	brief string,
+	items []projectorchestration.PlanningContextItem,
+) error {
+	type entry struct {
+		entryType string
+		subject   string
+		content   string
+		sourceID  string
+	}
+	entries := make([]entry, 0, len(items)+1)
+	if trimmed := strings.TrimSpace(brief); trimmed != "" {
+		entries = append(entries, entry{
+			entryType: "fact",
+			subject:   "Project brief",
+			content:   trimmed,
+			sourceID:  "brief",
+		})
+	}
+	for i, item := range items {
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		subject := strings.TrimSpace(item.Title)
+		if subject == "" {
+			subject = "Bootstrap knowledge"
+		}
+		sourceID := fmt.Sprintf("%s:%d", strings.ToLower(strings.TrimSpace(item.Type)), i)
+		entries = append(entries, entry{
+			entryType: bootstrapBrainEntryType(item.Type),
+			subject:   subject,
+			content:   content,
+			sourceID:  sourceID,
+		})
+	}
+
+	for _, item := range entries {
+		contentJSON, _ := json.Marshal(map[string]any{
+			"text": item.content,
+			"source": "project_bootstrap",
+		})
+		createdByType := "system"
+		var createdByID pgtype.UUID
+		if createdBy.Valid {
+			createdByType = "member"
+			createdByID = createdBy
+		}
+		if _, err := r.pool.Exec(ctx, `
+			INSERT INTO autonomous_project_brain_entry (
+				workspace_id, project_id, entry_type, subject, content,
+				source_type, source_id, confidence, created_by_type, created_by_id
+			)
+			SELECT $1, $2, $3, $4, $5, 'bootstrap', $6, 1.0, $7, $8
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM autonomous_project_brain_entry
+				WHERE workspace_id = $1
+				  AND project_id = $2
+				  AND source_type = 'bootstrap'
+				  AND source_id = $6
+				  AND superseded_by IS NULL
+			)
+		`, workspaceID, projectID, item.entryType, item.subject, contentJSON, item.sourceID, createdByType, createdByID); err != nil {
+			return fmt.Errorf("seed bootstrap Project Brain entry %q: %w", item.subject, err)
+		}
+	}
+	return nil
+}
+
 func (r *Runtime) loadProjectPlanningBootstrap(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
@@ -205,11 +291,12 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 	var level string
 	var brief string
 	var knowledgeJSON, approvalsJSON, budgetJSON []byte
+	var createdBy pgtype.UUID
 	err := r.pool.QueryRow(ctx, `
-		SELECT autonomy_level, brief, knowledge, policy, budget
+		SELECT autonomy_level, brief, knowledge, policy, budget, created_by
 		FROM autonomous_project_bootstrap
 		WHERE workspace_id = $1 AND project_id = $2 AND autonomy_mode = 'autonomous'
-	`, workspaceID, projectID).Scan(&level, &brief, &knowledgeJSON, &approvalsJSON, &budgetJSON)
+	`, workspaceID, projectID).Scan(&level, &brief, &knowledgeJSON, &approvalsJSON, &budgetJSON, &createdBy)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil, nil, requested, nil
@@ -237,6 +324,10 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 				Content: strings.TrimSpace(item.Content),
 			})
 		}
+	}
+
+	if err := r.seedProjectBootstrapBrain(ctx, workspaceID, projectID, createdBy, brief, contextItems); err != nil {
+		return "", nil, nil, requested, err
 	}
 
 	brainRows, brainErr := r.pool.Query(ctx, `
