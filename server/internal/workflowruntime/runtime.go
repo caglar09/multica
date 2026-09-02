@@ -531,19 +531,23 @@ func (r *Runtime) handleProjectCreated(ctx context.Context, event events.Event) 
 	if err != nil {
 		return err
 	}
-	team, err := r.team.EnsureProject(ctx, workspaceID, projectID)
+	draft, err := r.team.PrepareProject(ctx, workspaceID, projectID)
 	if err != nil {
 		if errors.Is(err, teamprovision.ErrMikaUnavailable) {
 			return nil
 		}
 		return err
 	}
-	slog.Info("autonomous project team ready",
+	if draft.Status == "applied" {
+		return nil
+	}
+	slog.Info("autonomous project team draft ready",
 		"project_id", projectIDValue,
 		"workspace_id", event.WorkspaceID,
-		"squad_id", util.UUIDToString(team.SquadID),
-		"intent", team.Intent,
-		"member_count", len(team.Members),
+		"planner", draft.PlannerName,
+		"planner_model", draft.PlannerModel,
+		"role_count", len(draft.Plan.Roles),
+		"status", draft.Status,
 	)
 	return nil
 }
