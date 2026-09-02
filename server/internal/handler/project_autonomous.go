@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/teamprovision"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -221,6 +222,139 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	resp.Control.ReplanRequestedAt = nullableTimestampString(replanRequestedAt)
 	resp.Control.ReplanCompletedAt = nullableTimestampString(replanCompletedAt)
 	resp.Control.LastError = nullableTextString(lastError)
+
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	userUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return
+	}
+
+	var mikaRuntimeID pgtype.UUID
+	mika, mikaErr := h.Queries.GetAgentBySystemKey(r.Context(), db.GetAgentBySystemKeyParams{
+		WorkspaceID: workspaceID,
+		SystemKey: pgtype.Text{String: service.MikaSystemKey, Valid: true},
+	})
+	if mikaErr == nil && mika.RuntimeID.Valid {
+		mikaRuntimeID = mika.RuntimeID
+	}
+
+	runtimeRows, runtimeErr := h.DB.Query(r.Context(), `
+		SELECT id, COALESCE(NULLIF(custom_name, ''), name), provider, runtime_mode, status
+		FROM agent_runtime
+		WHERE workspace_id = $1
+		  AND (owner_id = $2 OR visibility = 'public' OR id = $3)
+		ORDER BY CASE WHEN id = $3 THEN 0 ELSE 1 END,
+		         CASE WHEN status = 'online' THEN 0 ELSE 1 END,
+		         provider, name
+	`, workspaceID, userUUID, mikaRuntimeID)
+	if runtimeErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous runtime options")
+		return
+	}
+	for runtimeRows.Next() {
+		var runtime AutonomousRuntimeOptionResponse
+		var runtimeID pgtype.UUID
+		if err := runtimeRows.Scan(&runtimeID, &runtime.Name, &runtime.Provider, &runtime.RuntimeMode, &runtime.Status); err != nil {
+			runtimeRows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to decode autonomous runtime option")
+			return
+		}
+		runtime.ID = uuidToString(runtimeID)
+		resp.Runtimes = append(resp.Runtimes, runtime)
+	}
+	if err := runtimeRows.Err(); err != nil {
+		runtimeRows.Close()
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous runtime options")
+		return
+	}
+	runtimeRows.Close()
+
+	skillRows, skillErr := h.DB.Query(r.Context(), `
+		SELECT id, name, description
+		FROM skill
+		WHERE workspace_id = $1
+		ORDER BY name ASC
+	`, workspaceID)
+	if skillErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous skill options")
+		return
+	}
+	for skillRows.Next() {
+		var skill AutonomousSkillOptionResponse
+		var skillID pgtype.UUID
+		if err := skillRows.Scan(&skillID, &skill.Name, &skill.Description); err != nil {
+			skillRows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to decode autonomous skill option")
+			return
+		}
+		skill.ID = uuidToString(skillID)
+		resp.Skills = append(resp.Skills, skill)
+	}
+	if err := skillRows.Err(); err != nil {
+		skillRows.Close()
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous skill options")
+		return
+	}
+	skillRows.Close()
+
+	var draftPlan []byte
+	var draftPlannerName, draftStatus string
+	var draftPlannerModel pgtype.Text
+	var draftCreatedAt, draftUpdatedAt time.Time
+	draftErr := h.DB.QueryRow(r.Context(), `
+		SELECT plan, planner_name, planner_model, status, created_at, updated_at
+		FROM autonomous_project_team_draft
+		WHERE workspace_id = $1 AND project_id = $2
+		  AND status IN ('awaiting_configuration', 'provisioning')
+	`, workspaceID, projectID).Scan(
+		&draftPlan,
+		&draftPlannerName,
+		&draftPlannerModel,
+		&draftStatus,
+		&draftCreatedAt,
+		&draftUpdatedAt,
+	)
+	if draftErr != nil && !errors.Is(draftErr, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous team draft")
+		return
+	}
+	if draftErr == nil {
+		defaultSkillIDs := []string{}
+		if mikaErr == nil {
+			rows, err := h.DB.Query(r.Context(), `
+				SELECT s.id
+				FROM agent_skill ask
+				JOIN skill s ON s.id = ask.skill_id
+				WHERE ask.agent_id = $1
+				  AND ask.enabled = TRUE
+				  AND s.workspace_id = $2
+				ORDER BY s.name
+			`, mika.ID, workspaceID)
+			if err == nil {
+				for rows.Next() {
+					var skillID pgtype.UUID
+					if rows.Scan(&skillID) == nil {
+						defaultSkillIDs = append(defaultSkillIDs, uuidToString(skillID))
+					}
+				}
+				rows.Close()
+			}
+		}
+		resp.Enabled = true
+		resp.Draft = &AutonomousTeamDraftResponse{
+			Status: draftStatus,
+			PlannerName: draftPlannerName,
+			PlannerModel: nullableTextString(draftPlannerModel),
+			Plan: append(json.RawMessage(nil), draftPlan...),
+			DefaultRuntimeID: nullableUUIDString(mikaRuntimeID),
+			DefaultSkillIDs: defaultSkillIDs,
+			CreatedAt: draftCreatedAt.UTC().Format(time.RFC3339Nano),
+			UpdatedAt: draftUpdatedAt.UTC().Format(time.RFC3339Nano),
+		}
+	}
 
 	var teamID, squadID pgtype.UUID
 	var team AutonomousTeamResponse
