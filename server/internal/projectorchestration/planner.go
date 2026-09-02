@@ -93,6 +93,8 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 		// stability, but it cannot raise autonomy, loosen approvals or budgets.
 		plan.Policy = input.Policy
 		plan = HardenPlan(plan)
+		plan = EnsureLifecycle(plan)
+		plan = HardenPlan(plan)
 		if err = ValidatePlan(plan, p.maxNodes); err == nil {
 			return plan, execution, nil
 		}
@@ -115,6 +117,8 @@ Original output:
 		return Plan{}, repaired, fmt.Errorf("decode repaired project plan: %w", parseErr)
 	}
 	plan.Policy = input.Policy
+	plan = HardenPlan(plan)
+	plan = EnsureLifecycle(plan)
 	plan = HardenPlan(plan)
 	if validateErr := ValidatePlan(plan, p.maxNodes); validateErr != nil {
 		return Plan{}, repaired, fmt.Errorf("repaired project plan rejected: %w", validateErr)
