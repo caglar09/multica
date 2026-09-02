@@ -527,7 +527,7 @@ func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 				materialized = true
 				continue
 			}
-			if err := r.syncProjectNodeBoardState(ctx, node); err != nil {
+			if err := r.syncProjectNodeBoardState(ctx, project.workspaceID, node); err != nil {
 				slog.Warn("project conductor board projection failed",
 					"project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", err)
 			}
@@ -554,6 +554,9 @@ func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 			if err := r.startReadyProjectNode(ctx, project.workspaceID, project.projectID, node); err != nil {
 				if escalationErr := r.openProjectEscalation(ctx, project.workspaceID, project.projectID, node, err); escalationErr != nil {
 					slog.Warn("project scheduler escalation failed", "project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", escalationErr)
+				}
+				if blockErr := r.blockProjectNodeForSchedulingCause(ctx, project.workspaceID, project.projectID, node, err); blockErr != nil {
+					slog.Warn("project scheduler block projection failed", "project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", blockErr)
 				}
 			}
 		}
@@ -642,6 +645,7 @@ func (r *Runtime) ensureProjectNodeIssue(
 
 func (r *Runtime) syncProjectNodeBoardState(
 	ctx context.Context,
+	workspaceID pgtype.UUID,
 	node projectorchestration.PlannedNode,
 ) error {
 	if node.MaterializedIssueID == "" {
@@ -654,7 +658,7 @@ func (r *Runtime) syncProjectNodeBoardState(
 	issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return r.projectStore.ResetDeletedIssue(ctx, issue.WorkspaceID, issueID)
+			return r.projectStore.ResetDeletedIssue(ctx, workspaceID, issueID)
 		}
 		return err
 	}
@@ -753,6 +757,175 @@ func (r *Runtime) startReadyProjectNode(
 	}
 	_ = assignedRole // retained for durable assignment/debug projection.
 	return nil
+}
+
+func (r *Runtime) blockProjectNodeForSchedulingCause(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	node projectorchestration.ReadyNode,
+	cause error,
+) error {
+	category := ""
+	switch {
+	case errors.Is(cause, errProjectApprovalRequired):
+		category = "approval"
+	case errors.Is(cause, projectorchestration.ErrAdapterNotConfigured):
+		category = "external_dependency"
+	case errors.Is(cause, projectorchestration.ErrBudgetExceeded):
+		category = "budget"
+	}
+	if category == "" {
+		return nil
+	}
+	if err := r.projectStore.SetNodeBlocked(ctx, workspaceID, projectID, node.Key, category, cause.Error()); err != nil {
+		return err
+	}
+	var issueID pgtype.UUID
+	err := r.pool.QueryRow(ctx, `
+		SELECT materialized_issue_id
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND n.node_key = $3
+		  AND p.status IN ('active', 'blocked')
+		ORDER BY p.revision DESC
+		LIMIT 1
+	`, workspaceID, projectID, node.Key).Scan(&issueID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if issueID.Valid {
+		_, err = r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, issuestatus.Blocked)
+	}
+	return err
+}
+
+func (r *Runtime) reconcileProjectBlockedNodes(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) error {
+	blocked, err := r.projectStore.ListBlockedNodes(ctx, workspaceID, projectID)
+	if err != nil {
+		return err
+	}
+	for _, node := range blocked {
+		resolved := false
+		switch node.Category {
+		case "dependency":
+			resolved = true // ResumeBlockedNode performs the authoritative dependency check.
+		case "approval":
+			err := r.pool.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1
+					FROM autonomous_project_escalation
+					WHERE workspace_id = $1
+					  AND project_id = $2
+					  AND category = 'approval_required'
+					  AND status = 'resolved'
+					  AND context ->> 'node_key' = $3
+					  AND resolution ->> 'decision' = 'approved'
+				)
+			`, workspaceID, projectID, node.Key).Scan(&resolved)
+			if err != nil {
+				return err
+			}
+		case "external_dependency":
+			switch node.Kind {
+			case projectorchestration.NodeDeploy:
+				resolved = r.deploymentAdapter != nil
+			case projectorchestration.NodeObserve:
+				resolved = r.observationAdapter != nil
+			default:
+				// A human may explicitly resolve a non-provider external
+				// dependency escalation after credentials/input are supplied.
+				err := r.pool.QueryRow(ctx, `
+					SELECT EXISTS (
+						SELECT 1
+						FROM autonomous_project_escalation
+						WHERE workspace_id = $1
+						  AND project_id = $2
+						  AND category = 'external_dependency'
+						  AND status = 'resolved'
+						  AND context ->> 'node_key' = $3
+					)
+				`, workspaceID, projectID, node.Key).Scan(&resolved)
+				if err != nil {
+					return err
+				}
+			}
+		case "budget":
+			err := r.pool.QueryRow(ctx, `
+				SELECT
+					total_attempts < max_total_attempts
+					AND (token_limit IS NULL OR tokens_used < token_limit)
+					AND (runtime_seconds_limit IS NULL OR runtime_seconds_used < runtime_seconds_limit)
+					AND (cost_microunits_limit IS NULL OR cost_microunits_used < cost_microunits_limit)
+				FROM autonomous_project_budget
+				WHERE workspace_id = $1 AND project_id = $2
+			`, workspaceID, projectID).Scan(&resolved)
+			if errors.Is(err, pgx.ErrNoRows) {
+				resolved = true
+			} else if err != nil {
+				return err
+			}
+		case "technical_failure", "manual":
+			if node.MaterializedIssueID != "" {
+				issueID, parseErr := util.ParseUUID(node.MaterializedIssueID)
+				if parseErr != nil {
+					return parseErr
+				}
+				issue, loadErr := r.taskSvc.Queries.GetIssue(ctx, issueID)
+				if errors.Is(loadErr, pgx.ErrNoRows) {
+					resolved = true
+				} else if loadErr != nil {
+					return loadErr
+				} else {
+					resolved = issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) != issuestatus.Blocked
+				}
+			}
+			if !resolved {
+				// A resolved technical escalation is an explicit retry signal.
+				err := r.pool.QueryRow(ctx, `
+					SELECT EXISTS (
+						SELECT 1
+						FROM autonomous_project_escalation
+						WHERE workspace_id = $1
+						  AND project_id = $2
+						  AND status = 'resolved'
+						  AND context ->> 'node_key' = $3
+						  AND category IN ('technical_failure', 'external_dependency')
+					)
+				`, workspaceID, projectID, node.Key).Scan(&resolved)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		if !resolved {
+			continue
+		}
+		resumed, err := r.projectStore.ResumeBlockedNode(ctx, workspaceID, projectID, node.Key)
+		if err != nil {
+			return err
+		}
+		if !resumed || node.MaterializedIssueID == "" {
+			continue
+		}
+		issueID, err := util.ParseUUID(node.MaterializedIssueID)
+		if err != nil {
+			return err
+		}
+		if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, issuestatus.Todo); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		slog.Info("project conductor resumed blocked node",
+			"project_id", util.UUIDToString(projectID),
+			"node", node.Key,
+			"category", node.Category,
+		)
+	}
+	return r.projectStore.ResumePlanAfterNodeRetry(ctx, workspaceID, projectID)
 }
 
 var errProjectApprovalRequired = errors.New("autonomous project node requires approval")
