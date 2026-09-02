@@ -98,7 +98,7 @@ func (s *Store) PersistPlan(
 		SET status = 'superseded', updated_at = now()
 		WHERE workspace_id = $1
 		  AND project_id = $2
-		  AND status IN ('draft', 'active')
+		  AND status IN ('draft', 'active', 'blocked')
 	`, workspaceID, projectID); err != nil {
 		return StoredPlan{}, fmt.Errorf("supersede previous project plan: %w", err)
 	}
