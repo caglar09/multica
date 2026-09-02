@@ -157,9 +157,10 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	if !ok {
 		return
 	}
-	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
 		ID: projectID, WorkspaceID: workspaceID,
-	}); err != nil {
+	})
+	if err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
@@ -174,7 +175,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 
 	var pausedAt, replanRequestedAt, replanCompletedAt pgtype.Timestamptz
 	var lastError pgtype.Text
-	err := h.DB.QueryRow(r.Context(), `
+	err = h.DB.QueryRow(r.Context(), `
 		SELECT paused, paused_at, replan_requested_at, replan_completed_at, last_error
 		FROM autonomous_project_control
 		WHERE workspace_id = $1 AND project_id = $2
@@ -194,15 +195,15 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	var team AutonomousTeamResponse
 	var plannerModel pgtype.Text
 	var lastPlannedAt pgtype.Timestamptz
-	var teamUpdatedAt time.Time
+	var teamCreatedAt, teamUpdatedAt time.Time
 	err = h.DB.QueryRow(r.Context(), `
 		SELECT id, squad_id, intent, status, planner_name, planner_model,
-		       plan_revision, last_planned_at, updated_at
+		       plan_revision, last_planned_at, created_at, updated_at
 		FROM autonomous_project_team
 		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
 	`, workspaceID, projectID).Scan(
 		&teamID, &squadID, &team.Intent, &team.Status, &team.PlannerName, &plannerModel,
-		&team.PlanRevision, &lastPlannedAt, &teamUpdatedAt,
+		&team.PlanRevision, &lastPlannedAt, &teamCreatedAt, &teamUpdatedAt,
 	)
 	if err == nil {
 		resp.Enabled = true
@@ -376,6 +377,32 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	}
 
 	sortable := make([]autonomousActivitySortable, 0, 128)
+	if project.CreatedAt.Valid {
+		projectIDString := uuidToString(project.ID)
+		sortable = append(sortable, autonomousActivitySortable{
+			At: project.CreatedAt.Time,
+			Item: AutonomousActivityResponse{
+				ID:        "project-created:" + projectIDString,
+				Type:      "project.created",
+				Title:     "Project created",
+				Detail:    project.Title,
+				CreatedAt: project.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+			},
+		})
+	}
+	if teamID.Valid && !teamCreatedAt.IsZero() {
+		sortable = append(sortable, autonomousActivitySortable{
+			At: teamCreatedAt,
+			Item: AutonomousActivityResponse{
+				ID:        "team-created:" + uuidToString(teamID),
+				Type:      "team.created",
+				Title:     "Technology Team created",
+				Detail:    team.Intent,
+				Metadata:  map[string]any{"squad_id": uuidToString(squadID)},
+				CreatedAt: teamCreatedAt.UTC().Format(time.RFC3339Nano),
+			},
+		})
+	}
 
 	if teamID.Valid {
 		memberRows, err := h.DB.Query(r.Context(), `
