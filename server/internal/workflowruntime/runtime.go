@@ -788,34 +788,54 @@ func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgt
 		}
 	}
 
-	// Project-team routing becomes authoritative when no implementation owner
-	// exists yet or the current owner is Mika. Mika is the Chief of Staff: she
-	// bootstraps and coordinates the technology team, but does not become the
-	// implementation/review quality gate herself.
 	if issue.ProjectID.Valid && r.team != nil {
-		provisionedOwner := !ownerID.Valid || r.team.IsMikaAgent(ctx, issue.WorkspaceID, ownerID)
-		if provisionedOwner {
+		existingTeam, teamExists, teamErr := r.team.FindProject(ctx, issue.WorkspaceID, issue.ProjectID)
+		if teamErr != nil {
+			return pgtype.UUID{}, pgtype.UUID{}, teamErr
+		}
+
+		assignedToGeneratedSquad := teamExists && preferredSquad.Valid && preferredSquad == existingTeam.SquadID
+		ownerIsMika := ownerID.Valid && r.team.IsMikaAgent(ctx, issue.WorkspaceID, ownerID)
+
+		// Demand-driven team bootstrap: unassigned/Mika-owned work, or work
+		// assigned to the generated Technology Team squad, is routed to the
+		// specialist implementation role inferred from the issue.
+		if !ownerID.Valid || ownerIsMika || assignedToGeneratedSquad {
 			implementationID, team, err := r.team.ImplementationAgent(ctx, issue)
-			if err == nil {
-				reviewerID, ok := team.Agent(teamprovision.RoleCodeReviewer)
+			if err != nil {
+				return pgtype.UUID{}, pgtype.UUID{}, err
+			}
+			reviewerID, ok := team.Agent(teamprovision.RoleCodeReviewer)
+			if !ok {
+				return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no code reviewer")
+			}
+			if implementationID == reviewerID {
+				return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project implementation and review agents must differ")
+			}
+			return implementationID, reviewerID, nil
+		}
+
+		if teamExists {
+			if role, generated := existingTeam.RoleForAgent(ownerID); generated {
+				if !teamprovision.IsImplementationRole(role) {
+					// Planning/architecture/QA/review tasks are allowed to run
+					// under those roles, but this implementation->review state
+					// machine must not reinterpret them as code delivery.
+					return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf(
+						"issue is assigned to non-implementation project role %q", role,
+					)
+				}
+				reviewerID, ok := existingTeam.Agent(teamprovision.RoleCodeReviewer)
 				if !ok {
 					return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no code reviewer")
 				}
-				if implementationID == reviewerID {
-					return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project implementation and review agents must differ")
-				}
-				return implementationID, reviewerID, nil
+				return ownerID, reviewerID, nil
 			}
-			if !ownerID.Valid {
-				return pgtype.UUID{}, pgtype.UUID{}, err
-			}
-			slog.Info("autonomous project team unavailable; falling back to existing assignee routing",
-				"issue_id", util.UUIDToString(issue.ID),
-				"project_id", util.UUIDToString(issue.ProjectID),
-				"error", err,
-			)
-		} else if team, ok, err := r.team.FindProject(ctx, issue.WorkspaceID, issue.ProjectID); err == nil && ok {
-			if reviewerID, exists := team.Agent(teamprovision.RoleCodeReviewer); exists && reviewerID != ownerID {
+
+			// An explicitly assigned external/user-created implementation agent
+			// keeps ownership, while the project registry still supplies the
+			// independent reviewer.
+			if reviewerID, ok := existingTeam.Agent(teamprovision.RoleCodeReviewer); ok && reviewerID != ownerID {
 				return ownerID, reviewerID, nil
 			}
 		}
