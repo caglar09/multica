@@ -53,6 +53,7 @@ func ConfigFromEnv() Config {
 		ActionLease:     30 * time.Second,
 		ProjectPolicy:   projectorchestration.DefaultPolicy(),
 		AdapterConfig: projectorchestration.WebhookAdapterConfig{
+			RepositoryURL:  strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_REPOSITORY_ANALYZER_WEBHOOK_URL")),
 			DeploymentURL:  strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_DEPLOYMENT_WEBHOOK_URL")),
 			ObservationURL: strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_OBSERVATION_WEBHOOK_URL")),
 			BearerToken:    strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_WEBHOOK_BEARER_TOKEN")),
@@ -128,6 +129,7 @@ type Runtime struct {
 	team           *teamprovision.Provisioner
 	projectStore   *projectorchestration.Store
 	projectPlanner      *projectorchestration.Planner
+	repositoryAnalyzer  projectorchestration.RepositoryAnalyzer
 	deploymentAdapter   projectorchestration.DeploymentAdapter
 	observationAdapter  projectorchestration.ObservationAdapter
 	planningSem         chan struct{}
@@ -172,6 +174,7 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		team: teamprovision.New(pool, taskSvc.Queries, planner),
 		projectStore: projectorchestration.NewStore(pool),
 		projectPlanner:     projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
+		repositoryAnalyzer: projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
 		deploymentAdapter:  projectorchestration.NewWebhookDeploymentAdapter(cfg.AdapterConfig),
 		observationAdapter: projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
 		planningSem:        make(chan struct{}, 4),
