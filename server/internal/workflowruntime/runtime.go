@@ -265,6 +265,7 @@ func (r *Runtime) processRequestedReplans(ctx context.Context) error {
 		FROM autonomous_project_control
 		WHERE replan_requested_at IS NOT NULL
 		  AND (replan_completed_at IS NULL OR replan_completed_at < replan_requested_at)
+		  AND (last_error IS NULL OR updated_at < now() - interval '1 minute')
 		ORDER BY replan_requested_at ASC
 		LIMIT 10
 	`)
@@ -310,7 +311,7 @@ func (r *Runtime) processRequestedReplans(ctx context.Context) error {
 		}
 		_, err := r.pool.Exec(ctx, `
 			UPDATE autonomous_project_control
-			SET replan_completed_at = $3,
+			SET replan_completed_at = now(),
 			    last_error = NULL,
 			    updated_at = now()
 			WHERE workspace_id = $1
