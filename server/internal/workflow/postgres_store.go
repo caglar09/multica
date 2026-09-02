@@ -179,7 +179,7 @@ func (s *PostgresStore) Apply(request ApplyRequest) (ApplyResult, error) {
 const runColumns = `
 	id, workflow_name, workflow_version, workspace_id, project_id, issue_id,
 	state, revision, owner_agent_id, reviewer_agent_id, accountable_user_id,
-	review_cycles
+	review_cycles, updated_at
 `
 
 const runByIDSQL = `
@@ -220,6 +220,31 @@ func (s *PostgresStore) GetRun(ctx context.Context, runID string) (Run, error) {
 		return Run{}, err
 	}
 	return scanRun(s.pool.QueryRow(ctx, runByIDSQL, id))
+}
+
+// ListActiveRuns returns bounded non-terminal runs for restart reconciliation.
+func (s *PostgresStore) ListActiveRuns(ctx context.Context, limit int) ([]Run, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, "SELECT "+runColumns+" FROM autonomous_workflow_run WHERE state IN ('in_progress', 'in_review') ORDER BY updated_at ASC LIMIT $1", limit)
+	if err != nil {
+		return nil, fmt.Errorf("list active workflow runs: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Run, 0)
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan active workflow run: %w", err)
+		}
+		out = append(out, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active workflow runs: %w", err)
+	}
+	return out, nil
 }
 
 // ClaimPendingAction leases one runnable action. Later actions in the same
@@ -375,12 +400,13 @@ func scanRun(row pgx.Row) (Run, error) {
 	var (
 		id, workspaceID, projectID, issueID pgtype.UUID
 		ownerAgentID, reviewerAgentID, accountableUserID pgtype.UUID
+		updatedAt pgtype.Timestamptz
 		run Run
 	)
 	if err := row.Scan(
 		&id, &run.WorkflowName, &run.Version, &workspaceID, &projectID, &issueID,
 		&run.State, &run.Revision, &ownerAgentID, &reviewerAgentID, &accountableUserID,
-		&run.ReviewCycles,
+		&run.ReviewCycles, &updatedAt,
 	); err != nil {
 		return Run{}, err
 	}
@@ -391,6 +417,9 @@ func scanRun(row pgx.Row) (Run, error) {
 	run.OwnerAgentID = uuidString(ownerAgentID)
 	run.ReviewerAgentID = uuidString(reviewerAgentID)
 	run.AccountableUserID = uuidString(accountableUserID)
+	if updatedAt.Valid {
+		run.UpdatedAt = updatedAt.Time
+	}
 	return run, nil
 }
 
