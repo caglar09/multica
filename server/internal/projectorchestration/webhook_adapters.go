@@ -18,6 +18,7 @@ import (
 // integrations. Credentials remain server-side and are never exposed to LLMs.
 type WebhookAdapterConfig struct {
 	RepositoryURL  string
+	QualityURL     string
 	DeploymentURL  string
 	ObservationURL string
 	BearerToken    string
@@ -26,6 +27,7 @@ type WebhookAdapterConfig struct {
 
 type webhookAdapters struct {
 	repositoryURL  string
+	qualityURL     string
 	deploymentURL  string
 	observationURL string
 	bearerToken    string
@@ -34,6 +36,13 @@ type webhookAdapters struct {
 
 func NewWebhookRepositoryAnalyzer(cfg WebhookAdapterConfig) RepositoryAnalyzer {
 	if strings.TrimSpace(cfg.RepositoryURL) == "" {
+		return nil
+	}
+	return newWebhookAdapters(cfg)
+}
+
+func NewWebhookQualityGateRunner(cfg WebhookAdapterConfig) QualityGateRunner {
+	if strings.TrimSpace(cfg.QualityURL) == "" {
 		return nil
 	}
 	return newWebhookAdapters(cfg)
@@ -60,6 +69,7 @@ func newWebhookAdapters(cfg WebhookAdapterConfig) *webhookAdapters {
 	}
 	return &webhookAdapters{
 		repositoryURL:  strings.TrimSpace(cfg.RepositoryURL),
+		qualityURL:     strings.TrimSpace(cfg.QualityURL),
 		deploymentURL:  strings.TrimSpace(cfg.DeploymentURL),
 		observationURL: strings.TrimSpace(cfg.ObservationURL),
 		bearerToken:    strings.TrimSpace(cfg.BearerToken),
@@ -103,6 +113,27 @@ func (a *webhookAdapters) Impact(
 	var result ChangeImpactEvidence
 	if err := a.post(ctx, a.repositoryURL, payload, &result); err != nil {
 		return ChangeImpactEvidence{}, err
+	}
+	return result, nil
+}
+
+func (a *webhookAdapters) Run(ctx context.Context, request QualityGateRequest) (QualityGateResult, error) {
+	if a == nil || a.qualityURL == "" {
+		return QualityGateResult{}, ErrAdapterNotConfigured
+	}
+	payload := map[string]any{
+		"action": "quality_gate",
+		"workspace_id": util.UUIDToString(request.WorkspaceID),
+		"project_id": util.UUIDToString(request.ProjectID),
+		"plan_id": util.UUIDToString(request.PlanID),
+		"node_id": util.UUIDToString(request.NodeID),
+		"issue_id": util.UUIDToString(request.IssueID),
+		"gate_type": request.GateType,
+		"artifact": request.Artifact,
+	}
+	var result QualityGateResult
+	if err := a.post(ctx, a.qualityURL, payload, &result); err != nil {
+		return QualityGateResult{}, err
 	}
 	return result, nil
 }
