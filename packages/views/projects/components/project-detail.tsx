@@ -578,7 +578,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 modes={["board", "list", "table", "swimlane", "gantt"]}
               />
             ) : (
-              <AutonomousControlCenter projectId={projectId} />
+              <AutonomousControlCenter projectId={projectId} canControl={isWorkspaceAdmin} />
             )}
           </div>
           </div>
