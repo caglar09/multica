@@ -2941,7 +2941,12 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	// Enforce that ordering at the write boundary instead of trusting Mika's
 	// prompt alone. Other explicit agents/member actions remain valid overrides.
 	if creatorType == "agent" && projectID.Valid {
-		agent, agentErr := h.Queries.GetAgent(r.Context(), actualCreatorID)
+		var actualCreatorUUID pgtype.UUID
+		agentErr := actualCreatorUUID.Scan(actualCreatorID)
+		var agent db.Agent
+		if agentErr == nil {
+			agent, agentErr = h.Queries.GetAgent(r.Context(), actualCreatorUUID)
+		}
 		if agentErr == nil &&
 			agent.WorkspaceID == wsUUID &&
 			agent.SystemKey.Valid &&
