@@ -333,6 +333,7 @@ export type {
 export type {
   AutonomousHealthStatus,
   AutonomousProjectControl,
+  AutonomousProjectBootstrap,
   AutonomousTeamMember,
   AutonomousTeam,
   AutonomousWorkflowRun,
