@@ -336,6 +336,7 @@ export type {
   AutonomousTeamMember,
   AutonomousTeam,
   AutonomousWorkflowRun,
+  AutonomousWorkflowAction,
   AutonomousActivityItem,
   AutonomousTeamPlanRole,
   AutonomousTeamPlan,
