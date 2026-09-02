@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/teamprovision"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/workflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -70,6 +71,7 @@ type Runtime struct {
 	taskSvc *service.TaskService
 	store   *workflow.PostgresStore
 	engine  *workflow.Engine
+	team    *teamprovision.Provisioner
 	config  Config
 }
 
@@ -87,7 +89,14 @@ func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc 
 	if err != nil {
 		return nil, fmt.Errorf("build autonomous workflow engine: %w", err)
 	}
-	r := &Runtime{pool: pool, taskSvc: taskSvc, store: store, engine: engine, config: cfg}
+	r := &Runtime{
+		pool: pool,
+		taskSvc: taskSvc,
+		store: store,
+		engine: engine,
+		team: teamprovision.New(pool, taskSvc.Queries),
+		config: cfg,
+	}
 
 	for _, eventType := range []string{protocol.EventIssueCreated, protocol.EventIssueUpdated} {
 		bus.Subscribe(eventType, r.onIssueEvent)
@@ -95,6 +104,8 @@ func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc 
 	bus.Subscribe(protocol.EventTaskCompleted, r.onTaskCompleted)
 	bus.Subscribe(protocol.EventTaskFailed, r.onTaskFailed)
 	bus.Subscribe(protocol.EventIssueDeleted, r.onIssueDeleted)
+	bus.Subscribe(protocol.EventProjectCreated, r.onProjectCreated)
+	bus.Subscribe(protocol.EventProjectDeleted, r.onProjectDeleted)
 	bus.Subscribe(protocol.EventWorkspaceDeleted, r.onWorkspaceDeleted)
 
 	worker := workflow.NewActionWorker(store, r, workflow.WorkerOptions{
