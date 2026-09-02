@@ -82,6 +82,7 @@ func (e *Engine) Handle(workflowName string, event Event) (Result, error) {
 	actions := cloneActions(definition.States[selected.To].OnEnter)
 	applied, err := e.store.Apply(ApplyRequest{
 		EventID:          event.ID,
+		EventType:        event.Type,
 		RunID:            run.ID,
 		ExpectedRevision: run.Revision,
 		From:             selected.From,
