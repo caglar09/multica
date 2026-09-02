@@ -17,7 +17,7 @@ func validPlan() Plan {
 		Policy: DefaultPolicy(),
 		Nodes: []NodeSpec{
 			{Key: "arch", Kind: NodeArchitecture, Title: "Auth architecture", Risk: RiskMedium, MaxAttempts: 2},
-			{Key: "impl", Kind: NodeImplementation, Title: "Implement auth", Risk: RiskHigh, MaxAttempts: 3, AcceptanceCriteria: []string{"Login works"}},
+			{Key: "impl", Kind: NodeImplementation, Title: "Implement user flow", Risk: RiskHigh, MaxAttempts: 3, AcceptanceCriteria: []string{"Login works"}},
 			{Key: "review", Kind: NodeReview, Title: "Independent review", Risk: RiskMedium, MaxAttempts: 3, AcceptanceCriteria: []string{"No blocking findings"}},
 		},
 		Edges: []EdgeSpec{
