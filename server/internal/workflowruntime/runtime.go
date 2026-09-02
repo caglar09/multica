@@ -19,6 +19,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/teamprovision"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -69,14 +70,17 @@ func ConfigFromEnv() Config {
 }
 
 type Runtime struct {
-	ctx         context.Context
-	pool        *pgxpool.Pool
-	taskSvc     *service.TaskService
-	store       *workflow.PostgresStore
-	engine      *workflow.Engine
-	team        *teamprovision.Provisioner
-	planningSem chan struct{}
-	config      Config
+	ctx            context.Context
+	pool           *pgxpool.Pool
+	taskSvc        *service.TaskService
+	issueSvc       *service.IssueService
+	store          *workflow.PostgresStore
+	engine         *workflow.Engine
+	team           *teamprovision.Provisioner
+	projectStore   *projectorchestration.Store
+	projectPlanner *projectorchestration.Planner
+	planningSem    chan struct{}
+	config         Config
 }
 
 func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config) (*Runtime, error) {
@@ -97,13 +101,22 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 	if err != nil {
 		return nil, fmt.Errorf("build autonomous workflow engine: %w", err)
 	}
+	projectExecutor := NewMikaProjectPlanExecutor(pool, taskSvc)
 	r := &Runtime{
 		ctx: ctx,
 		pool: pool,
 		taskSvc: taskSvc,
+		issueSvc: func() *service.IssueService {
+			svc := service.NewIssueService(taskSvc.Queries, taskSvc.TxStarter, taskSvc.Bus, taskSvc.Analytics, taskSvc)
+			svc.Entitlements = taskSvc.Entitlements
+			svc.Metrics = taskSvc.Metrics
+			return svc
+		}(),
 		store: store,
 		engine: engine,
 		team: teamprovision.New(pool, taskSvc.Queries, planner),
+		projectStore: projectorchestration.NewStore(pool),
+		projectPlanner: projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes),
 		planningSem: make(chan struct{}, 4),
 		config: cfg,
 	}
@@ -228,8 +241,11 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 		if err := r.processTeamDraftProvisioning(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous team draft provisioning failed", "error", err)
 		}
-		if err := r.processProjectContinuations(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Warn("autonomous project continuation failed", "error", err)
+		if err := r.processProjectPlanning(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous durable project planning failed", "error", err)
+		}
+		if err := r.processProjectScheduling(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous project scheduling failed", "error", err)
 		}
 		if err := r.processRequestedReplans(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous project replan processing failed", "error", err)
@@ -929,6 +945,12 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		}
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+	if effective == issuestatus.Done && r.projectStore != nil {
+		if err := r.projectStore.CompleteNodeByIssue(ctx, issue.WorkspaceID, issue.ID); err != nil {
+			return fmt.Errorf("complete autonomous project node from issue: %w", err)
+		}
+		return nil
+	}
 	if effective != issuestatus.InProgress {
 		return nil
 	}
@@ -1006,6 +1028,9 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 	task, issue, err := r.loadIssueTask(ctx, event)
 	if err != nil || !task.ID.Valid {
 		return err
+	}
+	if handled, projectErr := r.completeNonImplementationProjectNode(ctx, task, issue); handled {
+		return projectErr
 	}
 
 	issueID := util.UUIDToString(issue.ID)
