@@ -96,6 +96,7 @@ import type {
   StartMikaOnboardingResponse,
   CancelTaskResponse,
   Project,
+  AutonomousProjectSnapshot,
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,
@@ -3549,6 +3550,31 @@ export class ApiClient {
 
   async getProject(id: string): Promise<Project> {
     return this.fetch(`/api/projects/${id}`);
+  }
+
+  async getProjectAutonomous(id: string): Promise<AutonomousProjectSnapshot> {
+    return this.fetch(`/api/projects/${id}/autonomous`);
+  }
+
+  async pauseProjectAutonomous(id: string): Promise<{ paused: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/pause`, { method: "POST" });
+  }
+
+  async resumeProjectAutonomous(id: string): Promise<{ paused: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/resume`, { method: "POST" });
+  }
+
+  async replanProjectAutonomous(id: string): Promise<{ requested: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/replan`, { method: "POST" });
+  }
+
+  async retryProjectAutonomousAction(
+    id: string,
+    actionId: string,
+  ): Promise<{ retried: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/actions/${actionId}/retry`, {
+      method: "POST",
+    });
   }
 
   async createProject(data: CreateProjectRequest): Promise<Project> {
