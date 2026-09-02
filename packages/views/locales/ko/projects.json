@@ -69,6 +69,7 @@
     "section_description": "설명",
     "prop_start_date": "시작일",
     "prop_due_date": "마감일",
+    "prop_directory": "프로젝트 폴더",
     "no_start_date": "시작일 없음",
     "no_due_date": "마감일 없음",
     "description_placeholder": "설명 추가...",
