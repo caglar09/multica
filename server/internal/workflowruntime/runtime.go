@@ -33,12 +33,13 @@ const softwareDevelopmentWorkflow = "software-development"
 const autonomousPlanningTimeout = 5 * time.Minute
 
 type Config struct {
-	Enabled         bool
-	ReviewerAgentID string
-	ReviewerRole    string
-	MaxReviewCycles int
-	PollInterval    time.Duration
-	ActionLease     time.Duration
+	Enabled           bool
+	AutoConfigureTeam bool
+	ReviewerAgentID   string
+	ReviewerRole      string
+	MaxReviewCycles   int
+	PollInterval      time.Duration
+	ActionLease       time.Duration
 }
 
 func ConfigFromEnv() Config {
@@ -57,6 +58,13 @@ func ConfigFromEnv() Config {
 			cfg.Enabled = enabled
 		} else {
 			slog.Warn("invalid MULTICA_AUTONOMOUS_WORKFLOW_ENABLED; autonomous workflow disabled", "value", raw)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_TEAM_AUTO_CONFIGURE")); raw != "" {
+		if enabled, err := strconv.ParseBool(raw); err == nil {
+			cfg.AutoConfigureTeam = enabled
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_TEAM_AUTO_CONFIGURE; using manual team configuration", "value", raw)
 		}
 	}
 	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES")); raw != "" {
@@ -143,6 +151,7 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		"reviewer_role", cfg.ReviewerRole,
 		"reviewer_agent_id_configured", cfg.ReviewerAgentID != "",
 		"max_review_cycles", cfg.MaxReviewCycles,
+		"auto_configure_team", cfg.AutoConfigureTeam,
 	)
 	return r, nil
 }
@@ -237,6 +246,9 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 	for {
 		if err := r.reconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous workflow reconciliation failed", "error", err)
+		}
+		if err := r.processAutomaticTeamConfiguration(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous team automatic configuration failed", "error", err)
 		}
 		if err := r.processTeamDraftProvisioning(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous team draft provisioning failed", "error", err)
