@@ -724,3 +724,95 @@ func (s *Store) loadSpecs(ctx context.Context, planID pgtype.UUID) ([]NodeSpec, 
 	}
 	return nodes, edges, edgeRows.Err()
 }
+
+func (s *Store) ResetDeletedIssue(
+	ctx context.Context,
+	workspaceID, issueID pgtype.UUID,
+) error {
+	if s == nil || s.pool == nil || !workspaceID.Valid || !issueID.Valid {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET materialized_issue_id = NULL,
+		    status = CASE
+		      WHEN status IN ('running', 'verification') THEN 'ready'
+		      ELSE status
+		    END,
+		    ready_at = CASE
+		      WHEN status IN ('running', 'verification') THEN now()
+		      ELSE ready_at
+		    END,
+		    blocked_reason = CASE
+		      WHEN status IN ('running', 'verification') THEN 'materialized issue was deleted'
+		      ELSE blocked_reason
+		    END,
+		    updated_at = now()
+		WHERE workspace_id = $1
+		  AND materialized_issue_id = $2
+		  AND status NOT IN ('completed', 'cancelled')
+	`, workspaceID, issueID)
+	return err
+}
+
+func (s *Store) CleanupProject(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) error {
+	if s == nil || s.pool == nil || !workspaceID.Valid || !projectID.Valid {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	statements := []string{
+		`DELETE FROM autonomous_project_incident WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_deployment WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_escalation WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_quality_gate_run WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_artifact WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_brain_entry WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_plan_edge WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_plan_node WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_plan WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_budget WHERE workspace_id = $1 AND project_id = $2`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(ctx, statement, workspaceID, projectID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) CleanupWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	if s == nil || s.pool == nil || !workspaceID.Valid {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	statements := []string{
+		`DELETE FROM autonomous_project_incident WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_deployment WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_escalation WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_quality_gate_run WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_artifact WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_brain_entry WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_plan_edge WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_plan_node WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_plan WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_budget WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_agent_performance WHERE workspace_id = $1`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(ctx, statement, workspaceID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
