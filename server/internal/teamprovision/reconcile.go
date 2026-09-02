@@ -284,6 +284,51 @@ func loadAnalysisPlanWithQuerier(
 	return plan, true, nil
 }
 
+func upsertTeamMemberRegistry(
+	ctx context.Context,
+	tx pgx.Tx,
+	teamID pgtype.UUID,
+	role RoleSpec,
+	agentID pgtype.UUID,
+) error {
+	capabilities, _ := json.Marshal(role.Capabilities)
+	responsibilities, _ := json.Marshal(role.Responsibilities)
+	_, err := tx.Exec(ctx, `
+		INSERT INTO autonomous_project_team_member (
+			team_id, role, agent_id, role_family, capabilities,
+			responsibilities, reason, active
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+		ON CONFLICT (team_id, role) DO UPDATE
+		SET agent_id = EXCLUDED.agent_id,
+		    role_family = EXCLUDED.role_family,
+		    capabilities = EXCLUDED.capabilities,
+		    responsibilities = EXCLUDED.responsibilities,
+		    reason = EXCLUDED.reason,
+		    active = TRUE
+	`, teamID, role.Role, agentID, role.Family, capabilities, responsibilities, role.Reason)
+	return err
+}
+
+func stampInitialTeamPlan(ctx context.Context, tx pgx.Tx, teamID pgtype.UUID, plan Plan) error {
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE autonomous_project_team
+		SET planner_version = $2,
+		    intent = $3,
+		    plan = $4,
+		    planner_name = $5,
+		    planner_model = NULLIF($6, ''),
+		    last_planned_at = now(),
+		    updated_at = now()
+		WHERE id = $1
+	`, teamID, plan.Version, plan.Intent, planJSON, plan.PlannerName, plan.PlannerModel)
+	return err
+}
+
 func mergeTeamPlans(current, desired Plan) Plan {
 	merged := desired
 	if merged.Version < current.Version {
