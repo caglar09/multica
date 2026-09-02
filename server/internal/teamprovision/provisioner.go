@@ -48,6 +48,19 @@ func New(pool *pgxpool.Pool, queries *db.Queries) *Provisioner {
 	}
 }
 
+func (p *Provisioner) ShouldBootstrap(ctx context.Context, workspaceID, projectID pgtype.UUID) (bool, error) {
+	if p == nil || p.queries == nil || !workspaceID.Valid || !projectID.Valid {
+		return false, nil
+	}
+	project, err := p.queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
+		ID: projectID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return false, err
+	}
+	return LooksLikeSoftwareProject(project), nil
+}
+
 func (p *Provisioner) IsMikaAgent(ctx context.Context, workspaceID, agentID pgtype.UUID) bool {
 	if p == nil || p.queries == nil || !workspaceID.Valid || !agentID.Valid {
 		return false
