@@ -1,2 +1,1 @@
-DROP INDEX IF EXISTS idx_autonomous_project_usage_accounting_project;
 DROP TABLE IF EXISTS autonomous_project_usage_accounting;
