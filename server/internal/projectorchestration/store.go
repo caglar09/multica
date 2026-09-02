@@ -182,6 +182,176 @@ func (s *Store) PersistPlan(
 	}, nil
 }
 
+func (s *Store) AppendPlanDelta(
+	ctx context.Context,
+	workspaceID, projectID, planID pgtype.UUID,
+	nodes []NodeSpec,
+	edges []EdgeSpec,
+	primaryNodeKey string,
+	issueID pgtype.UUID,
+	assignedRole string,
+	assignedAgentID pgtype.UUID,
+	blockSourceKey string,
+	brainSubject string,
+	brainContent any,
+) error {
+	if s == nil || s.pool == nil {
+		return errors.New("project orchestration store is not configured")
+	}
+	if !workspaceID.Valid || !projectID.Valid || !planID.Valid {
+		return errors.New("workspace_id, project_id and plan_id are required")
+	}
+	if strings.TrimSpace(primaryNodeKey) == "" || !issueID.Valid {
+		return errors.New("primary discovered node and issue are required")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	lockKey := "autonomous-project-plan:" + util.UUIDToString(workspaceID) + ":" + util.UUIDToString(projectID)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lockKey); err != nil {
+		return fmt.Errorf("lock project plan delta: %w", err)
+	}
+
+	var current bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan
+			WHERE id = $1
+			  AND workspace_id = $2
+			  AND project_id = $3
+			  AND status IN ('active', 'blocked')
+		)
+	`, planID, workspaceID, projectID).Scan(&current); err != nil {
+		return err
+	}
+	if !current {
+		return errors.New("project plan changed before discovered work could be adopted")
+	}
+
+	for _, node := range nodes {
+		capabilities, _ := json.Marshal(node.RequiredCapabilities)
+		criteria, _ := json.Marshal(node.AcceptanceCriteria)
+		maxAttempts := node.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = 3
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO autonomous_project_plan_node (
+				plan_id, workspace_id, project_id, node_key, kind, title,
+				description, priority, required_role_family, required_capabilities,
+				acceptance_criteria, risk_level, max_attempts
+			)
+			VALUES (
+				$1, $2, $3, $4, $5, $6,
+				$7, $8, NULLIF($9, ''), $10,
+				$11, $12, $13
+			)
+			ON CONFLICT (plan_id, node_key) DO NOTHING
+		`, planID, workspaceID, projectID, node.Key, string(node.Kind), node.Title,
+			node.Description, node.Priority, node.RequiredRoleFamily, capabilities,
+			criteria, string(node.Risk), maxAttempts); err != nil {
+			return fmt.Errorf("insert discovered project node %q: %w", node.Key, err)
+		}
+	}
+
+	var nodeCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM autonomous_project_plan_node
+		WHERE plan_id = $1
+	`, planID).Scan(&nodeCount); err != nil {
+		return err
+	}
+	if nodeCount > DefaultMaxNodes {
+		return fmt.Errorf("%w: discovered work would exceed maximum project node count %d", ErrInvalidPlan, DefaultMaxNodes)
+	}
+
+	for _, edge := range edges {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO autonomous_project_plan_edge (
+				plan_id, workspace_id, project_id,
+				from_node_key, to_node_key, dependency_type
+			)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (plan_id, from_node_key, to_node_key, dependency_type) DO NOTHING
+		`, planID, workspaceID, projectID, edge.From, edge.To, string(edge.Type)); err != nil {
+			return fmt.Errorf("insert discovered project edge %s -> %s: %w", edge.From, edge.To, err)
+		}
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET materialized_issue_id = $5,
+		    assigned_role = COALESCE(NULLIF($6, ''), assigned_role),
+		    assigned_agent_id = CASE WHEN $7::uuid IS NULL THEN assigned_agent_id ELSE $7 END,
+		    updated_at = now()
+		WHERE plan_id = $1
+		  AND workspace_id = $2
+		  AND project_id = $3
+		  AND node_key = $4
+		  AND (materialized_issue_id IS NULL OR materialized_issue_id = $5)
+	`, planID, workspaceID, projectID, primaryNodeKey, issueID, assignedRole, assignedAgentID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("discovered project node %q could not bind issue", primaryNodeKey)
+	}
+
+	if strings.TrimSpace(blockSourceKey) != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_plan_node
+			SET status = 'blocked',
+			    blocked_category = 'dependency',
+			    blocked_reason = $5,
+			    updated_at = now()
+			WHERE plan_id = $1
+			  AND workspace_id = $2
+			  AND project_id = $3
+			  AND node_key = $4
+			  AND status NOT IN ('completed', 'cancelled')
+		`, planID, workspaceID, projectID, blockSourceKey,
+			"runtime-discovered prerequisite "+primaryNodeKey+" must complete"); err != nil {
+			return fmt.Errorf("block source node for discovered prerequisite: %w", err)
+		}
+	}
+
+	if brainContent != nil {
+		raw, err := json.Marshal(brainContent)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO autonomous_project_brain_entry (
+				workspace_id, project_id, plan_id, entry_type, subject, content,
+				source_type, source_id, confidence, created_by_type
+			)
+			SELECT $1, $2, $3, 'discovered_work', $4, $5,
+			       'discovered_issue', $6, 0.9, 'agent'
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM autonomous_project_brain_entry
+				WHERE workspace_id = $1
+				  AND project_id = $2
+				  AND source_type = 'discovered_issue'
+				  AND source_id = $6
+			)
+		`, workspaceID, projectID, planID, brainSubject, raw, util.UUIDToString(issueID)); err != nil {
+			return fmt.Errorf("record discovered work in project brain: %w", err)
+		}
+	}
+
+	if err := refreshReadyTx(ctx, tx, planID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func seedBrain(ctx context.Context, tx pgx.Tx, workspaceID, projectID, planID pgtype.UUID, plan Plan) error {
 	insert := func(entryType, subject string, content any) error {
 		raw, err := json.Marshal(content)
