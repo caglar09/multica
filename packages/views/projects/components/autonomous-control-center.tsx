@@ -12,6 +12,9 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  GitBranch,
+  Gauge,
+  CheckCircle2,
   Users,
   Workflow,
 } from "lucide-react";
@@ -32,6 +35,7 @@ import {
   useReplanAutonomousProject,
   useResumeAutonomousProject,
   useRetryAutonomousAction,
+  useResolveAutonomousEscalation,
 } from "@multica/core/projects";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -651,6 +655,7 @@ export function AutonomousControlCenter({
   const replan = useReplanAutonomousProject();
   const confirmTeam = useConfirmAutonomousTeam();
   const retryAction = useRetryAutonomousAction();
+  const resolveEscalation = useResolveAutonomousEscalation();
 
   const replanPending = data ? isReplanPending(data) : false;
 
@@ -849,6 +854,9 @@ export function AutonomousControlCenter({
             <TabsTrigger value="team">
               <Users /> Team
             </TabsTrigger>
+            <TabsTrigger value="plan">
+              <GitBranch /> Project OS
+            </TabsTrigger>
             <TabsTrigger value="workflow">
               <Workflow /> Workflow
             </TabsTrigger>
@@ -1013,6 +1021,349 @@ export function AutonomousControlCenter({
               <Card>
                 <CardContent className="py-10 text-center text-muted-foreground">
                   No autonomous Technology Team exists for this project yet.
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          <TabsContent value="plan" className="space-y-4">
+            {data.plan ? (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <MetricCard
+                    title="Plan revision"
+                    value={data.plan.revision}
+                    description={data.plan.planner_model ?? data.plan.planner_name}
+                    icon={<GitBranch className="size-4" />}
+                  />
+                  <MetricCard
+                    title="Plan nodes"
+                    value={data.plan.nodes.length}
+                    description={
+                      String(
+                        data.plan.nodes.filter((node) => node.status === "completed")
+                          .length,
+                      ) + " completed"
+                    }
+                    icon={<Workflow className="size-4" />}
+                  />
+                  <MetricCard
+                    title="Open escalations"
+                    value={data.escalations.filter(
+                      (item) =>
+                        item.status === "open" || item.status === "acknowledged",
+                    ).length}
+                    description="Policy, budget and execution gates"
+                    icon={<AlertTriangle className="size-4" />}
+                  />
+                  <MetricCard
+                    title="Attempt budget"
+                    value={
+                      data.budget
+                        ? String(data.budget.total_attempts) +
+                          "/" +
+                          String(data.budget.max_total_attempts)
+                        : "—"
+                    }
+                    description={
+                      data.budget
+                        ? String(data.budget.max_parallel_nodes) +
+                          " max parallel nodes"
+                        : "No budget policy"
+                    }
+                    icon={<Gauge className="size-4" />}
+                  />
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>{data.plan.goal}</CardTitle>
+                    <CardDescription>
+                      Durable project plan revision {data.plan.revision} ·{" "}
+                      {data.plan.status}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="rounded-lg border bg-muted/20 p-3">
+                      <div className="text-caption font-medium text-muted-foreground">
+                        Specification
+                      </div>
+                      <p className="mt-1 text-body">
+                        {data.plan.specification.summary ?? "No summary"}
+                      </p>
+                      {(data.plan.specification.definition_of_done?.length ?? 0) >
+                      0 ? (
+                        <div className="mt-3">
+                          <div className="text-caption font-medium text-muted-foreground">
+                            Definition of Done
+                          </div>
+                          <ul className="mt-1 list-disc space-y-1 pl-5 text-caption">
+                            {data.plan.specification.definition_of_done?.map(
+                              (item) => <li key={item}>{item}</li>,
+                            )}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-2">
+                      {data.plan.nodes.map((node) => {
+                        const incoming = data.plan?.edges.filter(
+                          (edge) => edge.to === node.key,
+                        );
+                        return (
+                          <div
+                            key={node.id}
+                            className="rounded-lg border bg-surface p-3"
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={cn(
+                                      "size-2 rounded-full",
+                                      statusDotClass(node.status),
+                                    )}
+                                  />
+                                  <span className="font-medium">{node.title}</span>
+                                  <Badge variant="outline">{node.kind}</Badge>
+                                  <Badge
+                                    variant={
+                                      node.risk === "critical" ||
+                                      node.risk === "high"
+                                        ? "destructive"
+                                        : "secondary"
+                                    }
+                                  >
+                                    {node.risk}
+                                  </Badge>
+                                </div>
+                                <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                                  {node.key}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Badge variant="outline">{node.status}</Badge>
+                                {node.materialized_issue_id ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() =>
+                                      router.push(
+                                        wsPaths.issueDetail(
+                                          node.materialized_issue_id as string,
+                                        ),
+                                      )
+                                    }
+                                  >
+                                    Open issue
+                                  </Button>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="mt-3 grid gap-2 text-caption sm:grid-cols-3">
+                              <div>
+                                <span className="text-muted-foreground">Role</span>
+                                <div>
+                                  {node.assigned_role ??
+                                    node.required_role_family ??
+                                    "scheduler"}
+                                </div>
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">
+                                  Attempts
+                                </span>
+                                <div>
+                                  {node.attempt}/{node.max_attempts}
+                                </div>
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">
+                                  Dependencies
+                                </span>
+                                <div>
+                                  {incoming && incoming.length > 0
+                                    ? incoming.map((edge) => edge.from).join(", ")
+                                    : "none"}
+                                </div>
+                              </div>
+                            </div>
+                            {node.acceptance_criteria.length > 0 ? (
+                              <div className="mt-3">
+                                <div className="text-caption font-medium text-muted-foreground">
+                                  Acceptance criteria
+                                </div>
+                                <ul className="mt-1 list-disc space-y-1 pl-5 text-caption">
+                                  {node.acceptance_criteria.map((criterion) => (
+                                    <li key={criterion}>{criterion}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {data.escalations.length > 0 ? (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <AlertTriangle className="size-4" />
+                        Escalations & approvals
+                      </CardTitle>
+                      <CardDescription>
+                        Irreversible or policy-sensitive work remains blocked
+                        until the backend records an explicit resolution.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      {data.escalations.map((item) => {
+                        const open =
+                          item.status === "open" ||
+                          item.status === "acknowledged";
+                        return (
+                          <div
+                            key={item.id}
+                            className="rounded-lg border p-3"
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-medium">{item.summary}</span>
+                                  <Badge
+                                    variant={
+                                      item.severity === "critical" ||
+                                      item.severity === "high"
+                                        ? "destructive"
+                                        : "outline"
+                                    }
+                                  >
+                                    {item.severity}
+                                  </Badge>
+                                  <Badge variant="secondary">{item.category}</Badge>
+                                </div>
+                                <div className="mt-1 text-caption text-muted-foreground">
+                                  {formatTime(item.opened_at)} · {item.status}
+                                </div>
+                              </div>
+                              {canControl &&
+                              open &&
+                              item.category === "approval_required" ? (
+                                <div className="flex gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={resolveEscalation.isPending}
+                                    onClick={() =>
+                                      resolveEscalation.mutate(
+                                        {
+                                          projectId,
+                                          escalationId: item.id,
+                                          decision: "rejected",
+                                        },
+                                        {
+                                          onSuccess: () =>
+                                            toast.success("Approval rejected"),
+                                          onError: () =>
+                                            toast.error(
+                                              "Could not resolve approval",
+                                            ),
+                                        },
+                                      )
+                                    }
+                                  >
+                                    Reject
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    disabled={resolveEscalation.isPending}
+                                    onClick={() =>
+                                      resolveEscalation.mutate(
+                                        {
+                                          projectId,
+                                          escalationId: item.id,
+                                          decision: "approved",
+                                        },
+                                        {
+                                          onSuccess: () =>
+                                            toast.success(
+                                              "Approved; scheduler can continue",
+                                            ),
+                                          onError: () =>
+                                            toast.error(
+                                              "Could not resolve approval",
+                                            ),
+                                        },
+                                      )
+                                    }
+                                  >
+                                    <CheckCircle2 /> Approve
+                                  </Button>
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </CardContent>
+                  </Card>
+                ) : null}
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <ShieldCheck className="size-4" />
+                      Quality evidence
+                    </CardTitle>
+                    <CardDescription>
+                      Backend-owned evidence generated by review, QA, security
+                      and integration stages.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {data.quality_gates.length > 0 ? (
+                      <div className="grid gap-2 md:grid-cols-2">
+                        {data.quality_gates.map((gate) => (
+                          <div
+                            key={gate.id}
+                            className="flex items-center justify-between gap-3 rounded-lg border p-3"
+                          >
+                            <div>
+                              <div className="font-medium">{gate.gate_type}</div>
+                              <div className="text-caption text-muted-foreground">
+                                {formatTime(gate.updated_at)}
+                              </div>
+                            </div>
+                            <Badge
+                              variant={
+                                gate.status === "failed"
+                                  ? "destructive"
+                                  : gate.status === "passed"
+                                    ? "default"
+                                    : "outline"
+                              }
+                            >
+                              {gate.status}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="py-6 text-center text-muted-foreground">
+                        Quality evidence will appear as lifecycle gates run.
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </>
+            ) : (
+              <Card>
+                <CardContent className="py-10 text-center text-muted-foreground">
+                  The durable project plan has not been generated yet.
                 </CardContent>
               </Card>
             )}
