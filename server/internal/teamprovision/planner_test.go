@@ -76,3 +76,38 @@ func assertRole(t *testing.T, plan Plan, role string) {
 	}
 	t.Fatalf("plan does not contain role %q: %+v", role, plan.Roles)
 }
+
+func TestLooksLikeSoftwareProject(t *testing.T) {
+	if !LooksLikeSoftwareProject(db.Project{
+		Title: "Bebek takip uygulaması MVP",
+		Description: pgtype.Text{String: "React Native mobile application with API", Valid: true},
+	}) {
+		t.Fatal("software-like project was not classified for eager bootstrap")
+	}
+	if LooksLikeSoftwareProject(db.Project{Title: "Office furniture purchase"}) {
+		t.Fatal("non-software project should not eagerly provision a technology team")
+	}
+}
+
+func TestImplementationRoleClassification(t *testing.T) {
+	for _, role := range []string{
+		RoleBackendEngineer,
+		RoleFrontendEngineer,
+		RoleMobileEngineer,
+		RoleFullstackEngineer,
+	} {
+		if !IsImplementationRole(role) {
+			t.Fatalf("%q should be an implementation role", role)
+		}
+	}
+	for _, role := range []string{
+		RoleProductManager,
+		RoleSolutionArchitect,
+		RoleCodeReviewer,
+		RoleQAEngineer,
+	} {
+		if IsImplementationRole(role) {
+			t.Fatalf("%q must not enter the implementation workflow as owner", role)
+		}
+	}
+}
