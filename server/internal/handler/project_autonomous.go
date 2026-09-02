@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/teamprovision"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -21,6 +22,31 @@ type AutonomousControlResponse struct {
 	ReplanRequestedAt   *string `json:"replan_requested_at"`
 	ReplanCompletedAt   *string `json:"replan_completed_at"`
 	LastError           *string `json:"last_error"`
+}
+
+type AutonomousTeamDraftResponse struct {
+	Status           string          `json:"status"`
+	PlannerName      string          `json:"planner_name"`
+	PlannerModel     *string         `json:"planner_model"`
+	Plan             json.RawMessage `json:"plan"`
+	DefaultRuntimeID *string         `json:"default_runtime_id"`
+	DefaultSkillIDs  []string        `json:"default_skill_ids"`
+	CreatedAt        string          `json:"created_at"`
+	UpdatedAt        string          `json:"updated_at"`
+}
+
+type AutonomousRuntimeOptionResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Provider    string `json:"provider"`
+	RuntimeMode string `json:"runtime_mode"`
+	Status      string `json:"status"`
+}
+
+type AutonomousSkillOptionResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 type AutonomousTeamMemberResponse struct {
@@ -109,14 +135,17 @@ type AutonomousProjectHealthResponse struct {
 }
 
 type AutonomousProjectResponse struct {
-	Enabled   bool                            `json:"enabled"`
-	Control   AutonomousControlResponse       `json:"control"`
-	Health    AutonomousProjectHealthResponse `json:"health"`
-	Team      *AutonomousTeamResponse         `json:"team"`
-	Workflows []AutonomousWorkflowResponse    `json:"workflows"`
-	Actions   []AutonomousActionResponse      `json:"actions"`
-	Activity  []AutonomousActivityResponse    `json:"activity"`
-	Decisions []AutonomousDecisionResponse    `json:"decisions"`
+	Enabled   bool                              `json:"enabled"`
+	Control   AutonomousControlResponse         `json:"control"`
+	Health    AutonomousProjectHealthResponse   `json:"health"`
+	Draft     *AutonomousTeamDraftResponse       `json:"draft"`
+	Runtimes  []AutonomousRuntimeOptionResponse  `json:"runtimes"`
+	Skills    []AutonomousSkillOptionResponse    `json:"skills"`
+	Team      *AutonomousTeamResponse            `json:"team"`
+	Workflows []AutonomousWorkflowResponse       `json:"workflows"`
+	Actions   []AutonomousActionResponse         `json:"actions"`
+	Activity  []AutonomousActivityResponse       `json:"activity"`
+	Decisions []AutonomousDecisionResponse       `json:"decisions"`
 }
 
 type autonomousActivitySortable struct {
@@ -166,6 +195,8 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	}
 
 	resp := AutonomousProjectResponse{
+		Runtimes:  []AutonomousRuntimeOptionResponse{},
+		Skills:    []AutonomousSkillOptionResponse{},
 		Workflows: []AutonomousWorkflowResponse{},
 		Actions:   []AutonomousActionResponse{},
 		Activity:  []AutonomousActivityResponse{},
