@@ -125,7 +125,7 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 
 	for _, item := range items {
 		planCtx, cancel := context.WithTimeout(ctx, autonomousPlanningTimeout)
-		err := r.planProject(planCtx, item.workspaceID, item.projectID, item.confirmedAt)
+		err := r.planProjectRevision(planCtx, item.workspaceID, item.projectID, item.confirmedAt.UTC().Format(time.RFC3339Nano))
 		cancel()
 		if err != nil {
 			message := err.Error()
@@ -152,13 +152,14 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runtime) planProject(ctx context.Context, workspaceID, projectID pgtype.UUID, confirmedAt time.Time) error {
+func (r *Runtime) planProjectRevision(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	sourceRevision string,
+) error {
 	project, err := r.taskSvc.Queries.GetProjectInWorkspace(ctx, dbGetProjectParams(projectID, workspaceID))
 	if err != nil {
 		return fmt.Errorf("load project for durable planning: %w", err)
-	}
-	if err := r.enforceProjectNodePolicy(ctx, workspaceID, projectID, node); err != nil {
-		return err
 	}
 	team, ok, err := r.team.FindProject(ctx, workspaceID, projectID)
 	if err != nil {
@@ -183,17 +184,24 @@ func (r *Runtime) planProject(ctx context.Context, workspaceID, projectID pgtype
 	if project.Description.Valid {
 		description = project.Description.String
 	}
+	var currentPlan *projectorchestration.Plan
+	if stored, exists, loadErr := r.projectStore.LoadLatestPlan(ctx, workspaceID, projectID); loadErr != nil {
+		return loadErr
+	} else if exists {
+		current := stored.Plan
+		currentPlan = &current
+	}
 	plan, execution, err := r.projectPlanner.Plan(ctx, projectorchestration.PlanningInput{
 		WorkspaceID: workspaceID,
 		ProjectID: projectID,
 		ProjectTitle: project.Title,
 		ProjectDescription: description,
 		Team: roles,
+		CurrentPlan: currentPlan,
 	})
 	if err != nil {
 		return err
 	}
-	sourceRevision := confirmedAt.UTC().Format(time.RFC3339Nano)
 	_, err = r.projectStore.PersistPlan(
 		ctx, workspaceID, projectID, sourceRevision,
 		execution.Provider, execution.Model, plan,
