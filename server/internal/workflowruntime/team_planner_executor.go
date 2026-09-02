@@ -14,8 +14,9 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/teamprovision"
-	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 const (
@@ -151,7 +152,7 @@ func (e *MikaTeamPlanExecutor) ensurePlannerCarrier(ctx context.Context, workspa
 
 	if _, err := tx.Exec(ctx,
 		"SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-		"autonomous-team-planner:"+uuidText(workspaceID),
+		"autonomous-team-planner:"+util.UUIDToString(workspaceID),
 	); err != nil {
 		return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("lock team planner carrier: %w", err)
 	}
@@ -349,17 +350,5 @@ func nullableText(value pgtype.Text) any {
 	return value.String
 }
 
-func uuidText(value pgtype.UUID) string {
-	if !value.Valid {
-		return ""
-	}
-	return fmt.Sprintf("%x-%x-%x-%x-%x",
-		value.Bytes[0:4],
-		value.Bytes[4:6],
-		value.Bytes[6:8],
-		value.Bytes[8:10],
-		value.Bytes[10:16],
-	)
-}
 
 var _ teamprovision.RuntimePlanExecutor = (*MikaTeamPlanExecutor)(nil)
