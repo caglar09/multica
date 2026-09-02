@@ -44,6 +44,19 @@ type ProjectResponse struct {
 	// payload to keep parent metadata and child collections separate; clients
 	// that need the list call ListProjectResources directly.
 	ResourceCount int64 `json:"resource_count"`
+	// WorkingDirectories are daemon-owned project task locations grouped by
+	// machine. They are populated on the detail endpoint only; list responses
+	// keep this collection empty to avoid an extra task scan per project.
+	WorkingDirectories []ProjectWorkingDirectoryResponse `json:"working_directories,omitempty"`
+}
+
+type ProjectWorkingDirectoryResponse struct {
+	Path         string `json:"path"`
+	RelativePath string `json:"relative_path"`
+	DaemonID     string `json:"daemon_id"`
+	RuntimeID    string `json:"runtime_id"`
+	TaskID       string `json:"task_id"`
+	Status       string `json:"status"`
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
@@ -96,6 +109,78 @@ func (h *Handler) loadProjectResourceCount(ctx context.Context, projectID pgtype
 		return 0
 	}
 	return rows[0].ResourceCount
+}
+
+// loadProjectWorkingDirectories returns at most one most-recent daemon-owned
+// task directory per local machine. A project can execute on multiple daemons,
+// so the server must not collapse these into one global path: an absolute path
+// is only meaningful on the machine whose daemon reported it.
+//
+// This is intentionally detail-only metadata. It is derived from durable task
+// lifecycle state instead of predicting ~/multica_workspaces paths from labels;
+// daemon root/profile overrides and stable task-root records make prediction
+// incorrect. The renderer matches daemon_id to the local desktop before making
+// the path clickable.
+func (h *Handler) loadProjectWorkingDirectories(ctx context.Context, workspaceID, projectID pgtype.UUID) []ProjectWorkingDirectoryResponse {
+	if h.DB == nil {
+		return nil
+	}
+	rows, err := h.DB.Query(ctx, `
+		SELECT
+			atq.id::text,
+			atq.runtime_id::text,
+			ar.daemon_id,
+			atq.status,
+			COALESCE(NULLIF(atq.durable_work_dir, ''), NULLIF(atq.work_dir, '')) AS work_path,
+			(NULLIF(atq.durable_work_dir, '') IS NOT NULL) AS is_durable
+		FROM agent_task_queue atq
+		JOIN issue i ON i.id = atq.issue_id
+		JOIN agent_runtime ar ON ar.id = atq.runtime_id
+		WHERE i.workspace_id = $1
+		  AND i.project_id = $2
+		  AND ar.daemon_id IS NOT NULL
+		  AND BTRIM(ar.daemon_id) <> ''
+		  AND COALESCE(NULLIF(atq.durable_work_dir, ''), NULLIF(atq.work_dir, '')) IS NOT NULL
+		ORDER BY atq.created_at DESC, atq.id DESC
+		LIMIT 200
+	`, workspaceID, projectID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	seenDaemon := make(map[string]struct{})
+	locations := make([]ProjectWorkingDirectoryResponse, 0, 2)
+	for rows.Next() {
+		var taskID, runtimeID, daemonID, status, path string
+		var durable bool
+		if err := rows.Scan(&taskID, &runtimeID, &daemonID, &status, &path, &durable); err != nil {
+			return nil
+		}
+		if _, exists := seenDaemon[daemonID]; exists {
+			continue
+		}
+		seenDaemon[daemonID] = struct{}{}
+
+		workspaceKey, taskKey := uuidToString(workspaceID), taskID
+		if durable {
+			// durable_work_dir may be an arbitrary user-owned delivery path rather
+			// than the managed {workspace}/{task}/workdir layout.
+			workspaceKey, taskKey = "", ""
+		}
+		locations = append(locations, ProjectWorkingDirectoryResponse{
+			Path:         path,
+			RelativePath: relativeWorkDir(path, workspaceKey, taskKey),
+			DaemonID:     daemonID,
+			RuntimeID:    runtimeID,
+			TaskID:       taskID,
+			Status:       status,
+		})
+	}
+	if rows.Err() != nil {
+		return nil
+	}
+	return locations
 }
 
 type CreateProjectBootstrapRequest struct {
@@ -227,6 +312,7 @@ func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	resp := projectToResponse(project)
 	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(r.Context(), wsUUID, project.ID)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)
+	resp.WorkingDirectories = h.loadProjectWorkingDirectories(r.Context(), wsUUID, project.ID)
 	writeJSON(w, http.StatusOK, resp)
 }
 
