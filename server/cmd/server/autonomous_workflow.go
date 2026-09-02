@@ -49,6 +49,12 @@ func startAutonomousWorkflow(
 		}
 	}
 
+	slog.Info("autonomous team planner configured",
+		"transport", "mika_runtime",
+		"required", required,
+		"max_agents", maxAgents,
+	)
+
 	planner := teamprovision.NewRuntimeBackedPlanner(
 		workflowruntime.NewMikaTeamPlanExecutor(pool, taskSvc),
 		teamprovision.RuntimeBackedPlannerConfig{
