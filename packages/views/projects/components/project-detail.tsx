@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
-import { Check, ChevronRight, Link2, ListTodo, MoreHorizontal, PanelRight, Pin, PinOff, Sparkles, Trash2, UserMinus } from "lucide-react";
+import { Check, ChevronRight, FolderOpen, Link2, ListTodo, MoreHorizontal, PanelRight, Pin, PinOff, Sparkles, Trash2, UserMinus } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
@@ -74,6 +74,8 @@ import {
 import { useT } from "../../i18n";
 import { useProjectStatusLabels, useProjectPriorityLabels } from "./labels";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import { isDesktopShell, openLocalDirectory } from "../../platform/local-directory";
+import { useLocalDaemonStatus } from "../../platform/use-local-daemon-status";
 
 // ---------------------------------------------------------------------------
 // Property row — sidebar property display
@@ -109,6 +111,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const router = useNavigation();
   const userId = useAuthStore((s) => s.user?.id);
   const { data: project, isLoading } = useQuery(projectDetailOptions(wsId, projectId));
+  const localDaemon = useLocalDaemonStatus();
   const recordRecentContext = useRecentContextStore((s) => s.recordVisit);
   useEffect(() => {
     if (project) {
@@ -148,6 +151,22 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const isMobile = useIsMobile();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const localProjectDirectory = useMemo(() => {
+    if (!project || !localDaemon.daemonId) return undefined;
+    return project.working_directories?.find(
+      (directory) => directory.daemon_id === localDaemon.daemonId,
+    );
+  }, [project, localDaemon.daemonId]);
+
+  const handleOpenProjectDirectory = useCallback(async () => {
+    if (!localProjectDirectory || !isDesktopShell()) return;
+    const result = await openLocalDirectory(localProjectDirectory.path);
+    if (!result.ok) {
+      toast.error(
+        result.error ?? t(($) => $.resources.toast_local_open_failed),
+      );
+    }
+  }, [localProjectDirectory, t]);
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [progressOpen, setProgressOpen] = useState(true);
   const [descriptionOpen, setDescriptionOpen] = useState(true);
@@ -414,6 +433,29 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           <PropRow label={t(($) => $.detail.prop_due_date)}>
             <ProjectDueDatePicker dueDate={project.due_date} onUpdate={handleUpdateField} />
           </PropRow>
+          {localProjectDirectory && isDesktopShell() && (
+            <PropRow label={t(($) => $.detail.prop_directory)}>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenProjectDirectory()}
+                      className="flex min-w-0 items-center gap-1.5 text-left text-caption hover:text-foreground transition-colors"
+                    />
+                  }
+                >
+                  <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 truncate font-mono" title={localProjectDirectory.path}>
+                    {localProjectDirectory.path}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" align="start" className="max-w-md break-all">
+                  {t(($) => $.resources.local_open_tooltip)}
+                </TooltipContent>
+              </Tooltip>
+            </PropRow>
+          )}
         </div>}
       </div>
 
