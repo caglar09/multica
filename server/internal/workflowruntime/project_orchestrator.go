@@ -274,8 +274,16 @@ func (r *Runtime) materializeProjectNode(
 		return err
 	}
 	switch node.Kind {
-	case projectorchestration.NodeDeploy, projectorchestration.NodeObserve, projectorchestration.NodeIncident:
-		return projectorchestration.ErrAdapterNotConfigured
+	case projectorchestration.NodeDeploy:
+		if r.deploymentAdapter == nil {
+			return projectorchestration.ErrAdapterNotConfigured
+		}
+		return r.executeDeploymentNode(ctx, workspaceID, projectID, node)
+	case projectorchestration.NodeObserve:
+		if r.observationAdapter == nil {
+			return projectorchestration.ErrAdapterNotConfigured
+		}
+		return r.executeObservationNode(ctx, workspaceID, projectID, node)
 	}
 	team, ok, err := r.team.FindProject(ctx, workspaceID, projectID)
 	if err != nil {
@@ -360,6 +368,187 @@ func (r *Runtime) materializeProjectNode(
 		return err
 	}
 	return r.startMaterializedNode(ctx, res.Issue, node, agentID, ownerUserID)
+}
+
+func (r *Runtime) executeDeploymentNode(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	node projectorchestration.ReadyNode,
+) error {
+	nodeID, planID, err := r.projectStore.StartExternalNode(ctx, workspaceID, projectID, node.Key)
+	if err != nil {
+		return err
+	}
+
+	fail := func(cause error) error {
+		_, failErr := r.projectStore.FailExternalNode(ctx, workspaceID, projectID, node.Key, cause.Error())
+		if failErr != nil {
+			return fmt.Errorf("%v; persist deployment node failure: %w", cause, failErr)
+		}
+		return cause
+	}
+
+	var sourceRevision string
+	var policyJSON []byte
+	if err := r.pool.QueryRow(ctx, `
+		SELECT source_revision, policy
+		FROM autonomous_project_plan
+		WHERE id = $1 AND workspace_id = $2 AND project_id = $3
+	`, planID, workspaceID, projectID).Scan(&sourceRevision, &policyJSON); err != nil {
+		return fail(err)
+	}
+	var policy projectorchestration.Policy
+	if err := json.Unmarshal(policyJSON, &policy); err != nil {
+		return fail(fmt.Errorf("decode deployment policy: %w", err))
+	}
+
+	var deploymentID pgtype.UUID
+	if err := r.pool.QueryRow(ctx, `
+		INSERT INTO autonomous_project_deployment (
+			workspace_id, project_id, plan_id, environment, provider,
+			status, policy_snapshot, started_at
+		)
+		VALUES ($1, $2, $3, 'production', 'webhook', 'running', $4, now())
+		RETURNING id
+	`, workspaceID, projectID, planID, policyJSON).Scan(&deploymentID); err != nil {
+		return fail(fmt.Errorf("create deployment record: %w", err))
+	}
+
+	result, err := r.deploymentAdapter.Deploy(ctx, projectorchestration.DeploymentRequest{
+		WorkspaceID: workspaceID,
+		ProjectID: projectID,
+		PlanID: planID,
+		Environment: "production",
+		ReleaseRef: sourceRevision,
+		Policy: policy,
+	})
+	if err != nil {
+		_, _ = r.pool.Exec(ctx, `
+			UPDATE autonomous_project_deployment
+			SET status = 'failed',
+			    evidence = jsonb_build_object('error', $2),
+			    completed_at = now()
+			WHERE id = $1
+		`, deploymentID, err.Error())
+		return fail(err)
+	}
+
+	evidence, _ := json.Marshal(result.Evidence)
+	status := result.Status
+	if status != "succeeded" {
+		status = "failed"
+	}
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_project_deployment
+		SET provider = $2,
+		    external_ref = NULLIF($3, ''),
+		    status = $4,
+		    evidence = $5,
+		    completed_at = now()
+		WHERE id = $1
+	`, deploymentID, result.Provider, result.ExternalRef, status, evidence); err != nil {
+		return fail(fmt.Errorf("update deployment record: %w", err))
+	}
+	if status != "succeeded" {
+		return fail(errors.New("deployment provider reported failure"))
+	}
+
+	artifactContent, _ := json.Marshal(map[string]any{
+		"deployment_id": util.UUIDToString(deploymentID),
+		"provider": result.Provider,
+		"external_ref": result.ExternalRef,
+		"environment": "production",
+		"release_ref": sourceRevision,
+		"evidence": result.Evidence,
+	})
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_artifact (
+			workspace_id, project_id, plan_id, node_id, artifact_type, name, content
+		)
+		VALUES ($1, $2, $3, $4, 'deployment_record', $5, $6)
+	`, workspaceID, projectID, planID, nodeID, "Deployment: "+node.Title, artifactContent); err != nil {
+		return fail(fmt.Errorf("record deployment artifact: %w", err))
+	}
+	return r.projectStore.CompleteExternalNode(ctx, workspaceID, projectID, node.Key)
+}
+
+func (r *Runtime) executeObservationNode(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	node projectorchestration.ReadyNode,
+) error {
+	nodeID, planID, err := r.projectStore.StartExternalNode(ctx, workspaceID, projectID, node.Key)
+	if err != nil {
+		return err
+	}
+	fail := func(cause error) error {
+		_, failErr := r.projectStore.FailExternalNode(ctx, workspaceID, projectID, node.Key, cause.Error())
+		if failErr != nil {
+			return fmt.Errorf("%v; persist observation node failure: %w", cause, failErr)
+		}
+		return cause
+	}
+
+	var deploymentID pgtype.UUID
+	if err := r.pool.QueryRow(ctx, `
+		SELECT id
+		FROM autonomous_project_deployment
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND status = 'succeeded'
+		ORDER BY completed_at DESC NULLS LAST, created_at DESC
+		LIMIT 1
+	`, workspaceID, projectID).Scan(&deploymentID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fail(fmt.Errorf("%w: no successful deployment exists for observation", projectorchestration.ErrAdapterNotConfigured))
+		}
+		return fail(err)
+	}
+
+	result, err := r.observationAdapter.Observe(ctx, projectorchestration.ObservationRequest{
+		WorkspaceID: workspaceID,
+		ProjectID: projectID,
+		DeploymentID: deploymentID,
+		WindowSeconds: 300,
+	})
+	if err != nil {
+		return fail(err)
+	}
+
+	content, _ := json.Marshal(map[string]any{
+		"deployment_id": util.UUIDToString(deploymentID),
+		"healthy": result.Healthy,
+		"error_rate": result.ErrorRate,
+		"latency_p95": result.LatencyP95,
+		"signals": result.Signals,
+		"evidence": result.Evidence,
+	})
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_artifact (
+			workspace_id, project_id, plan_id, node_id, artifact_type, name, content
+		)
+		VALUES ($1, $2, $3, $4, 'generic', $5, $6)
+	`, workspaceID, projectID, planID, nodeID, "Observation: "+node.Title, content); err != nil {
+		return fail(fmt.Errorf("record observation artifact: %w", err))
+	}
+
+	if !result.Healthy {
+		severity := "medium"
+		if result.ErrorRate >= 0.05 {
+			severity = "high"
+		}
+		if _, err := r.pool.Exec(ctx, `
+			INSERT INTO autonomous_project_incident (
+				workspace_id, project_id, deployment_id, severity, status, title, evidence
+			)
+			VALUES ($1, $2, $3, $4, 'open', $5, $6)
+		`, workspaceID, projectID, deploymentID, severity,
+			"Autonomous observation detected regression: "+node.Title, content); err != nil {
+			return fail(fmt.Errorf("record autonomous incident: %w", err))
+		}
+	}
+
+	return r.projectStore.CompleteExternalNode(ctx, workspaceID, projectID, node.Key)
 }
 
 func (r *Runtime) startMaterializedNode(
