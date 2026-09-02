@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
-import { Check, ChevronRight, Link2, MoreHorizontal, PanelRight, Pin, PinOff, Trash2, UserMinus } from "lucide-react";
+import { Check, ChevronRight, Link2, ListTodo, MoreHorizontal, PanelRight, Pin, PinOff, Sparkles, Trash2, UserMinus } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
@@ -28,6 +28,7 @@ import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
+import { AutonomousControlCenter } from "./autonomous-control-center";
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -150,6 +151,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [progressOpen, setProgressOpen] = useState(true);
   const [descriptionOpen, setDescriptionOpen] = useState(true);
+  const [contentView, setContentView] = useState<"issues" | "autonomous">("issues");
 
   // Sidebar panel
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -548,10 +550,37 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             }
           />
 
-          <IssueSurface
-            scope={issueScope}
-            modes={["board", "list", "table", "swimlane", "gantt"]}
-          />
+          <div className="flex items-center gap-1 border-b px-3 py-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant={contentView === "issues" ? "secondary" : "ghost"}
+              onClick={() => setContentView("issues")}
+            >
+              <ListTodo />
+              Issues
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={contentView === "autonomous" ? "secondary" : "ghost"}
+              onClick={() => setContentView("autonomous")}
+            >
+              <Sparkles />
+              Autonomous
+            </Button>
+          </div>
+
+          <div className="min-h-0 flex-1">
+            {contentView === "issues" ? (
+              <IssueSurface
+                scope={issueScope}
+                modes={["board", "list", "table", "swimlane", "gantt"]}
+              />
+            ) : (
+              <AutonomousControlCenter projectId={projectId} />
+            )}
+          </div>
           </div>
         </ResizablePanel>
         {!isMobile && <ResizableHandle />}
