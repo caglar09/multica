@@ -82,6 +82,7 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 	if p == nil || p.executor == nil {
 		return Plan{}, RuntimeExecution{}, ErrPlannerUnavailable
 	}
+	input.Policy = effectivePlanningPolicy(p.policy, input.Policy)
 	execution, err := p.executor.ExecuteProjectPlan(ctx, input, projectPlannerSystemPrompt(), projectPlannerUserPrompt(input))
 	if err != nil {
 		return Plan{}, RuntimeExecution{}, err
@@ -90,7 +91,7 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 	if err == nil {
 		// Policy is backend-owned. The model may echo a policy object for schema
 		// stability, but it cannot raise autonomy, loosen approvals or budgets.
-		plan.Policy = effectivePlanningPolicy(p.policy, input.Policy)
+		plan.Policy = input.Policy
 		plan = HardenPlan(plan)
 		if err = ValidatePlan(plan, p.maxNodes); err == nil {
 			return plan, execution, nil
@@ -113,7 +114,7 @@ Original output:
 	if parseErr != nil {
 		return Plan{}, repaired, fmt.Errorf("decode repaired project plan: %w", parseErr)
 	}
-	plan.Policy = effectivePlanningPolicy(p.policy, input.Policy)
+	plan.Policy = input.Policy
 	plan = HardenPlan(plan)
 	if validateErr := ValidatePlan(plan, p.maxNodes); validateErr != nil {
 		return Plan{}, repaired, fmt.Errorf("repaired project plan rejected: %w", validateErr)
