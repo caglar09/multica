@@ -389,7 +389,7 @@ func (s *Store) ListPlanNodes(
 		       n.risk_level, COALESCE(n.required_role_family, ''),
 		       n.required_capabilities, n.acceptance_criteria, n.max_attempts,
 		       n.status, n.materialized_issue_id,
-		       COALESCE(n.assigned_role, ''), n.assigned_agent_id
+		       COALESCE(n.assigned_role, ''), n.assigned_agent_id, n.attempt
 		FROM autonomous_project_plan_node n
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		WHERE n.workspace_id = $1
@@ -413,7 +413,7 @@ func (s *Store) ListPlanNodes(
 		if err := rows.Scan(
 			&id, &item.Key, &kind, &item.Title, &item.Description, &item.Priority,
 			&risk, &item.RequiredRoleFamily, &capabilitiesJSON, &criteriaJSON,
-			&item.MaxAttempts, &item.Status, &issueID, &item.AssignedRole, &agentID,
+			&item.MaxAttempts, &item.Status, &issueID, &item.AssignedRole, &agentID, &item.Attempt,
 		); err != nil {
 			return nil, err
 		}
@@ -624,7 +624,7 @@ func (s *Store) ListBlockedNodes(
 		       n.risk_level, COALESCE(n.required_role_family, ''),
 		       n.required_capabilities, n.acceptance_criteria, n.max_attempts,
 		       n.status, n.materialized_issue_id,
-		       COALESCE(n.assigned_role, ''), n.assigned_agent_id,
+		       COALESCE(n.assigned_role, ''), n.assigned_agent_id, n.attempt,
 		       COALESCE(n.blocked_category, 'manual'), COALESCE(n.blocked_reason, '')
 		FROM autonomous_project_plan_node n
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
@@ -647,7 +647,7 @@ func (s *Store) ListBlockedNodes(
 		if err := rows.Scan(
 			&id, &item.Key, &kind, &item.Title, &item.Description, &item.Priority,
 			&risk, &item.RequiredRoleFamily, &caps, &criteria, &item.MaxAttempts,
-			&item.Status, &issueID, &item.AssignedRole, &agentID,
+			&item.Status, &issueID, &item.AssignedRole, &agentID, &item.Attempt,
 			&item.Category, &item.Reason,
 		); err != nil {
 			return nil, err
