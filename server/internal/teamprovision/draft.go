@@ -346,6 +346,11 @@ func (p *Provisioner) ProvisionDraft(
 		if hasAssignment {
 			if selectedModel := strings.TrimSpace(assignment.Model); selectedModel != "" {
 				model = pgtype.Text{String: selectedModel, Valid: true}
+				// Thinking/service-tier settings are model-specific capabilities.
+				// Do not carry Mika's overrides onto a different explicitly
+				// selected model; let the chosen runtime/model use its defaults.
+				thinking = pgtype.Text{}
+				serviceTier = pgtype.Text{}
 			}
 		}
 
