@@ -14,6 +14,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
+var ErrBudgetExceeded = errors.New("autonomous project budget exhausted")
+
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -377,7 +379,30 @@ func (s *Store) MarkNodeMaterialized(
 	if !issueID.Valid {
 		return errors.New("materialized issue id is required")
 	}
-	tag, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var maxTotalAttempts, totalAttempts int
+	if err := tx.QueryRow(ctx, `
+		SELECT max_total_attempts, total_attempts
+		FROM autonomous_project_budget
+		WHERE workspace_id = $1 AND project_id = $2
+		FOR UPDATE
+	`, workspaceID, projectID).Scan(&maxTotalAttempts, &totalAttempts); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		maxTotalAttempts = 100
+		totalAttempts = 0
+	}
+	if totalAttempts >= maxTotalAttempts {
+		return ErrBudgetExceeded
+	}
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node n
 		SET materialized_issue_id = $4,
 		    status = CASE WHEN status = 'ready' THEN 'running' ELSE status END,
@@ -390,13 +415,50 @@ func (s *Store) MarkNodeMaterialized(
 		  AND n.project_id = $2
 		  AND n.node_key = $3
 		  AND p.status = 'active'
-		  AND n.status IN ('ready', 'running')
+		  AND n.status = 'ready'
+		  AND n.attempt < n.max_attempts
 	`, workspaceID, projectID, nodeKey, issueID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("active project plan node %q is not ready", nodeKey)
+		return fmt.Errorf("active project plan node %q is not ready or exhausted", nodeKey)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_budget
+		SET total_attempts = total_attempts + 1, updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) AddUsage(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	tokens, runtimeSeconds, costMicrounits int64,
+) error {
+	if tokens < 0 || runtimeSeconds < 0 || costMicrounits < 0 {
+		return errors.New("project usage deltas cannot be negative")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE autonomous_project_budget
+		SET tokens_used = tokens_used + $3,
+		    runtime_seconds_used = runtime_seconds_used + $4,
+		    cost_microunits_used = cost_microunits_used + $5,
+		    updated_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND (token_limit IS NULL OR tokens_used + $3 <= token_limit)
+		  AND (runtime_seconds_limit IS NULL OR runtime_seconds_used + $4 <= runtime_seconds_limit)
+		  AND (cost_microunits_limit IS NULL OR cost_microunits_used + $5 <= cost_microunits_limit)
+	`, workspaceID, projectID, tokens, runtimeSeconds, costMicrounits)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrBudgetExceeded
 	}
 	return nil
 }
