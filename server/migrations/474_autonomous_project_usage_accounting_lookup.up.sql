@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_autonomous_project_usage_accounting_project ON autonomous_project_usage_accounting(workspace_id, project_id, accounted_at);
