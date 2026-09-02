@@ -1097,6 +1097,48 @@ export function AutonomousControlCenter({
               />
             </div>
 
+            {data.bootstrap ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Brain className="size-4" />
+                    Project Bootstrap
+                  </CardTitle>
+                  <CardDescription>
+                    Durable intake and guardrails used by Team Planning and Project OS.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-3 md:grid-cols-[180px_1fr]">
+                  <div className="space-y-2 text-caption">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">Mode</span>
+                      <Badge variant={data.bootstrap.autonomy_mode === "autonomous" ? "default" : "outline"}>
+                        {data.bootstrap.autonomy_mode}
+                      </Badge>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">Autonomy</span>
+                      <span>{data.bootstrap.autonomy_level.replace("_", " ")}</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">Status</span>
+                      <span>{data.bootstrap.status}</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">Knowledge</span>
+                      <span>{data.bootstrap.knowledge.length}</span>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border bg-muted/20 p-3">
+                    <div className="text-caption font-medium">Brief</div>
+                    <p className="mt-1 whitespace-pre-wrap text-body text-muted-foreground">
+                      {data.bootstrap.brief || "No bootstrap brief supplied."}
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
+
             <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
               <Card>
                 <CardHeader>
