@@ -311,7 +311,7 @@ func (r *Runtime) materializeProjectNode(
 		WorkspaceID: workspaceID,
 		Title: node.Title,
 		Description: pgtype.Text{String: description, Valid: true},
-		Status: "todo",
+		Status: "backlog",
 		Priority: projectNodePriority(node.Priority),
 		AssigneeType: pgtype.Text{String: "agent", Valid: true},
 		AssigneeID: agentID,
