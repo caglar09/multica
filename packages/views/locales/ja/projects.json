@@ -69,6 +69,7 @@
     "section_description": "説明",
     "prop_start_date": "開始日",
     "prop_due_date": "期限",
+    "prop_directory": "プロジェクトフォルダ",
     "no_start_date": "開始日なし",
     "no_due_date": "期限なし",
     "description_placeholder": "説明を追加...",
