@@ -810,6 +810,14 @@ func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 	rows.Close()
 
 	for _, project := range projects {
+		// Evaluate unblock conditions before projecting node state back to the
+		// board. Otherwise a human/condition resolver moving a technical block
+		// out of Blocked would be overwritten before the conductor could see it.
+		if err := r.reconcileProjectBlockedNodes(ctx, project.workspaceID, project.projectID); err != nil {
+			slog.Warn("project conductor blocked-node reconciliation failed",
+				"project_id", util.UUIDToString(project.projectID), "error", err)
+		}
+
 		// Board projection is intentionally eager: every issue-backed DAG node
 		// becomes visible as soon as the plan exists. Execution is a separate
 		// claim below, so pending dependencies stay parked in Backlog.
@@ -846,11 +854,6 @@ func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 		// event on slow clients.
 		if materialized {
 			continue
-		}
-
-		if err := r.reconcileProjectBlockedNodes(ctx, project.workspaceID, project.projectID); err != nil {
-			slog.Warn("project conductor blocked-node reconciliation failed",
-				"project_id", util.UUIDToString(project.projectID), "error", err)
 		}
 
 		ready, err := r.projectStore.ListReadyNodes(ctx, project.workspaceID, project.projectID, 20)
