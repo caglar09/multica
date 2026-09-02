@@ -370,6 +370,215 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 	return result, rows.Err()
 }
 
+func (s *Store) ListPlanNodes(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	limit int,
+) ([]PlannedNode, error) {
+	if s == nil || s.pool == nil {
+		return nil, errors.New("project orchestration store is not configured")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	if err := s.RefreshReady(ctx, workspaceID, projectID); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT n.id, n.node_key, n.kind, n.title, n.description, n.priority,
+		       n.risk_level, COALESCE(n.required_role_family, ''),
+		       n.required_capabilities, n.acceptance_criteria, n.max_attempts,
+		       n.status, n.materialized_issue_id,
+		       COALESCE(n.assigned_role, ''), n.assigned_agent_id
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND p.status IN ('active', 'blocked')
+		  AND n.status NOT IN ('completed', 'cancelled')
+		ORDER BY n.priority DESC, n.created_at ASC, n.node_key ASC
+		LIMIT $3
+	`, workspaceID, projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]PlannedNode, 0, limit)
+	for rows.Next() {
+		var item PlannedNode
+		var id, issueID, agentID pgtype.UUID
+		var kind, risk string
+		var capabilitiesJSON, criteriaJSON []byte
+		if err := rows.Scan(
+			&id, &item.Key, &kind, &item.Title, &item.Description, &item.Priority,
+			&risk, &item.RequiredRoleFamily, &capabilitiesJSON, &criteriaJSON,
+			&item.MaxAttempts, &item.Status, &issueID, &item.AssignedRole, &agentID,
+		); err != nil {
+			return nil, err
+		}
+		item.ID = util.UUIDToString(id)
+		item.Kind = NodeKind(kind)
+		item.Risk = RiskLevel(risk)
+		item.MaterializedIssueID = util.UUIDToString(issueID)
+		item.AssignedAgentID = util.UUIDToString(agentID)
+		_ = json.Unmarshal(capabilitiesJSON, &item.RequiredCapabilities)
+		_ = json.Unmarshal(criteriaJSON, &item.AcceptanceCriteria)
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) BindNodeIssue(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeKey string,
+	issueID pgtype.UUID,
+	assignedRole string,
+	assignedAgentID pgtype.UUID,
+) error {
+	if s == nil || s.pool == nil {
+		return errors.New("project orchestration store is not configured")
+	}
+	if !issueID.Valid {
+		return errors.New("materialized issue id is required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan_node n
+		SET materialized_issue_id = $4,
+		    assigned_role = COALESCE(NULLIF($5, ''), n.assigned_role),
+		    assigned_agent_id = CASE WHEN $6::uuid IS NULL THEN n.assigned_agent_id ELSE $6 END,
+		    updated_at = now()
+		FROM autonomous_project_plan p
+		WHERE n.plan_id = p.id
+		  AND n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND n.node_key = $3
+		  AND p.status IN ('active', 'blocked')
+		  AND n.status NOT IN ('completed', 'cancelled')
+		  AND (n.materialized_issue_id IS NULL OR n.materialized_issue_id = $4)
+	`, workspaceID, projectID, nodeKey, issueID, assignedRole, assignedAgentID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("project plan node %q cannot bind issue", nodeKey)
+	}
+	return nil
+}
+
+func (s *Store) ClaimReadyNode(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeKey string,
+) error {
+	if s == nil || s.pool == nil {
+		return errors.New("project orchestration store is not configured")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var maxTotalAttempts, totalAttempts int
+	if err := tx.QueryRow(ctx, `
+		SELECT max_total_attempts, total_attempts
+		FROM autonomous_project_budget
+		WHERE workspace_id = $1 AND project_id = $2
+		FOR UPDATE
+	`, workspaceID, projectID).Scan(&maxTotalAttempts, &totalAttempts); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		maxTotalAttempts = 100
+	}
+	if totalAttempts >= maxTotalAttempts {
+		return ErrBudgetExceeded
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node n
+		SET status = 'running',
+		    started_at = COALESCE(n.started_at, now()),
+		    attempt = n.attempt + 1,
+		    blocked_reason = NULL,
+		    updated_at = now()
+		FROM autonomous_project_plan p
+		WHERE n.plan_id = p.id
+		  AND n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND n.node_key = $3
+		  AND n.materialized_issue_id IS NOT NULL
+		  AND n.status = 'ready'
+		  AND n.attempt < n.max_attempts
+		  AND p.status IN ('active', 'blocked')
+	`, workspaceID, projectID, nodeKey)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("project node %q is no longer ready for execution", nodeKey)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_budget
+		SET total_attempts = total_attempts + 1, updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status = 'active', updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2 AND status = 'blocked'
+	`, workspaceID, projectID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) ReleaseNodeClaim(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeKey, reason string,
+) error {
+	if s == nil || s.pool == nil {
+		return errors.New("project orchestration store is not configured")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET status = 'ready',
+		    attempt = GREATEST(attempt - 1, 0),
+		    ready_at = COALESCE(ready_at, now()),
+		    blocked_reason = NULLIF($4, ''),
+		    updated_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND node_key = $3
+		  AND status = 'running'
+	`, workspaceID, projectID, nodeKey, reason)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_budget
+		SET total_attempts = GREATEST(total_attempts - 1, 0), updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) MarkNodeMaterialized(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
