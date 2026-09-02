@@ -24,6 +24,17 @@ type AutonomousControlResponse struct {
 	LastError           *string `json:"last_error"`
 }
 
+type AutonomousProjectBootstrapResponse struct {
+	AutonomyMode  string          `json:"autonomy_mode"`
+	AutonomyLevel string          `json:"autonomy_level"`
+	Brief         string          `json:"brief"`
+	Knowledge     json.RawMessage `json:"knowledge"`
+	Policy        json.RawMessage `json:"policy"`
+	Budget        json.RawMessage `json:"budget"`
+	Status        string          `json:"status"`
+	UpdatedAt     string          `json:"updated_at"`
+}
+
 type AutonomousTeamDraftResponse struct {
 	Status           string          `json:"status"`
 	PlannerName      string          `json:"planner_name"`
@@ -138,6 +149,7 @@ type AutonomousProjectResponse struct {
 	Enabled   bool                              `json:"enabled"`
 	Control   AutonomousControlResponse         `json:"control"`
 	Health    AutonomousProjectHealthResponse   `json:"health"`
+	Bootstrap *AutonomousProjectBootstrapResponse `json:"bootstrap"`
 	Draft     *AutonomousTeamDraftResponse       `json:"draft"`
 	Runtimes  []AutonomousRuntimeOptionResponse  `json:"runtimes"`
 	Skills    []AutonomousSkillOptionResponse    `json:"skills"`
@@ -301,6 +313,37 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	resp.Control.ReplanRequestedAt = nullableTimestampString(replanRequestedAt)
 	resp.Control.ReplanCompletedAt = nullableTimestampString(replanCompletedAt)
 	resp.Control.LastError = nullableTextString(lastError)
+
+	var bootstrap AutonomousProjectBootstrapResponse
+	var bootstrapKnowledge, bootstrapPolicy, bootstrapBudget []byte
+	var bootstrapUpdatedAt time.Time
+	bootstrapErr := h.DB.QueryRow(r.Context(), `
+		SELECT autonomy_mode, autonomy_level, brief, knowledge, policy, budget, status, updated_at
+		FROM autonomous_project_bootstrap
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID).Scan(
+		&bootstrap.AutonomyMode,
+		&bootstrap.AutonomyLevel,
+		&bootstrap.Brief,
+		&bootstrapKnowledge,
+		&bootstrapPolicy,
+		&bootstrapBudget,
+		&bootstrap.Status,
+		&bootstrapUpdatedAt,
+	)
+	if bootstrapErr == nil {
+		bootstrap.Knowledge = append(json.RawMessage(nil), bootstrapKnowledge...)
+		bootstrap.Policy = append(json.RawMessage(nil), bootstrapPolicy...)
+		bootstrap.Budget = append(json.RawMessage(nil), bootstrapBudget...)
+		bootstrap.UpdatedAt = bootstrapUpdatedAt.UTC().Format(time.RFC3339Nano)
+		resp.Bootstrap = &bootstrap
+		if bootstrap.AutonomyMode == "autonomous" {
+			resp.Enabled = true
+		}
+	} else if !errors.Is(bootstrapErr, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous project bootstrap")
+		return
+	}
 
 	userID, ok := requireUserID(w, r)
 	if !ok {
