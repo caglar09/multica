@@ -42,6 +42,18 @@ export interface ProjectBootstrapConfig {
   };
 }
 
+export interface ProjectWorkingDirectory {
+  /** Absolute path reported by the daemon that executed the project task. */
+  path: string;
+  /** Privacy-safe display form for non-local surfaces. */
+  relative_path: string;
+  /** Machine identity: absolute paths are only valid on this daemon's host. */
+  daemon_id: string;
+  runtime_id: string;
+  task_id: string;
+  status: string;
+}
+
 export interface Project {
   id: string;
   workspace_id: string;
@@ -61,6 +73,8 @@ export interface Project {
   issue_count: number;
   done_count: number;
   resource_count: number;
+  /** Detail-only daemon-owned working directories, newest per machine. */
+  working_directories?: ProjectWorkingDirectory[];
 }
 
 export interface CreateProjectRequest {
