@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	ErrTeamPlannerUnavailable = errors.New("autonomous team planner LLM is not configured")
+	ErrTeamPlannerUnavailable = errors.New("autonomous team planner runtime is unavailable")
 	ErrInvalidTeamPlan         = errors.New("invalid autonomous team plan")
 )
 
