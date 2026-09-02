@@ -10,12 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
 // WebhookAdapterConfig configures backend-owned deployment/observation
 // integrations. Credentials remain server-side and are never exposed to LLMs.
 type WebhookAdapterConfig struct {
+	RepositoryURL  string
 	DeploymentURL  string
 	ObservationURL string
 	BearerToken    string
@@ -23,10 +25,18 @@ type WebhookAdapterConfig struct {
 }
 
 type webhookAdapters struct {
+	repositoryURL  string
 	deploymentURL  string
 	observationURL string
 	bearerToken    string
 	client         *http.Client
+}
+
+func NewWebhookRepositoryAnalyzer(cfg WebhookAdapterConfig) RepositoryAnalyzer {
+	if strings.TrimSpace(cfg.RepositoryURL) == "" {
+		return nil
+	}
+	return newWebhookAdapters(cfg)
 }
 
 func NewWebhookDeploymentAdapter(cfg WebhookAdapterConfig) DeploymentAdapter {
@@ -49,11 +59,52 @@ func newWebhookAdapters(cfg WebhookAdapterConfig) *webhookAdapters {
 		timeout = 2 * time.Minute
 	}
 	return &webhookAdapters{
+		repositoryURL:  strings.TrimSpace(cfg.RepositoryURL),
 		deploymentURL:  strings.TrimSpace(cfg.DeploymentURL),
 		observationURL: strings.TrimSpace(cfg.ObservationURL),
 		bearerToken:    strings.TrimSpace(cfg.BearerToken),
 		client:         &http.Client{Timeout: timeout},
 	}
+}
+
+func (a *webhookAdapters) Snapshot(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) (RepositorySnapshot, error) {
+	if a == nil || a.repositoryURL == "" {
+		return RepositorySnapshot{}, ErrAdapterNotConfigured
+	}
+	payload := map[string]any{
+		"action": "snapshot",
+		"workspace_id": util.UUIDToString(workspaceID),
+		"project_id": util.UUIDToString(projectID),
+	}
+	var result RepositorySnapshot
+	if err := a.post(ctx, a.repositoryURL, payload, &result); err != nil {
+		return RepositorySnapshot{}, err
+	}
+	return result, nil
+}
+
+func (a *webhookAdapters) Impact(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	request ChangeImpactRequest,
+) (ChangeImpactEvidence, error) {
+	if a == nil || a.repositoryURL == "" {
+		return ChangeImpactEvidence{}, ErrAdapterNotConfigured
+	}
+	payload := map[string]any{
+		"action": "impact",
+		"workspace_id": util.UUIDToString(workspaceID),
+		"project_id": util.UUIDToString(projectID),
+		"request": request,
+	}
+	var result ChangeImpactEvidence
+	if err := a.post(ctx, a.repositoryURL, payload, &result); err != nil {
+		return ChangeImpactEvidence{}, err
+	}
+	return result, nil
 }
 
 func (a *webhookAdapters) Deploy(ctx context.Context, request DeploymentRequest) (DeploymentResult, error) {
