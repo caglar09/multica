@@ -302,6 +302,7 @@ var concurrentIndexCleanups = map[string]string{
 	"450_autonomous_workflow_action_claim_index":                "idx_autonomous_workflow_action_claim",
 	"451_autonomous_workflow_action_order_index":                "idx_autonomous_workflow_action_order",
 	"452_autonomous_workflow_processed_run_index":               "idx_autonomous_workflow_processed_run",
+	"456_autonomous_workflow_run_project_index":                  "idx_autonomous_workflow_run_project",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
