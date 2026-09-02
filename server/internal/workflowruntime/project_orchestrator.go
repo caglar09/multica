@@ -831,14 +831,18 @@ func (r *Runtime) reconcileProjectBlockedNodes(
 				return err
 			}
 		case "external_dependency":
-			switch node.Kind {
-			case projectorchestration.NodeDeploy:
-				resolved = r.deploymentAdapter != nil
-			case projectorchestration.NodeObserve:
-				resolved = r.observationAdapter != nil
-			default:
-				// A human may explicitly resolve a non-provider external
-				// dependency escalation after credentials/input are supplied.
+			// A provider that was simply absent can auto-resume once configured.
+			// Work that already exhausted its node retry budget requires an
+			// explicit resolved escalation before another attempt.
+			if node.Attempt < node.MaxAttempts {
+				switch node.Kind {
+				case projectorchestration.NodeDeploy:
+					resolved = r.deploymentAdapter != nil
+				case projectorchestration.NodeObserve:
+					resolved = r.observationAdapter != nil
+				}
+			}
+			if !resolved {
 				err := r.pool.QueryRow(ctx, `
 					SELECT EXISTS (
 						SELECT 1
