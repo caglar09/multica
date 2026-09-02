@@ -1047,6 +1047,9 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 	if err != nil || !task.ID.Valid {
 		return err
 	}
+	if err := r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeCompleted); err != nil {
+		return fmt.Errorf("record autonomous agent completion: %w", err)
+	}
 	if err := r.recordProjectTaskArtifact(ctx, task, issue); err != nil {
 		return fmt.Errorf("record autonomous project task artifact: %w", err)
 	}
@@ -1114,6 +1117,7 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 	case run.State == issuestatus.InReview && run.ReviewerAgentID == util.UUIDToString(task.AgentID):
 		effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
 		if effective == issuestatus.InProgress {
+			_ = r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeReviewRejected)
 			eventType := "review.changes_requested"
 			if run.ReviewCycles >= r.config.MaxReviewCycles {
 				eventType = "review.exhausted"
@@ -1165,6 +1169,9 @@ func (r *Runtime) handleTaskFailed(ctx context.Context, event events.Event) erro
 	task, issue, err := r.loadIssueTask(ctx, event)
 	if err != nil || !task.ID.Valid {
 		return err
+	}
+	if err := r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeFailed); err != nil {
+		return fmt.Errorf("record autonomous agent failure: %w", err)
 	}
 	if handled, projectErr := r.failProjectNodeTask(ctx, task, issue); handled {
 		return projectErr
