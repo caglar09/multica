@@ -941,6 +941,7 @@ func (s *Store) CleanupProject(
 		`DELETE FROM autonomous_project_plan_node WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_plan WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_budget WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_bootstrap WHERE workspace_id = $1 AND project_id = $2`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(ctx, statement, workspaceID, projectID); err != nil {
@@ -970,6 +971,7 @@ func (s *Store) CleanupWorkspace(ctx context.Context, workspaceID pgtype.UUID) e
 		`DELETE FROM autonomous_project_plan_node WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_plan WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_budget WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_bootstrap WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_agent_performance WHERE workspace_id = $1`,
 	}
 	for _, statement := range statements {
