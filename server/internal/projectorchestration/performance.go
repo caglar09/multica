@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -107,9 +108,12 @@ func (s *Store) AgentPerformance(
 		&out.TasksStarted, &out.TasksCompleted, &out.TasksFailed,
 		&out.ReviewRejections, &out.Retries, &out.TotalRuntimeSeconds,
 	)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No history is a neutral candidate.
 		return AgentPerformance{}, nil
+	}
+	if err != nil {
+		return AgentPerformance{}, err
 	}
 	return out, nil
 }
