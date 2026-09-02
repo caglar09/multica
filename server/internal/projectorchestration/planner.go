@@ -49,13 +49,18 @@ type RuntimePlanExecutor interface {
 type Planner struct {
 	executor RuntimePlanExecutor
 	maxNodes int
+	policy   Policy
 }
 
-func NewPlanner(executor RuntimePlanExecutor, maxNodes int) *Planner {
+func NewPlanner(executor RuntimePlanExecutor, maxNodes int, policies ...Policy) *Planner {
 	if maxNodes <= 0 {
 		maxNodes = DefaultMaxNodes
 	}
-	return &Planner{executor: executor, maxNodes: maxNodes}
+	policy := DefaultPolicy()
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	return &Planner{executor: executor, maxNodes: maxNodes, policy: policy}
 }
 
 func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeExecution, error) {
@@ -68,6 +73,9 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 	}
 	plan, err := ParsePlan(execution.Output)
 	if err == nil {
+		// Policy is backend-owned. The model may echo a policy object for schema
+		// stability, but it cannot raise autonomy, loosen approvals or budgets.
+		plan.Policy = p.policy
 		plan = HardenPlan(plan)
 		if err = ValidatePlan(plan, p.maxNodes); err == nil {
 			return plan, execution, nil
@@ -90,6 +98,7 @@ Original output:
 	if parseErr != nil {
 		return Plan{}, repaired, fmt.Errorf("decode repaired project plan: %w", parseErr)
 	}
+	plan.Policy = p.policy
 	plan = HardenPlan(plan)
 	if validateErr := ValidatePlan(plan, p.maxNodes); validateErr != nil {
 		return Plan{}, repaired, fmt.Errorf("repaired project plan rejected: %w", validateErr)
@@ -155,7 +164,7 @@ Provisioned Technology Team:
 Current plan (null for first plan):
 %s
 
-Default safety policy:
+Backend-owned safety policy (echo this object exactly; you cannot change it):
 %s
 
 Return exactly this JSON shape:
