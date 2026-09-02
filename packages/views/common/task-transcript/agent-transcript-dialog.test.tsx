@@ -245,17 +245,22 @@ afterEach(() => {
 });
 
 describe("AgentTranscriptDialog", () => {
-  it("explains unavailable live events for an empty Antigravity transcript", async () => {
+  it("keeps waiting for live Antigravity events before the first step arrives", async () => {
     vi.mocked(api.listRuntimes).mockResolvedValue([runtimeFor("antigravity")]);
 
     renderDialog([], { task: liveTask, isLive: true });
 
+    // Antigravity 1.1.8+ streams init/step_update/result events. The init
+    // event pins the session but does not create a transcript step, so the
+    // empty live state must wait for the first response/tool event just like
+    // every other streaming runtime.
+    await screen.findByRole("button", { name: "Run details" });
+    expect(screen.getByText("Waiting for events...")).toBeInTheDocument();
     expect(
-      await screen.findByText(
+      screen.queryByText(
         "Antigravity does not currently provide live execution events. The transcript will be available after the task completes.",
       ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Waiting for events...")).not.toBeInTheDocument();
+    ).not.toBeInTheDocument();
   });
 
   it("keeps waiting for live events from other runtimes", async () => {
