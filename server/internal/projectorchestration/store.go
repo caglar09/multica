@@ -405,9 +405,9 @@ func (s *Store) MarkNodeMaterialized(
 	tag, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node n
 		SET materialized_issue_id = $4,
-		    status = CASE WHEN status = 'ready' THEN 'running' ELSE status END,
-		    started_at = CASE WHEN status = 'ready' THEN COALESCE(started_at, now()) ELSE started_at END,
-		    attempt = CASE WHEN status = 'ready' THEN attempt + 1 ELSE attempt END,
+		    status = CASE WHEN n.status = 'ready' THEN 'running' ELSE n.status END,
+		    started_at = CASE WHEN n.status = 'ready' THEN COALESCE(n.started_at, now()) ELSE n.started_at END,
+		    attempt = CASE WHEN n.status = 'ready' THEN n.attempt + 1 ELSE n.attempt END,
 		    updated_at = now()
 		FROM autonomous_project_plan p
 		WHERE n.plan_id = p.id
