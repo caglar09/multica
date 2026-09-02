@@ -176,15 +176,49 @@ func validatePolicy(policy Policy) error {
 	return nil
 }
 
+func HardenPlan(plan Plan) Plan {
+	for i := range plan.Nodes {
+		impact := AssessImpact(plan.Nodes[i], plan.Policy)
+		if riskRank(impact.Level) > riskRank(plan.Nodes[i].Risk) {
+			plan.Nodes[i].Risk = impact.Level
+		}
+	}
+	return plan
+}
+
 func validateLifecycle(plan Plan) error {
 	hasImplementation := false
 	hasReview := false
+	hasSecurity := false
+	hasQA := false
+	hasIntegration := false
+	requiresSecurity := false
+	requiresAcceptance := false
+	requiresIntegration := false
+
 	for _, node := range plan.Nodes {
+		impact := AssessImpact(node, plan.Policy)
+		for _, gate := range impact.RequiredGates {
+			switch gate {
+			case "security":
+				requiresSecurity = true
+			case "acceptance":
+				requiresAcceptance = true
+			case "integration_test", "migration":
+				requiresIntegration = true
+			}
+		}
 		switch node.Kind {
 		case NodeImplementation, NodeMigration:
 			hasImplementation = true
 		case NodeReview:
 			hasReview = true
+		case NodeSecurity:
+			hasSecurity = true
+		case NodeQA:
+			hasQA = true
+		case NodeIntegration:
+			hasIntegration = true
 		case NodeDeploy:
 			if plan.Policy.Autonomy == AutonomyAssisted || plan.Policy.Autonomy == AutonomyDevelopment {
 				return fmt.Errorf("%w: deploy node requires delivery or closed_loop autonomy", ErrInvalidPlan)
@@ -197,6 +231,15 @@ func validateLifecycle(plan Plan) error {
 	}
 	if hasImplementation && !hasReview {
 		return fmt.Errorf("%w: implementation plans require an independent review node", ErrInvalidPlan)
+	}
+	if requiresSecurity && !hasSecurity {
+		return fmt.Errorf("%w: impact analysis requires a security node", ErrInvalidPlan)
+	}
+	if requiresAcceptance && !hasQA {
+		return fmt.Errorf("%w: impact analysis requires a QA/acceptance node", ErrInvalidPlan)
+	}
+	if requiresIntegration && !hasIntegration {
+		return fmt.Errorf("%w: impact analysis requires an integration node", ErrInvalidPlan)
 	}
 	return nil
 }
