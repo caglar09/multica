@@ -100,6 +100,7 @@ func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc 
 		Lease:        cfg.ActionLease,
 	})
 	go worker.Run(ctx)
+	go r.runReconciler(ctx)
 
 	slog.Info("autonomous workflow enabled",
 		"workflow", softwareDevelopmentWorkflow,
@@ -162,6 +163,139 @@ func definition() workflow.Definition {
 			{From: issuestatus.InReview, Event: "review.failed", To: issuestatus.Blocked},
 		},
 	}
+}
+
+// runReconciler repairs the only gap an in-process event bus cannot close:
+// a task/status DB commit can succeed and the API process can die before its
+// event is published. Durable runs are therefore periodically compared with
+// authoritative issue/task rows and missing terminal events are replayed.
+func (r *Runtime) runReconciler(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		if err := r.reconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous workflow reconciliation failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (r *Runtime) reconcileOnce(ctx context.Context) error {
+	runs, err := r.store.ListActiveRuns(ctx, 200)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if err := r.reconcileRun(ctx, run); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
+			slog.Warn("autonomous workflow run reconciliation failed",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"state", run.State,
+				"error", err,
+			)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
+	issueID, err := util.ParseUUID(run.IssueID)
+	if err != nil {
+		return err
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+
+	// A review rejection may have committed while its issue:updated event was
+	// lost. The issue row itself is the durable rejection signal.
+	if run.State == issuestatus.InReview && effective == issuestatus.InProgress {
+		eventType := "review.changes_requested"
+		if run.ReviewCycles >= r.config.MaxReviewCycles {
+			eventType = "review.exhausted"
+		}
+		_, err := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                fmt.Sprintf("reconcile-review-change:%s:%d", run.IssueID, issue.Revision),
+			Type:              eventType,
+			WorkspaceID:       run.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           run.IssueID,
+			AccountableUserID: run.AccountableUserID,
+			Payload:           map[string]any{"status": issue.Status},
+		})
+		return err
+	}
+
+	targetID := run.OwnerAgentID
+	if run.State == issuestatus.InReview {
+		targetID = run.ReviewerAgentID
+	}
+	if targetID == "" || run.UpdatedAt.IsZero() {
+		return nil
+	}
+	agentID, err := util.ParseUUID(targetID)
+	if err != nil {
+		return err
+	}
+
+	var terminalTaskID pgtype.UUID
+	var terminalStatus string
+	err = r.pool.QueryRow(ctx, `
+		SELECT id, status
+		FROM agent_task_queue
+		WHERE issue_id = $1
+		  AND agent_id = $2
+		  AND status IN ('completed', 'failed')
+		  AND COALESCE(completed_at, created_at) > $3
+		ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+		LIMIT 1
+	`, issueID, agentID, run.UpdatedAt).Scan(&terminalTaskID, &terminalStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if terminalStatus == "failed" {
+		var active bool
+		if err := r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM agent_task_queue
+				WHERE issue_id = $1
+				  AND agent_id = $2
+				  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+			)
+		`, issueID, agentID).Scan(&active); err != nil {
+			return err
+		}
+		if active {
+			return nil
+		}
+		return r.handleTaskFailed(ctx, events.Event{
+			Type:        protocol.EventTaskFailed,
+			WorkspaceID: run.WorkspaceID,
+			TaskID:      util.UUIDToString(terminalTaskID),
+			Payload:     map[string]any{"retry_pending": false},
+		})
+	}
+
+	return r.handleTaskCompleted(ctx, events.Event{
+		Type:        protocol.EventTaskCompleted,
+		WorkspaceID: run.WorkspaceID,
+		TaskID:      util.UUIDToString(terminalTaskID),
+	})
 }
 
 func (r *Runtime) onIssueEvent(event events.Event) {
