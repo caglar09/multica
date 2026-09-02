@@ -484,7 +484,7 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		WHERE p.workspace_id = $1
 		  AND p.project_id = $2
-		  AND p.status = 'active'
+		  AND p.status IN ('active', 'blocked')
 		  AND n.status IN ('running', 'verification')
 	`, workspaceID, projectID).Scan(&running); err != nil {
 		return nil, err
@@ -507,7 +507,7 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 		  ON c.project_id = n.project_id AND c.workspace_id = n.workspace_id
 		WHERE n.workspace_id = $1
 		  AND n.project_id = $2
-		  AND p.status = 'active'
+		  AND p.status IN ('active', 'blocked')
 		  AND n.status = 'ready'
 		  AND COALESCE(c.paused, FALSE) = FALSE
 		ORDER BY n.priority DESC, n.ready_at ASC, n.created_at ASC
