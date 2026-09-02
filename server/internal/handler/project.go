@@ -520,8 +520,18 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			for index, item := range bootstrapKnowledgeItems {
+				kind := strings.ToLower(strings.TrimSpace(item.Kind))
+				entryType := "fact"
+				switch kind {
+				case "requirements":
+					entryType = "requirement"
+				case "architecture", "api_spec":
+					entryType = "architecture_decision"
+				case "design", "prd":
+					entryType = "product_decision"
+				}
 				content, _ := json.Marshal(map[string]any{
-					"kind": strings.TrimSpace(item.Kind),
+					"kind": kind,
 					"title": strings.TrimSpace(item.Title),
 					"text": strings.TrimSpace(item.Content),
 				})
@@ -530,10 +540,11 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 						workspace_id, project_id, entry_type, subject, content,
 						source_type, source_id, confidence, created_by_type, created_by_id
 					)
-					VALUES ($1, $2, 'fact', $3, $4, 'bootstrap', $5, 1.0, 'member', $6)
+					VALUES ($1, $2, $3, $4, $5, 'bootstrap', $6, 1.0, 'member', $7)
 				`,
 					project.WorkspaceID,
 					project.ID,
+					entryType,
 					strings.TrimSpace(item.Title),
 					content,
 					fmt.Sprintf("knowledge:%d", index),
