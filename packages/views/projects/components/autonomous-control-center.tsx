@@ -58,6 +58,7 @@ import {
   TabsTrigger,
 } from "@multica/ui/components/ui/tabs";
 import { useNavigation } from "../../navigation";
+import { CreateSkillDialog } from "../../skills/components/create-skill-dialog";
 
 function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -130,13 +131,13 @@ function TeamDraftConfigurator({
   canControl,
   isPending,
   onConfirm,
-  onOpenSkills,
+  onCreateSkill,
 }: {
   snapshot: AutonomousProjectSnapshot;
   canControl: boolean;
   isPending: boolean;
   onConfirm: (assignments: AutonomousRoleRuntimeAssignment[]) => void;
-  onOpenSkills: () => void;
+  onCreateSkill: () => void;
 }) {
   const draft = snapshot.draft;
   const roles = draft?.plan.roles ?? [];
@@ -427,9 +428,9 @@ function TeamDraftConfigurator({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={onOpenSkills}
+                        onClick={onCreateSkill}
                       >
-                        Manage skills
+                        New skill
                       </Button>
                     </div>
                     <div className="mb-2 flex rounded-md border bg-background p-0.5">
@@ -491,7 +492,21 @@ function TeamDraftConfigurator({
                           </span>
                         </div>
                         <div className="max-h-32 space-y-1 overflow-y-auto rounded-md border bg-background p-2">
-                        {snapshot.skills.map((skill) => (
+                        {[...snapshot.skills]
+                          .map((skill) => {
+                            const haystack = (skill.name + " " + skill.description).toLowerCase();
+                            const terms = [
+                              role.family,
+                              role.display_name,
+                              ...(role.capabilities ?? []),
+                            ]
+                              .flatMap((value) => value.toLowerCase().split(/[^a-z0-9]+/))
+                              .filter((value) => value.length >= 3);
+                            const recommended = terms.some((term) => haystack.includes(term));
+                            return { skill, recommended };
+                          })
+                          .sort((a, b) => Number(b.recommended) - Number(a.recommended))
+                          .map(({ skill, recommended }) => (
                           <label
                             key={skill.id}
                             className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 text-caption hover:bg-muted/40"
@@ -506,6 +521,11 @@ function TeamDraftConfigurator({
                             />
                             <span>
                               <span className="font-medium">{skill.name}</span>
+                              {recommended ? (
+                                <Badge variant="secondary" className="ml-1 text-[10px]">
+                                  Recommended
+                                </Badge>
+                              ) : null}
                               {skill.description ? (
                                 <span className="ml-1 text-muted-foreground">
                                   — {skill.description}
@@ -846,6 +866,7 @@ export function AutonomousControlCenter({
   const confirmTeam = useConfirmAutonomousTeam();
   const retryAction = useRetryAutonomousAction();
   const resolveEscalation = useResolveAutonomousEscalation();
+  const [createSkillOpen, setCreateSkillOpen] = useState(false);
 
   const replanPending = data ? isReplanPending(data) : false;
 
@@ -1023,7 +1044,7 @@ export function AutonomousControlCenter({
             canControl={canControl}
             isPending={confirmTeam.isPending}
             onConfirm={handleConfirmTeam}
-            onOpenSkills={() => router.push(wsPaths.skills())}
+            onCreateSkill={() => setCreateSkillOpen(true)}
           />
         ) : null}
 
@@ -1778,6 +1799,15 @@ export function AutonomousControlCenter({
           </TabsContent>
         </Tabs>
       </div>
+      {createSkillOpen ? (
+        <CreateSkillDialog
+          onClose={() => setCreateSkillOpen(false)}
+          onCreated={() => {
+            setCreateSkillOpen(false);
+            void refetch();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
