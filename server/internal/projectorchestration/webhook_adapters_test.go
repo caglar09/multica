@@ -92,3 +92,70 @@ func TestWebhookDeploymentAdapterRejectsNonTerminalStatus(t *testing.T) {
 		t.Fatal("expected non-terminal deployment status to be rejected")
 	}
 }
+
+
+func TestWebhookRepositoryAnalyzerSnapshot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["action"] != "snapshot" {
+			t.Fatalf("unexpected action: %v", body["action"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"revision":"abc123","modules":["server"],"test_targets":["go test ./..."],"api_surfaces":["/api/projects"],"data_stores":["postgres"],"dependencies":["pgx"],"evidence":{"source":"test"}}`))
+	}))
+	defer server.Close()
+
+	analyzer := NewWebhookRepositoryAnalyzer(WebhookAdapterConfig{
+		RepositoryURL: server.URL,
+		Timeout: time.Second,
+	})
+	snapshot, err := analyzer.Snapshot(
+		context.Background(),
+		pgtype.UUID{Valid: true},
+		pgtype.UUID{Valid: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Revision != "abc123" || len(snapshot.Modules) != 1 || snapshot.Modules[0] != "server" {
+		t.Fatalf("unexpected repository snapshot: %+v", snapshot)
+	}
+}
+
+func TestWebhookQualityGateRunner(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["action"] != "quality_gate" || body["gate_type"] != "unit_test" {
+			t.Fatalf("unexpected quality payload: %+v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"passed":true,"evidence":{"command":"go test ./...","exit_code":0}}`))
+	}))
+	defer server.Close()
+
+	runner := NewWebhookQualityGateRunner(WebhookAdapterConfig{
+		QualityURL: server.URL,
+		Timeout: time.Second,
+	})
+	result, err := runner.Run(context.Background(), QualityGateRequest{
+		WorkspaceID: pgtype.UUID{Valid: true},
+		ProjectID: pgtype.UUID{Valid: true},
+		PlanID: pgtype.UUID{Valid: true},
+		NodeID: pgtype.UUID{Valid: true},
+		IssueID: pgtype.UUID{Valid: true},
+		GateType: "unit_test",
+		Artifact: map[string]any{"task_id": "task-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Passed {
+		t.Fatalf("quality gate should pass: %+v", result)
+	}
+}
