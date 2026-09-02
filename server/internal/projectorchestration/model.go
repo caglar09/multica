@@ -176,6 +176,7 @@ type PlannedNode struct {
 	MaterializedIssueID string
 	AssignedRole        string
 	AssignedAgentID     string
+	Attempt             int
 }
 
 type BlockedNode struct {
