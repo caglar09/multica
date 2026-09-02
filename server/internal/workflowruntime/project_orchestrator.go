@@ -468,6 +468,314 @@ func dbGetProjectParams(projectID, workspaceID pgtype.UUID) db.GetProjectInWorks
 	return db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}
 }
 
+func (r *Runtime) processDiscoveredProjectWork(ctx context.Context) error {
+	if r == nil || r.projectStore == nil || r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT i.id
+		FROM issue i
+		JOIN autonomous_project_team t
+		  ON t.workspace_id = i.workspace_id
+		 AND t.project_id = i.project_id
+		 AND t.status = 'active'
+		JOIN autonomous_project_team_member tm
+		  ON tm.team_id = t.id
+		 AND tm.agent_id = i.creator_id
+		WHERE i.creator_type = 'agent'
+		  AND i.origin_type = 'agent_create'
+		  AND i.project_id IS NOT NULL
+		  AND EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan p
+			WHERE p.workspace_id = i.workspace_id
+			  AND p.project_id = i.project_id
+			  AND p.status IN ('active', 'blocked')
+		  )
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan_node n
+			WHERE n.workspace_id = i.workspace_id
+			  AND n.project_id = i.project_id
+			  AND n.materialized_issue_id = i.id
+		  )
+		ORDER BY i.created_at ASC
+		LIMIT 20
+	`)
+	if err != nil {
+		return fmt.Errorf("query runtime-discovered project work: %w", err)
+	}
+	issueIDs := make([]pgtype.UUID, 0, 20)
+	for rows.Next() {
+		var issueID pgtype.UUID
+		if err := rows.Scan(&issueID); err != nil {
+			rows.Close()
+			return err
+		}
+		issueIDs = append(issueIDs, issueID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, issueID := range issueIDs {
+		issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			return err
+		}
+		effectiveStatus := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+		if effectiveStatus == issuestatus.Done || effectiveStatus == issuestatus.Cancelled {
+			continue
+		}
+		if err := r.adoptDiscoveredProjectIssue(ctx, issue); err != nil {
+			slog.Warn("runtime-discovered project work adoption failed",
+				"project_id", util.UUIDToString(issue.ProjectID),
+				"issue_id", util.UUIDToString(issue.ID),
+				"error", err,
+			)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issue) error {
+	if !issue.ProjectID.Valid {
+		return nil
+	}
+	team, ok, err := r.team.FindProject(ctx, issue.WorkspaceID, issue.ProjectID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("active autonomous project team unavailable")
+	}
+
+	agentID := issue.CreatorID
+	if issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid {
+		if _, belongs := team.RoleForAgent(issue.AssigneeID); belongs {
+			agentID = issue.AssigneeID
+		}
+	}
+	role, ok := team.RoleForAgent(agentID)
+	if !ok {
+		role, ok = team.RoleForAgent(issue.CreatorID)
+		agentID = issue.CreatorID
+	}
+	if !ok {
+		return errors.New("discovered issue actor is not part of autonomous project team")
+	}
+	roleSpec, _ := team.RoleSpec(role)
+	family := strings.TrimSpace(roleSpec.Family)
+	kind := discoveredProjectNodeKind(family)
+
+	stored, exists, err := r.projectStore.LoadLatestPlan(ctx, issue.WorkspaceID, issue.ProjectID)
+	if err != nil {
+		return err
+	}
+	if !exists || (stored.Status != "active" && stored.Status != "blocked") {
+		return errors.New("active autonomous project plan unavailable")
+	}
+	planID, err := util.ParseUUID(stored.ID)
+	if err != nil {
+		return err
+	}
+
+	issueKey := strings.ReplaceAll(util.UUIDToString(issue.ID), "-", "")
+	if len(issueKey) > 20 {
+		issueKey = issueKey[:20]
+	}
+	nodeKey := "discovered_" + issueKey
+	description := strings.TrimSpace(issue.Description.String)
+	if description == "" {
+		description = "Runtime-discovered project work: " + issue.Title
+	}
+	node := projectorchestration.NodeSpec{
+		Key: nodeKey,
+		Kind: kind,
+		Title: issue.Title,
+		Description: description,
+		Priority: discoveredProjectPriority(issue.Priority),
+		RequiredRoleFamily: family,
+		RequiredCapabilities: append([]string(nil), roleSpec.Capabilities...),
+		AcceptanceCriteria: []string{
+			"Requested runtime-discovered work is completed and its result is recorded on the issue.",
+		},
+		Risk: projectorchestration.RiskMedium,
+		MaxAttempts: 3,
+	}
+
+	plan := stored.Plan
+	existingNodes := make(map[string]struct{}, len(plan.Nodes))
+	for _, existing := range plan.Nodes {
+		existingNodes[existing.Key] = struct{}{}
+	}
+	existingEdges := make(map[string]struct{}, len(plan.Edges))
+	edgeIdentity := func(edge projectorchestration.EdgeSpec) string {
+		return edge.From + "\x00" + edge.To + "\x00" + string(edge.Type)
+	}
+	for _, edge := range plan.Edges {
+		existingEdges[edgeIdentity(edge)] = struct{}{}
+	}
+	if _, exists := existingNodes[nodeKey]; exists {
+		return r.projectStore.BindNodeIssue(
+			ctx, issue.WorkspaceID, issue.ProjectID, nodeKey, issue.ID, role, agentID,
+		)
+	}
+
+	plan.Nodes = append(plan.Nodes, node)
+	blockSourceKey := ""
+	sourceKey, sourceNodeStatus, sourceIssueStatus, sourceFound, err := r.discoveredIssueSource(
+		ctx, planID, issue,
+	)
+	if err != nil {
+		return err
+	}
+	if sourceFound {
+		sourceBlocked := sourceNodeStatus == "blocked" ||
+			issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, sourceIssueStatus) == issuestatus.Blocked
+		if sourceBlocked {
+			plan.Edges = append(plan.Edges, projectorchestration.EdgeSpec{
+				From: nodeKey,
+				To: sourceKey,
+				Type: projectorchestration.DependencyHard,
+			})
+			blockSourceKey = sourceKey
+		} else {
+			// Provenance edge only: runtime-discovered work may execute in
+			// parallel unless an explicit blocker/dependency says otherwise.
+			plan.Edges = append(plan.Edges, projectorchestration.EdgeSpec{
+				From: sourceKey,
+				To: nodeKey,
+				Type: projectorchestration.DependencySoft,
+			})
+		}
+	}
+
+	plan = projectorchestration.HardenPlan(plan)
+	plan = projectorchestration.EnsureLifecycle(plan)
+	plan = projectorchestration.HardenPlan(plan)
+	if err := projectorchestration.ValidatePlan(plan, projectorchestration.DefaultMaxNodes); err != nil {
+		return fmt.Errorf("runtime-discovered work produced invalid plan delta: %w", err)
+	}
+
+	deltaNodes := make([]projectorchestration.NodeSpec, 0)
+	for _, candidate := range plan.Nodes {
+		if _, exists := existingNodes[candidate.Key]; !exists {
+			deltaNodes = append(deltaNodes, candidate)
+		}
+	}
+	deltaEdges := make([]projectorchestration.EdgeSpec, 0)
+	for _, candidate := range plan.Edges {
+		if _, exists := existingEdges[edgeIdentity(candidate)]; !exists {
+			deltaEdges = append(deltaEdges, candidate)
+		}
+	}
+	brainContent := map[string]any{
+		"issue_id": util.UUIDToString(issue.ID),
+		"title": issue.Title,
+		"description": description,
+		"origin_task_id": util.UUIDToString(issue.OriginID),
+		"source_node_key": sourceKey,
+		"source_blocked": blockSourceKey != "",
+		"assigned_role": role,
+		"required_role_family": family,
+	}
+	if err := r.projectStore.AppendPlanDelta(
+		ctx,
+		issue.WorkspaceID,
+		issue.ProjectID,
+		planID,
+		deltaNodes,
+		deltaEdges,
+		nodeKey,
+		issue.ID,
+		role,
+		agentID,
+		blockSourceKey,
+		"Runtime-discovered work: "+issue.Title,
+		brainContent,
+	); err != nil {
+		return err
+	}
+
+	slog.Info("runtime-discovered issue adopted into project plan",
+		"project_id", util.UUIDToString(issue.ProjectID),
+		"issue_id", util.UUIDToString(issue.ID),
+		"node", nodeKey,
+		"source_node", sourceKey,
+		"blocks_source", blockSourceKey != "",
+	)
+	return nil
+}
+
+func (r *Runtime) discoveredIssueSource(
+	ctx context.Context,
+	planID pgtype.UUID,
+	issue db.Issue,
+) (nodeKey, nodeStatus, issueStatus string, found bool, err error) {
+	if !issue.OriginType.Valid || issue.OriginType.String != "agent_create" || !issue.OriginID.Valid {
+		return "", "", "", false, nil
+	}
+	err = r.pool.QueryRow(ctx, `
+		SELECT n.node_key, n.status, source_issue.status
+		FROM agent_task_queue origin_task
+		JOIN issue source_issue ON source_issue.id = origin_task.issue_id
+		JOIN autonomous_project_plan_node n
+		  ON n.plan_id = $1
+		 AND n.materialized_issue_id = source_issue.id
+		WHERE origin_task.id = $2
+		LIMIT 1
+	`, planID, issue.OriginID).Scan(&nodeKey, &nodeStatus, &issueStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", "", false, nil
+	}
+	if err != nil {
+		return "", "", "", false, err
+	}
+	return nodeKey, nodeStatus, issueStatus, true, nil
+}
+
+func discoveredProjectNodeKind(family string) projectorchestration.NodeKind {
+	switch strings.TrimSpace(family) {
+	case "product":
+		return projectorchestration.NodeProduct
+	case "architecture":
+		return projectorchestration.NodeArchitecture
+	case "design":
+		return projectorchestration.NodeDesign
+	case "security":
+		return projectorchestration.NodeSecurity
+	case "qa":
+		return projectorchestration.NodeQA
+	case "review":
+		return projectorchestration.NodeReview
+	case "release":
+		return projectorchestration.NodeRelease
+	default:
+		return projectorchestration.NodeImplementation
+	}
+}
+
+func discoveredProjectPriority(priority string) int {
+	switch strings.TrimSpace(priority) {
+	case "urgent":
+		return 100
+	case "high":
+		return 75
+	case "medium":
+		return 50
+	case "low":
+		return 25
+	default:
+		return 0
+	}
+}
+
 func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 	if r.projectStore == nil || r.issueSvc == nil || r.team == nil {
 		return nil
