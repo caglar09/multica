@@ -29,7 +29,7 @@ import (
 
 const softwareDevelopmentWorkflow = "software-development"
 
-const autonomousPlanningTimeout = 3 * time.Minute
+const autonomousPlanningTimeout = 5 * time.Minute
 
 type Config struct {
 	Enabled         bool
