@@ -228,6 +228,9 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 		if err := r.processTeamDraftProvisioning(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous team draft provisioning failed", "error", err)
 		}
+		if err := r.processProjectContinuations(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous project continuation failed", "error", err)
+		}
 		if err := r.processRequestedReplans(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous project replan processing failed", "error", err)
 		}
