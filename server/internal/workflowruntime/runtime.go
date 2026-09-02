@@ -225,6 +225,9 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 		if err := r.reconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous workflow reconciliation failed", "error", err)
 		}
+		if err := r.processTeamDraftProvisioning(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous team draft provisioning failed", "error", err)
+		}
 		if err := r.processRequestedReplans(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous project replan processing failed", "error", err)
 		}
@@ -256,6 +259,122 @@ func (r *Runtime) isProjectPaused(ctx context.Context, workspaceID, projectID pg
 		return false, nil
 	}
 	return paused, err
+}
+
+func (r *Runtime) processTeamDraftProvisioning(ctx context.Context) error {
+	if r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT project_id, workspace_id, confirmed_by, selections
+		FROM autonomous_project_team_draft
+		WHERE status = 'provisioning'
+		ORDER BY updated_at ASC
+		LIMIT 10
+	`)
+	if err != nil {
+		return fmt.Errorf("query autonomous team drafts awaiting provisioning: %w", err)
+	}
+	type pendingDraft struct {
+		projectID   pgtype.UUID
+		workspaceID pgtype.UUID
+		confirmedBy pgtype.UUID
+		selections  []byte
+	}
+	pending := make([]pendingDraft, 0, 10)
+	for rows.Next() {
+		var item pendingDraft
+		if err := rows.Scan(&item.projectID, &item.workspaceID, &item.confirmedBy, &item.selections); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, item := range pending {
+		var raw map[string]struct {
+			RuntimeID string   `json:"runtime_id"`
+			SkillIDs  []string `json:"skill_ids"`
+		}
+		if err := json.Unmarshal(item.selections, &raw); err != nil {
+			return fmt.Errorf("decode autonomous team draft selections: %w", err)
+		}
+		assignments := make([]teamprovision.RoleRuntimeSelection, 0, len(raw))
+		for role, selected := range raw {
+			runtimeID, err := util.ParseUUID(selected.RuntimeID)
+			if err != nil {
+				return fmt.Errorf("parse selected runtime for role %s: %w", role, err)
+			}
+			skillIDs := make([]pgtype.UUID, 0, len(selected.SkillIDs))
+			for _, skillValue := range selected.SkillIDs {
+				skillID, err := util.ParseUUID(skillValue)
+				if err != nil {
+					return fmt.Errorf("parse selected skill for role %s: %w", role, err)
+				}
+				skillIDs = append(skillIDs, skillID)
+			}
+			assignments = append(assignments, teamprovision.RoleRuntimeSelection{
+				Role: role,
+				RuntimeID: runtimeID,
+				SkillIDs: skillIDs,
+				SkillsSpecified: true,
+			})
+		}
+
+		provisionCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		team, provisionErr := r.team.ProvisionDraft(
+			provisionCtx,
+			item.workspaceID,
+			item.projectID,
+			item.confirmedBy,
+			assignments,
+		)
+		cancel()
+		if provisionErr != nil {
+			message := provisionErr.Error()
+			if len(message) > 2000 {
+				message = message[:2000]
+			}
+			_, _ = r.pool.Exec(ctx, `
+				UPDATE autonomous_project_team_draft
+				SET status = 'awaiting_configuration', updated_at = now()
+				WHERE workspace_id = $1 AND project_id = $2 AND status = 'provisioning'
+			`, item.workspaceID, item.projectID)
+			_, _ = r.pool.Exec(ctx, `
+				INSERT INTO autonomous_project_control (
+					project_id, workspace_id, last_error, updated_at
+				)
+				VALUES ($1, $2, $3, now())
+				ON CONFLICT (project_id) DO UPDATE
+				SET last_error = EXCLUDED.last_error,
+				    updated_at = now()
+				WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
+			`, item.projectID, item.workspaceID, message)
+			continue
+		}
+		_, _ = r.pool.Exec(ctx, `
+			INSERT INTO autonomous_project_control (
+				project_id, workspace_id, last_error, updated_at
+			)
+			VALUES ($1, $2, NULL, now())
+			ON CONFLICT (project_id) DO UPDATE
+			SET last_error = NULL,
+			    updated_at = now()
+			WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
+		`, item.projectID, item.workspaceID)
+		slog.Info("autonomous project team provisioned from configured draft",
+			"project_id", util.UUIDToString(item.projectID),
+			"workspace_id", util.UUIDToString(item.workspaceID),
+			"squad_id", util.UUIDToString(team.SquadID),
+			"member_count", len(team.Members),
+		)
+	}
+	return nil
 }
 
 func (r *Runtime) processRequestedReplans(ctx context.Context) error {
