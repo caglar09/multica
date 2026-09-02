@@ -90,6 +90,22 @@ func (p *Provisioner) applyIssuePlan(
 		return Team{}, errors.New("project team disappeared during reconciliation")
 	}
 
+	if limiter, ok := p.planner.(interface{ MaxAgents() int }); ok {
+		desiredRoles := make(map[string]struct{}, len(lockedTeam.Members)+len(desired.Roles))
+		for role := range lockedTeam.Members {
+			desiredRoles[role] = struct{}{}
+		}
+		for _, role := range desired.Roles {
+			desiredRoles[role.Role] = struct{}{}
+		}
+		if limit := limiter.MaxAgents(); limit > 0 && len(desiredRoles) > limit {
+			return Team{}, fmt.Errorf(
+				"team size limit exceeded after reconciliation: %d roles would exceed max %d",
+				len(desiredRoles), limit,
+			)
+		}
+	}
+
 	if cached, ok, err := loadAnalysisPlanWithQuerier(ctx, tx, lockedTeam.ID, "issue", issue.ID, sourceRevision); err != nil {
 		return Team{}, err
 	} else if ok {
