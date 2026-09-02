@@ -1041,6 +1041,9 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 	if err != nil || !task.ID.Valid {
 		return err
 	}
+	if err := r.recordProjectTaskArtifact(ctx, task, issue); err != nil {
+		return fmt.Errorf("record autonomous project task artifact: %w", err)
+	}
 	if handled, projectErr := r.completeNonImplementationProjectNode(ctx, task, issue); handled {
 		return projectErr
 	}
