@@ -308,7 +308,7 @@ func (s *PostgresStore) ClaimPendingAction(ctx context.Context, lease time.Durat
 			)
 			ORDER BY a.available_at ASC, a.created_at ASC, a.position ASC
 			LIMIT 1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF a SKIP LOCKED
 		)
 		UPDATE autonomous_workflow_action a
 		SET status = 'running',
