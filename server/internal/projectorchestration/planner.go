@@ -141,10 +141,10 @@ func effectivePlanningPolicy(server Policy, requested Policy) Policy {
 	if requested.Autonomy != "" && rank(requested.Autonomy) < rank(out.Autonomy) {
 		out.Autonomy = requested.Autonomy
 	}
-	out.Approvals.DatabaseMigration = out.Approvals.DatabaseMigration || requested.Approvals.DatabaseMigration
-	out.Approvals.ProductionDeploy = out.Approvals.ProductionDeploy || requested.Approvals.ProductionDeploy
-	out.Approvals.MajorDependency = out.Approvals.MajorDependency || requested.Approvals.MajorDependency
-	out.Approvals.CriticalRisk = out.Approvals.CriticalRisk || requested.Approvals.CriticalRisk
+	// Approval guardrails are project-scoped bootstrap policy. Risk and quality
+	// hardening remain backend-owned regardless of these booleans; these flags
+	// only decide where an explicit human approval is required.
+	out.Approvals = requested.Approvals
 
 	minPositiveInt := func(serverValue, requestedValue int) int {
 		if requestedValue <= 0 {
