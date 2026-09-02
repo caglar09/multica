@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/projectorchestration"
 )
 
 func TestSoftwareDevelopmentWorkflowDefinition(t *testing.T) {
@@ -57,5 +58,40 @@ func TestRetryPending(t *testing.T) {
 	}
 	if retryPending(nil) {
 		t.Fatal("nil payload was treated as retry pending")
+	}
+}
+
+
+func TestDiscoveredProjectNodeKindRoutesSpecialistFamilies(t *testing.T) {
+	cases := map[string]projectorchestration.NodeKind{
+		"product":      projectorchestration.NodeProduct,
+		"architecture": projectorchestration.NodeArchitecture,
+		"design":       projectorchestration.NodeDesign,
+		"security":     projectorchestration.NodeSecurity,
+		"qa":           projectorchestration.NodeQA,
+		"review":       projectorchestration.NodeReview,
+		"release":      projectorchestration.NodeRelease,
+		"backend":      projectorchestration.NodeImplementation,
+		"fullstack":    projectorchestration.NodeImplementation,
+	}
+	for family, want := range cases {
+		if got := discoveredProjectNodeKind(family); got != want {
+			t.Fatalf("discoveredProjectNodeKind(%q) = %q, want %q", family, got, want)
+		}
+	}
+}
+
+func TestDiscoveredProjectPriority(t *testing.T) {
+	cases := map[string]int{
+		"urgent": 100,
+		"high": 75,
+		"medium": 50,
+		"low": 25,
+		"none": 0,
+	}
+	for value, want := range cases {
+		if got := discoveredProjectPriority(value); got != want {
+			t.Fatalf("discoveredProjectPriority(%q) = %d, want %d", value, got, want)
+		}
 	}
 }
