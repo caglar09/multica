@@ -92,8 +92,11 @@ func (HeuristicPlanner) PlanProject(project db.Project) Plan {
 		"react native", "react-native", "flutter", "android", "ios", "mobile", "mobil",
 	)
 	frontend := containsAny(text,
-		"frontend", "front end", "react", "next.js", "nextjs", "vue", "angular", "web app", "dashboard",
+		"frontend", "front end", "next.js", "nextjs", "vue", "angular", "web app", "dashboard", "website",
 	)
+	if strings.Contains(text, "react") && !strings.Contains(text, "react native") {
+		frontend = true
+	}
 	backend := containsAny(text,
 		"backend", "back end", "api", "server", "database", "postgres", "dotnet", ".net", "go ", "golang", "node",
 	)
