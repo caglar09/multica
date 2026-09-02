@@ -17,24 +17,14 @@ export function autonomousProjectOptions(wsId: string, projectId: string) {
   });
 }
 
-function useAutonomousControlMutation(
-  action: "pause" | "resume" | "replan",
+function useAutonomousControlMutation<TData>(
+  mutationFn: (projectId: string) => Promise<TData>,
 ) {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
+
   return useMutation({
-    mutationFn: (projectId: string) => {
-      switch (action) {
-        case "pause":
-          return api.pauseProjectAutonomous(projectId);
-        case "resume":
-          return api.resumeProjectAutonomous(projectId);
-        case "replan":
-          return api.replanProjectAutonomous(projectId);
-        default:
-          throw new Error("unsupported autonomous project action");
-      }
-    },
+    mutationFn,
     onSettled: (_data, _err, projectId) => {
       qc.invalidateQueries({
         queryKey: autonomousProjectKeys.detail(wsId, projectId),
@@ -44,20 +34,27 @@ function useAutonomousControlMutation(
 }
 
 export function usePauseAutonomousProject() {
-  return useAutonomousControlMutation("pause");
+  return useAutonomousControlMutation((projectId) =>
+    api.pauseProjectAutonomous(projectId),
+  );
 }
 
 export function useResumeAutonomousProject() {
-  return useAutonomousControlMutation("resume");
+  return useAutonomousControlMutation((projectId) =>
+    api.resumeProjectAutonomous(projectId),
+  );
 }
 
 export function useReplanAutonomousProject() {
-  return useAutonomousControlMutation("replan");
+  return useAutonomousControlMutation((projectId) =>
+    api.replanProjectAutonomous(projectId),
+  );
 }
 
 export function useRetryAutonomousAction() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
+
   return useMutation({
     mutationFn: ({
       projectId,
