@@ -296,7 +296,9 @@ func (r *Runtime) processRequestedReplans(ctx context.Context) error {
 
 	for _, item := range requests {
 		revision := item.requestedAt.UTC().Format(time.RFC3339Nano)
-		_, _, replanErr := r.team.ReconcileProject(ctx, item.workspaceID, item.projectID, revision)
+		planCtx, cancel := context.WithTimeout(ctx, autonomousPlanningTimeout)
+		_, _, replanErr := r.team.ReconcileProject(planCtx, item.workspaceID, item.projectID, revision)
+		cancel()
 		if replanErr != nil {
 			message := replanErr.Error()
 			if len(message) > 2000 {
