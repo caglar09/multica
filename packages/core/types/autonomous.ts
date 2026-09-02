@@ -36,6 +36,18 @@ export interface AutonomousTeam {
   members: AutonomousTeamMember[];
 }
 
+export interface AutonomousWorkflowAction {
+  id: string;
+  run_id: string;
+  action_type: string;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AutonomousWorkflowRun {
   id: string;
   issue_id: string;
@@ -107,6 +119,7 @@ export interface AutonomousProjectSnapshot {
   health: AutonomousProjectHealth;
   team: AutonomousTeam | null;
   workflows: AutonomousWorkflowRun[];
+  actions: AutonomousWorkflowAction[];
   activity: AutonomousActivityItem[];
   decisions: AutonomousDecision[];
 }
