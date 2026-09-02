@@ -273,6 +273,10 @@ func (r *Runtime) materializeProjectNode(
 	if err := r.enforceProjectNodePolicy(ctx, workspaceID, projectID, node); err != nil {
 		return err
 	}
+	switch node.Kind {
+	case projectorchestration.NodeDeploy, projectorchestration.NodeObserve, projectorchestration.NodeIncident:
+		return projectorchestration.ErrAdapterNotConfigured
+	}
 	team, ok, err := r.team.FindProject(ctx, workspaceID, projectID)
 	if err != nil {
 		return err
@@ -576,6 +580,9 @@ func (r *Runtime) openProjectEscalation(
 	} else if errors.Is(cause, projectorchestration.ErrBudgetExceeded) {
 		category = "budget_exceeded"
 		summary = "Project budget prevents scheduling: " + node.Title
+	} else if errors.Is(cause, projectorchestration.ErrAdapterNotConfigured) {
+		category = "external_dependency"
+		summary = "Project delivery adapter is not configured: " + node.Title
 	}
 	contextJSON, _ := json.Marshal(map[string]any{
 		"node_key": node.Key,
@@ -860,6 +867,11 @@ func (r *Runtime) syncBlockedProjectNode(
 			WHERE workspace_id = $1 AND materialized_issue_id = $2
 		`, issue.WorkspaceID, issue.ID)
 	}
+	_, _ = r.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status = 'blocked', updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
+	`, issue.WorkspaceID, projectID)
 	if nodeKey == "" {
 		return nil
 	}
