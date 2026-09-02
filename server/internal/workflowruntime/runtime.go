@@ -27,7 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-const softwareDevelopmentWorkflow = "software-development"
+const softwareDevelopmentWorkflow = "software-development"\n\nconst autonomousPlanningTimeout = 3 * time.Minute
 
 type Config struct {
 	Enabled         bool
@@ -506,7 +506,7 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 }
 
 func (r *Runtime) onProjectCreated(event events.Event) {
-	r.runAsync(45*time.Second, "autonomous project team provisioning failed", event, func(ctx context.Context) error {
+	r.runAsync(autonomousPlanningTimeout, "autonomous project team provisioning failed", event, func(ctx context.Context) error {
 		return r.handleProjectCreated(ctx, event)
 	})
 }
@@ -728,7 +728,7 @@ func (r *Runtime) refreshRunTeam(ctx context.Context, run workflow.Run, issue db
 }
 
 func (r *Runtime) onIssueEvent(event events.Event) {
-	r.runAsync(45*time.Second, "autonomous workflow issue event failed", event, func(ctx context.Context) error {
+	r.runAsync(autonomousPlanningTimeout, "autonomous workflow issue event failed", event, func(ctx context.Context) error {
 		return r.handleIssueEvent(ctx, event)
 	})
 }
@@ -827,7 +827,7 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 }
 
 func (r *Runtime) onTaskCompleted(event events.Event) {
-	r.runAsync(45*time.Second, "autonomous workflow task completion failed", event, func(ctx context.Context) error {
+	r.runAsync(autonomousPlanningTimeout, "autonomous workflow task completion failed", event, func(ctx context.Context) error {
 		return r.handleTaskCompleted(ctx, event)
 	})
 }
