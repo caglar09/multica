@@ -248,7 +248,7 @@ func (s *Store) RefreshReady(ctx context.Context, workspaceID, projectID pgtype.
 	if err := tx.QueryRow(ctx, `
 		SELECT id
 		FROM autonomous_project_plan
-		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
+		WHERE workspace_id = $1 AND project_id = $2 AND status IN ('active', 'blocked')
 		ORDER BY revision DESC
 		LIMIT 1
 		FOR UPDATE
@@ -579,6 +579,168 @@ func (s *Store) ReleaseNodeClaim(
 	return tx.Commit(ctx)
 }
 
+func (s *Store) SetNodeBlocked(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeKey, category, reason string,
+) error {
+	if s == nil || s.pool == nil {
+		return errors.New("project orchestration store is not configured")
+	}
+	switch category {
+	case "dependency", "approval", "external_dependency", "technical_failure", "budget", "manual":
+	default:
+		return fmt.Errorf("unsupported project node block category %q", category)
+	}
+	if len(reason) > 2000 {
+		reason = reason[:2000]
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan_node n
+		SET status = 'blocked',
+		    blocked_category = $4,
+		    blocked_reason = $5,
+		    updated_at = now()
+		FROM autonomous_project_plan p
+		WHERE n.plan_id = p.id
+		  AND n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND n.node_key = $3
+		  AND p.status IN ('active', 'blocked')
+		  AND n.status NOT IN ('completed', 'cancelled')
+	`, workspaceID, projectID, nodeKey, category, reason)
+	return err
+}
+
+func (s *Store) ListBlockedNodes(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) ([]BlockedNode, error) {
+	if s == nil || s.pool == nil {
+		return nil, errors.New("project orchestration store is not configured")
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT n.id, n.node_key, n.kind, n.title, n.description, n.priority,
+		       n.risk_level, COALESCE(n.required_role_family, ''),
+		       n.required_capabilities, n.acceptance_criteria, n.max_attempts,
+		       n.status, n.materialized_issue_id,
+		       COALESCE(n.assigned_role, ''), n.assigned_agent_id,
+		       COALESCE(n.blocked_category, 'manual'), COALESCE(n.blocked_reason, '')
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND p.status IN ('active', 'blocked')
+		  AND n.status = 'blocked'
+		ORDER BY n.priority DESC, n.updated_at ASC
+	`, workspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []BlockedNode{}
+	for rows.Next() {
+		var item BlockedNode
+		var id, issueID, agentID pgtype.UUID
+		var kind, risk string
+		var caps, criteria []byte
+		if err := rows.Scan(
+			&id, &item.Key, &kind, &item.Title, &item.Description, &item.Priority,
+			&risk, &item.RequiredRoleFamily, &caps, &criteria, &item.MaxAttempts,
+			&item.Status, &issueID, &item.AssignedRole, &agentID,
+			&item.Category, &item.Reason,
+		); err != nil {
+			return nil, err
+		}
+		item.ID = util.UUIDToString(id)
+		item.Kind = NodeKind(kind)
+		item.Risk = RiskLevel(risk)
+		item.MaterializedIssueID = util.UUIDToString(issueID)
+		item.AssignedAgentID = util.UUIDToString(agentID)
+		_ = json.Unmarshal(caps, &item.RequiredCapabilities)
+		_ = json.Unmarshal(criteria, &item.AcceptanceCriteria)
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) ResumeBlockedNode(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeKey string,
+) (bool, error) {
+	if s == nil || s.pool == nil {
+		return false, errors.New("project orchestration store is not configured")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var planID pgtype.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT n.plan_id
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.workspace_id = $1
+		  AND n.project_id = $2
+		  AND n.node_key = $3
+		  AND n.status = 'blocked'
+		  AND p.status IN ('active', 'blocked')
+		ORDER BY p.revision DESC
+		LIMIT 1
+		FOR UPDATE OF n
+	`, workspaceID, projectID, nodeKey).Scan(&planID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	var depsSatisfied bool
+	if err := tx.QueryRow(ctx, `
+		SELECT NOT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan_edge e
+			JOIN autonomous_project_plan_node dep
+			  ON dep.plan_id = e.plan_id
+			 AND dep.node_key = e.from_node_key
+			WHERE e.plan_id = $1
+			  AND e.to_node_key = $2
+			  AND e.dependency_type IN ('hard', 'artifact')
+			  AND dep.status <> 'completed'
+		)
+	`, planID, nodeKey).Scan(&depsSatisfied); err != nil {
+		return false, err
+	}
+	if !depsSatisfied {
+		return false, tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET status = 'ready',
+		    blocked_category = NULL,
+		    blocked_reason = NULL,
+		    ready_at = COALESCE(ready_at, now()),
+		    updated_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND node_key = $3
+		  AND status = 'blocked'
+	`, workspaceID, projectID, nodeKey); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status = 'active', updated_at = now()
+		WHERE id = $1 AND status = 'blocked'
+	`, planID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
 func (s *Store) MarkNodeMaterialized(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
@@ -781,24 +943,13 @@ func (s *Store) FailNodeByIssue(
 	if _, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node
 		SET status = $3,
+		    blocked_category = CASE WHEN $3 = 'blocked' THEN 'technical_failure' ELSE NULL END,
 		    blocked_reason = $4,
 		    ready_at = CASE WHEN $3 = 'ready' THEN now() ELSE ready_at END,
 		    updated_at = now()
 		WHERE id = $1 AND workspace_id = $2
 	`, nodeID, workspaceID, nextStatus, reason); err != nil {
 		return "", "", pgtype.UUID{}, err
-	}
-	if disposition == FailureBlocked {
-		if _, err := tx.Exec(ctx, `
-			UPDATE autonomous_project_plan p
-			SET status = 'blocked', updated_at = now()
-			WHERE p.id = (
-				SELECT plan_id FROM autonomous_project_plan_node WHERE id = $1
-			)
-			  AND p.status = 'active'
-		`, nodeID); err != nil {
-			return "", "", pgtype.UUID{}, err
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", "", pgtype.UUID{}, err
@@ -1130,21 +1281,13 @@ func (s *Store) FailExternalNode(
 	if _, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node
 		SET status = $4,
+		    blocked_category = CASE WHEN $4 = 'blocked' THEN 'external_dependency' ELSE NULL END,
 		    blocked_reason = $5,
 		    ready_at = CASE WHEN $4 = 'ready' THEN now() ELSE ready_at END,
 		    updated_at = now()
 		WHERE workspace_id = $1 AND project_id = $2 AND node_key = $3
 	`, workspaceID, projectID, nodeKey, status, reason); err != nil {
 		return "", err
-	}
-	if disposition == FailureBlocked {
-		if _, err := tx.Exec(ctx, `
-			UPDATE autonomous_project_plan
-			SET status = 'blocked', updated_at = now()
-			WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
-		`, workspaceID, projectID); err != nil {
-			return "", err
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
