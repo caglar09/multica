@@ -261,13 +261,14 @@ func (p *Provisioner) EnsureProject(ctx context.Context, workspaceID, projectID 
 	`, workspaceID, projectID, squad.ID, plan.Version, plan.Intent, planJSON, mika.ID, mika.OwnerID).Scan(&teamID); err != nil {
 		return Team{}, fmt.Errorf("create project team registry: %w", err)
 	}
+	if err := stampInitialTeamPlan(ctx, tx, teamID, plan); err != nil {
+		return Team{}, fmt.Errorf("stamp initial project team plan: %w", err)
+	}
 
-	for role, agentID := range members {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO autonomous_project_team_member (team_id, role, agent_id)
-			VALUES ($1, $2, $3)
-		`, teamID, role, agentID); err != nil {
-			return Team{}, fmt.Errorf("register %s project agent: %w", role, err)
+	for _, role := range plan.Roles {
+		agentID := members[role.Role]
+		if err := upsertTeamMemberRegistry(ctx, tx, teamID, role, agentID); err != nil {
+			return Team{}, fmt.Errorf("register %s project agent: %w", role.Role, err)
 		}
 	}
 
