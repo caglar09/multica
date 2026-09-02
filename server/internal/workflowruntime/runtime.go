@@ -186,6 +186,30 @@ func definition() workflow.Definition {
 	}
 }
 
+func (r *Runtime) runAsync(timeout time.Duration, label string, event events.Event, fn func(context.Context) error) {
+	if r == nil || fn == nil {
+		return
+	}
+	go func() {
+		select {
+		case r.planningSem <- struct{}{}:
+			defer func() { <-r.planningSem }()
+		case <-r.ctx.Done():
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.ctx, timeout)
+		defer cancel()
+		if err := fn(ctx); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) && !errors.Is(err, context.Canceled) {
+			slog.Warn(label,
+				"event_type", event.Type,
+				"workspace_id", event.WorkspaceID,
+				"task_id", event.TaskID,
+				"error", err,
+			)
+		}
+	}()
+}
+
 // runReconciler repairs the only gap an in-process event bus cannot close:
 // a task/status DB commit can succeed and the API process can die before its
 // event is published. Durable runs are therefore periodically compared with
@@ -320,35 +344,33 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 }
 
 func (r *Runtime) onProjectCreated(event events.Event) {
-	if r.team == nil || event.WorkspaceID == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	r.runAsync(45*time.Second, "autonomous project team provisioning failed", event, func(ctx context.Context) error {
+		return r.handleProjectCreated(ctx, event)
+	})
+}
 
+func (r *Runtime) handleProjectCreated(ctx context.Context, event events.Event) error {
+	if r.team == nil || event.WorkspaceID == "" {
+		return nil
+	}
 	workspaceID, err := util.ParseUUID(event.WorkspaceID)
 	if err != nil {
-		return
+		return err
 	}
 	projectIDValue := projectIDFromEvent(event)
 	if projectIDValue == "" {
-		return
+		return nil
 	}
 	projectID, err := util.ParseUUID(projectIDValue)
 	if err != nil {
-		return
+		return err
 	}
 	team, err := r.team.EnsureProject(ctx, workspaceID, projectID)
 	if err != nil {
 		if errors.Is(err, teamprovision.ErrMikaUnavailable) {
-			return
+			return nil
 		}
-		slog.Warn("autonomous project team provisioning failed",
-			"project_id", projectIDValue,
-			"workspace_id", event.WorkspaceID,
-			"error", err,
-		)
-		return
+		return err
 	}
 	slog.Info("autonomous project team ready",
 		"project_id", projectIDValue,
@@ -357,6 +379,7 @@ func (r *Runtime) onProjectCreated(event events.Event) {
 		"intent", team.Intent,
 		"member_count", len(team.Members),
 	)
+	return nil
 }
 
 func (r *Runtime) onProjectDeleted(event events.Event) {
@@ -491,15 +514,9 @@ func (r *Runtime) cleanupWorkflowIssue(ctx context.Context, workspaceIDValue, is
 }
 
 func (r *Runtime) onIssueEvent(event events.Event) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := r.handleIssueEvent(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
-		slog.Warn("autonomous workflow issue event failed",
-			"event_type", event.Type,
-			"workspace_id", event.WorkspaceID,
-			"error", err,
-		)
-	}
+	r.runAsync(45*time.Second, "autonomous workflow issue event failed", event, func(ctx context.Context) error {
+		return r.handleIssueEvent(ctx, event)
+	})
 }
 
 func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) error {
@@ -581,15 +598,9 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 }
 
 func (r *Runtime) onTaskCompleted(event events.Event) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := r.handleTaskCompleted(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
-		slog.Warn("autonomous workflow task completion failed",
-			"task_id", event.TaskID,
-			"workspace_id", event.WorkspaceID,
-			"error", err,
-		)
-	}
+	r.runAsync(45*time.Second, "autonomous workflow task completion failed", event, func(ctx context.Context) error {
+		return r.handleTaskCompleted(ctx, event)
+	})
 }
 
 func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) error {
@@ -691,18 +702,12 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 }
 
 func (r *Runtime) onTaskFailed(event events.Event) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	if retryPending(event.Payload) {
 		return
 	}
-	if err := r.handleTaskFailed(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
-		slog.Warn("autonomous workflow task failure failed",
-			"task_id", event.TaskID,
-			"workspace_id", event.WorkspaceID,
-			"error", err,
-		)
-	}
+	r.runAsync(20*time.Second, "autonomous workflow task failure failed", event, func(ctx context.Context) error {
+		return r.handleTaskFailed(ctx, event)
+	})
 }
 
 func (r *Runtime) handleTaskFailed(ctx context.Context, event events.Event) error {
