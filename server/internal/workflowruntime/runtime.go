@@ -750,6 +750,24 @@ func (r *Runtime) ExecuteWorkflowAction(ctx context.Context, run workflow.Run, p
 	}
 }
 
+// WorkflowActionExhausted moves the issue to Blocked after the durable action
+// retry budget is exhausted. This is intentionally best-effort: the original
+// failure is already durably recorded on autonomous_workflow_action.
+func (r *Runtime) WorkflowActionExhausted(ctx context.Context, run workflow.Run, pending workflow.PendingAction, cause error) {
+	issueID, err := util.ParseUUID(run.IssueID)
+	if err != nil {
+		return
+	}
+	if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, issuestatus.Blocked); err != nil {
+		slog.Error("workflow exhaustion could not block issue",
+			"run_id", run.ID,
+			"action_id", pending.ID,
+			"cause", cause,
+			"error", err,
+		)
+	}
+}
+
 type issueSnapshot struct {
 	ID       string `json:"id"`
 	Status   string `json:"status"`
