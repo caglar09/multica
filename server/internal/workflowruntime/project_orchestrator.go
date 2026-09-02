@@ -1468,7 +1468,10 @@ func (r *Runtime) accountProjectTaskUsage(
 	reason := "project token/runtime/cost budget exceeded after task " + util.UUIDToString(task.ID)
 	_, _ = r.pool.Exec(ctx, `
 		UPDATE autonomous_project_plan_node
-		SET status = 'blocked', blocked_reason = $4, updated_at = now()
+		SET status = 'blocked',
+		    blocked_category = 'budget',
+		    blocked_reason = $4,
+		    updated_at = now()
 		WHERE workspace_id = $1
 		  AND project_id = $2
 		  AND materialized_issue_id = $3
@@ -1808,22 +1811,18 @@ func (r *Runtime) syncBlockedProjectNode(
 		return err
 	}
 	if disposition == projectorchestration.FailureRetry {
-		// Existing issue-level workflow exhaustion is authoritative: a Blocked
-		// implementation issue is not silently restarted. Convert the retryable
-		// node into a durable escalation so a replan/human can decide.
+		// An explicit Blocked board transition is a durable local blocker, not
+		// a reason to freeze unrelated branches of the whole project. The
+		// conductor may resume this node after the issue/escalation is resolved.
 		_, _ = r.pool.Exec(ctx, `
 			UPDATE autonomous_project_plan_node
 			SET status = 'blocked',
+			    blocked_category = 'technical_failure',
 			    blocked_reason = 'issue workflow blocked before project retry',
 			    updated_at = now()
 			WHERE workspace_id = $1 AND materialized_issue_id = $2
 		`, issue.WorkspaceID, issue.ID)
 	}
-	_, _ = r.pool.Exec(ctx, `
-		UPDATE autonomous_project_plan
-		SET status = 'blocked', updated_at = now()
-		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
-	`, issue.WorkspaceID, projectID)
 	if nodeKey == "" {
 		return nil
 	}
