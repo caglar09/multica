@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
@@ -21,11 +21,13 @@ import type {
   AutonomousActivityItem,
   AutonomousDecision,
   AutonomousProjectSnapshot,
+  AutonomousRoleRuntimeAssignment,
   AutonomousTeamMember,
   AutonomousWorkflowRun,
 } from "@multica/core/types";
 import {
   autonomousProjectOptions,
+  useConfirmAutonomousTeam,
   usePauseAutonomousProject,
   useReplanAutonomousProject,
   useResumeAutonomousProject,
@@ -118,6 +120,246 @@ function isReplanPending(snapshot: AutonomousProjectSnapshot): boolean {
   return new Date(completed).getTime() < new Date(requested).getTime();
 }
 
+function TeamDraftConfigurator({
+  snapshot,
+  canControl,
+  isPending,
+  onConfirm,
+  onOpenSkills,
+}: {
+  snapshot: AutonomousProjectSnapshot;
+  canControl: boolean;
+  isPending: boolean;
+  onConfirm: (assignments: AutonomousRoleRuntimeAssignment[]) => void;
+  onOpenSkills: () => void;
+}) {
+  const draft = snapshot.draft;
+  const roles = draft?.plan.roles ?? [];
+  const [assignments, setAssignments] = useState<
+    Record<string, { runtime_id: string; skill_ids: string[] }>
+  >({});
+
+  useEffect(() => {
+    if (!draft) {
+      setAssignments({});
+      return;
+    }
+    const fallbackRuntime =
+      draft.default_runtime_id ??
+      snapshot.runtimes.find((runtime) => runtime.status === "online")?.id ??
+      "";
+    const next: Record<string, { runtime_id: string; skill_ids: string[] }> = {};
+    for (const role of draft.plan.roles ?? []) {
+      next[role.role] = {
+        runtime_id: fallbackRuntime,
+        skill_ids: [...draft.default_skill_ids],
+      };
+    }
+    setAssignments(next);
+  }, [draft?.updated_at, draft?.default_runtime_id, snapshot.runtimes.length]);
+
+  if (!draft) return null;
+
+  const provisioning = draft.status === "provisioning";
+  const allConfigured =
+    roles.length > 0 &&
+    roles.every((role) => Boolean(assignments[role.role]?.runtime_id));
+
+  const setRuntime = (role: string, runtimeId: string) => {
+    setAssignments((current) => ({
+      ...current,
+      [role]: {
+        runtime_id: runtimeId,
+        skill_ids: current[role]?.skill_ids ?? [],
+      },
+    }));
+  };
+
+  const toggleSkill = (role: string, skillId: string) => {
+    setAssignments((current) => {
+      const entry = current[role] ?? { runtime_id: "", skill_ids: [] };
+      const selected = entry.skill_ids.includes(skillId);
+      return {
+        ...current,
+        [role]: {
+          ...entry,
+          skill_ids: selected
+            ? entry.skill_ids.filter((id) => id !== skillId)
+            : [...entry.skill_ids, skillId],
+        },
+      };
+    });
+  };
+
+  const submit = () => {
+    if (!allConfigured || provisioning || isPending) return;
+    onConfirm(
+      roles.map((role) => ({
+        role: role.role,
+        runtime_id: assignments[role.role]?.runtime_id ?? "",
+        skill_ids: assignments[role.role]?.skill_ids ?? [],
+      })),
+    );
+  };
+
+  return (
+    <Card className="mb-5 border-primary/30">
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Users className="size-4" />
+              Configure the proposed Technology Team
+              <Badge variant={provisioning ? "secondary" : "outline"}>
+                {provisioning ? "creating team" : "approval required"}
+              </Badge>
+            </CardTitle>
+            <CardDescription className="mt-1 max-w-3xl">
+              The runtime-backed planner has proposed the roles, but no
+              specialist agent is created until you choose which CLI/runtime
+              each role will use. Workspace skills selected here are attached
+              during creation; runtime-local skills are inherited automatically.
+            </CardDescription>
+          </div>
+          <div className="text-right text-caption text-muted-foreground">
+            <div>{draft.planner_name}</div>
+            <div>{draft.planner_model ?? "runtime default"}</div>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-3">
+          {roles.map((role) => {
+            const selected = assignments[role.role] ?? {
+              runtime_id: "",
+              skill_ids: [],
+            };
+            return (
+              <div
+                key={role.role}
+                className="rounded-xl border bg-muted/10 p-3"
+              >
+                <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[minmax(220px,1fr)_minmax(220px,0.8fr)_minmax(260px,1.2fr)]">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{role.display_name}</span>
+                      <Badge variant="outline">{role.family}</Badge>
+                    </div>
+                    <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                      {role.role}
+                    </div>
+                    {role.reason ? (
+                      <p className="mt-2 text-caption text-muted-foreground">
+                        {role.reason}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <label className="block">
+                    <span className="mb-1.5 block text-caption font-medium text-muted-foreground">
+                      CLI / Runtime
+                    </span>
+                    <select
+                      value={selected.runtime_id}
+                      onChange={(event) =>
+                        setRuntime(role.role, event.target.value)
+                      }
+                      disabled={!canControl || provisioning || isPending}
+                      className="h-9 w-full rounded-md border bg-background px-2 text-body"
+                    >
+                      <option value="">Select runtime…</option>
+                      {snapshot.runtimes.map((runtime) => (
+                        <option
+                          key={runtime.id}
+                          value={runtime.id}
+                          disabled={runtime.status !== "online"}
+                        >
+                          {runtime.provider} · {runtime.name}
+                          {runtime.status === "online"
+                            ? ""
+                            : " · " + runtime.status}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <span className="text-caption font-medium text-muted-foreground">
+                        Workspace Skills
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={onOpenSkills}
+                      >
+                        Manage skills
+                      </Button>
+                    </div>
+                    {snapshot.skills.length > 0 ? (
+                      <div className="max-h-28 space-y-1 overflow-y-auto rounded-md border bg-background p-2">
+                        {snapshot.skills.map((skill) => (
+                          <label
+                            key={skill.id}
+                            className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 text-caption hover:bg-muted/40"
+                            title={skill.description}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selected.skill_ids.includes(skill.id)}
+                              onChange={() => toggleSkill(role.role, skill.id)}
+                              disabled={!canControl || provisioning || isPending}
+                              className="mt-0.5"
+                            />
+                            <span>
+                              <span className="font-medium">{skill.name}</span>
+                              {skill.description ? (
+                                <span className="ml-1 text-muted-foreground">
+                                  — {skill.description}
+                                </span>
+                              ) : null}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-dashed p-2 text-caption text-muted-foreground">
+                        No workspace skills exist yet. Create reusable skills
+                        before confirming if this team needs shared procedures
+                        or domain knowledge.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+          <p className="text-caption text-muted-foreground">
+            Defaults inherit Mika&apos;s runtime and Mika&apos;s enabled workspace
+            skills. You can change each generated agent later from Agent Detail.
+          </p>
+          {canControl ? (
+            <Button
+              onClick={submit}
+              disabled={!allConfigured || provisioning || isPending}
+            >
+              <Users />
+              {provisioning || isPending
+                ? "Creating team…"
+                : "Create team & continue"}
+            </Button>
+          ) : (
+            <Badge variant="outline">Owner/admin approval required</Badge>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 function MetricCard({
   title,
   value,
