@@ -1,0 +1,637 @@
+// Package workflowruntime wires the deterministic workflow engine to Multica's
+// issue/task domain events and existing TaskService execution path.
+package workflowruntime
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/workflow"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+const softwareDevelopmentWorkflow = "software-development"
+
+type Config struct {
+	Enabled         bool
+	ReviewerAgentID string
+	ReviewerRole    string
+	MaxReviewCycles int
+	PollInterval    time.Duration
+	ActionLease     time.Duration
+}
+
+func ConfigFromEnv() Config {
+	cfg := Config{
+		ReviewerAgentID: strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_REVIEWER_AGENT_ID")),
+		ReviewerRole:    strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_REVIEWER_ROLE")),
+		MaxReviewCycles: 3,
+		PollInterval:    500 * time.Millisecond,
+		ActionLease:     30 * time.Second,
+	}
+	if cfg.ReviewerRole == "" {
+		cfg.ReviewerRole = "reviewer"
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_WORKFLOW_ENABLED")); raw != "" {
+		if enabled, err := strconv.ParseBool(raw); err == nil {
+			cfg.Enabled = enabled
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_WORKFLOW_ENABLED; autonomous workflow disabled", "value", raw)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value >= 0 && value <= 20 {
+			cfg.MaxReviewCycles = value
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES; using default", "value", raw, "default", cfg.MaxReviewCycles)
+		}
+	}
+	return cfg
+}
+
+type Runtime struct {
+	pool    *pgxpool.Pool
+	taskSvc *service.TaskService
+	store   *workflow.PostgresStore
+	engine  *workflow.Engine
+	config  Config
+}
+
+func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config) (*Runtime, error) {
+	if !cfg.Enabled {
+		slog.Info("autonomous workflow disabled")
+		return nil, nil
+	}
+	if bus == nil || pool == nil || taskSvc == nil {
+		return nil, errors.New("autonomous workflow requires event bus, database pool and task service")
+	}
+
+	store := workflow.NewPostgresStore(pool)
+	engine, err := workflow.New(store, definition())
+	if err != nil {
+		return nil, fmt.Errorf("build autonomous workflow engine: %w", err)
+	}
+	r := &Runtime{pool: pool, taskSvc: taskSvc, store: store, engine: engine, config: cfg}
+
+	for _, eventType := range []string{protocol.EventIssueCreated, protocol.EventIssueUpdated} {
+		bus.Subscribe(eventType, r.onIssueEvent)
+	}
+	bus.Subscribe(protocol.EventTaskCompleted, r.onTaskCompleted)
+	bus.Subscribe(protocol.EventTaskFailed, r.onTaskFailed)
+
+	worker := workflow.NewActionWorker(store, r, workflow.WorkerOptions{
+		PollInterval: cfg.PollInterval,
+		Lease:        cfg.ActionLease,
+	})
+	go worker.Run(ctx)
+
+	slog.Info("autonomous workflow enabled",
+		"workflow", softwareDevelopmentWorkflow,
+		"reviewer_role", cfg.ReviewerRole,
+		"reviewer_agent_id_configured", cfg.ReviewerAgentID != "",
+		"max_review_cycles", cfg.MaxReviewCycles,
+	)
+	return r, nil
+}
+
+func definition() workflow.Definition {
+	return workflow.Definition{
+		Name:         softwareDevelopmentWorkflow,
+		Version:      1,
+		InitialState: issuestatus.InProgress,
+		States: map[string]workflow.State{
+			issuestatus.InProgress: {
+				OnEnter: []workflow.Action{{
+					Type: "trigger_agent",
+					Params: map[string]string{
+						"selector": "owner",
+						"handoff": "Autonomous workflow: implement or revise this issue according to its acceptance criteria and the latest review feedback. Do not manage the workflow or mention/trigger another agent; finish the assigned implementation task normally. The workflow engine routes the next step.",
+					},
+				}},
+			},
+			issuestatus.InReview: {
+				OnEnter: []workflow.Action{
+					{Type: "set_issue_status", Params: map[string]string{"status": issuestatus.InReview}},
+					{
+						Type: "trigger_agent",
+						Params: map[string]string{
+							"selector": "reviewer",
+							"handoff": "Autonomous workflow review: review the implementation against the issue acceptance criteria and project standards. If changes are required, move the issue to In Progress and explain the requested changes in a comment; the workflow engine will automatically return it to the implementation agent. If approved, finish the review task normally; the workflow engine will mark the issue Done. Do not mention or trigger another agent.",
+						},
+					},
+				},
+			},
+			issuestatus.Done: {
+				OnEnter: []workflow.Action{{
+					Type: "set_issue_status",
+					Params: map[string]string{"status": issuestatus.Done},
+				}},
+			},
+			issuestatus.Blocked: {
+				OnEnter: []workflow.Action{{
+					Type: "set_issue_status",
+					Params: map[string]string{"status": issuestatus.Blocked},
+				}},
+			},
+		},
+		Transitions: []workflow.Transition{
+			{From: issuestatus.InProgress, Event: "workflow.started", To: issuestatus.InProgress},
+			{From: issuestatus.InProgress, Event: "implementation.completed", To: issuestatus.InReview},
+			{From: issuestatus.InProgress, Event: "implementation.failed", To: issuestatus.Blocked},
+			{From: issuestatus.InReview, Event: "review.completed", To: issuestatus.Done},
+			{From: issuestatus.InReview, Event: "review.changes_requested", To: issuestatus.InProgress},
+			{From: issuestatus.InReview, Event: "review.exhausted", To: issuestatus.Blocked},
+			{From: issuestatus.InReview, Event: "review.failed", To: issuestatus.Blocked},
+		},
+	}
+}
+
+func (r *Runtime) onIssueEvent(event events.Event) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.handleIssueEvent(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
+		slog.Warn("autonomous workflow issue event failed",
+			"event_type", event.Type,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
+}
+
+func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) error {
+	snapshot, prevStatus, err := issueSnapshotFromEvent(event)
+	if err != nil || snapshot.ID == "" {
+		return err
+	}
+	issueID, err := util.ParseUUID(snapshot.ID)
+	if err != nil {
+		return err
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+	if effective != issuestatus.InProgress {
+		return nil
+	}
+
+	run, exists, err := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, snapshot.ID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if run.State != issuestatus.InReview {
+			return nil
+		}
+		if prevStatus == "" {
+			return nil
+		}
+		prevEffective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, prevStatus)
+		if prevEffective != issuestatus.InReview {
+			return nil
+		}
+		eventType := "review.changes_requested"
+		if run.ReviewCycles >= r.config.MaxReviewCycles {
+			eventType = "review.exhausted"
+		}
+		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                issueEventID("review-change", snapshot),
+			Type:              eventType,
+			WorkspaceID:       event.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           snapshot.ID,
+			ActorType:         event.ActorType,
+			ActorID:           event.ActorID,
+			AccountableUserID: accountableFromEvent(event),
+			Payload:           map[string]any{"status": issue.Status, "previous_status": prevStatus},
+		})
+		return err
+	}
+
+	ownerID, reviewerID, err := r.resolveTeam(ctx, issue, pgtype.UUID{})
+	if err != nil {
+		slog.Info("autonomous workflow not started: team could not be resolved",
+			"issue_id", snapshot.ID,
+			"error", err,
+		)
+		return nil
+	}
+	_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+		ID:                issueEventID("workflow-start", snapshot),
+		Type:              "workflow.started",
+		WorkspaceID:       event.WorkspaceID,
+		ProjectID:         util.UUIDToString(issue.ProjectID),
+		IssueID:           snapshot.ID,
+		ActorType:         event.ActorType,
+		ActorID:           event.ActorID,
+		OwnerAgentID:      util.UUIDToString(ownerID),
+		ReviewerAgentID:   util.UUIDToString(reviewerID),
+		AccountableUserID: accountableFromEvent(event),
+		Payload:           map[string]any{"status": issue.Status},
+	})
+	return err
+}
+
+func (r *Runtime) onTaskCompleted(event events.Event) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.handleTaskCompleted(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
+		slog.Warn("autonomous workflow task completion failed",
+			"task_id", event.TaskID,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
+}
+
+func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) error {
+	task, issue, err := r.loadIssueTask(ctx, event)
+	if err != nil || !task.ID.Valid {
+		return err
+	}
+
+	issueID := util.UUIDToString(issue.ID)
+	run, exists, err := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, issueID)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+		if effective != issuestatus.InProgress && effective != issuestatus.InReview {
+			return nil
+		}
+		ownerID := task.AgentID
+		_, reviewerID, resolveErr := r.resolveTeam(ctx, issue, ownerID)
+		if resolveErr != nil {
+			slog.Info("autonomous workflow not started from completion: reviewer unavailable",
+				"issue_id", issueID,
+				"agent_id", util.UUIDToString(ownerID),
+				"error", resolveErr,
+			)
+			return nil
+		}
+		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                "implementation-completed:" + util.UUIDToString(task.ID),
+			Type:              "implementation.completed",
+			WorkspaceID:       event.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           issueID,
+			OwnerAgentID:      util.UUIDToString(ownerID),
+			ReviewerAgentID:   util.UUIDToString(reviewerID),
+			AccountableUserID: util.UUIDToString(task.AccountableUserID),
+			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+		})
+		return err
+	}
+
+	switch {
+	case run.State == issuestatus.InProgress && run.OwnerAgentID == util.UUIDToString(task.AgentID):
+		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                "implementation-completed:" + util.UUIDToString(task.ID),
+			Type:              "implementation.completed",
+			WorkspaceID:       event.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           issueID,
+			AccountableUserID: util.UUIDToString(task.AccountableUserID),
+			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+		})
+		return err
+
+	case run.State == issuestatus.InReview && run.ReviewerAgentID == util.UUIDToString(task.AgentID):
+		effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+		if effective == issuestatus.InProgress {
+			eventType := "review.changes_requested"
+			if run.ReviewCycles >= r.config.MaxReviewCycles {
+				eventType = "review.exhausted"
+			}
+			_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                "review-change-completed:" + util.UUIDToString(task.ID),
+				Type:              eventType,
+				WorkspaceID:       event.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           issueID,
+				AccountableUserID: util.UUIDToString(task.AccountableUserID),
+				Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+			})
+			return err
+		}
+		if effective != issuestatus.InReview && effective != issuestatus.Done {
+			return nil
+		}
+		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                "review-completed:" + util.UUIDToString(task.ID),
+			Type:              "review.completed",
+			WorkspaceID:       event.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           issueID,
+			AccountableUserID: util.UUIDToString(task.AccountableUserID),
+			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+		})
+		return err
+	}
+	return nil
+}
+
+func (r *Runtime) onTaskFailed(event events.Event) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if retryPending(event.Payload) {
+		return
+	}
+	if err := r.handleTaskFailed(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
+		slog.Warn("autonomous workflow task failure failed",
+			"task_id", event.TaskID,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
+}
+
+func (r *Runtime) handleTaskFailed(ctx context.Context, event events.Event) error {
+	task, issue, err := r.loadIssueTask(ctx, event)
+	if err != nil || !task.ID.Valid {
+		return err
+	}
+	run, exists, err := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, util.UUIDToString(issue.ID))
+	if err != nil || !exists {
+		return err
+	}
+
+	eventType := ""
+	switch {
+	case run.State == issuestatus.InProgress && run.OwnerAgentID == util.UUIDToString(task.AgentID):
+		eventType = "implementation.failed"
+	case run.State == issuestatus.InReview && run.ReviewerAgentID == util.UUIDToString(task.AgentID):
+		eventType = "review.failed"
+	default:
+		return nil
+	}
+	_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+		ID:                eventType + ":" + util.UUIDToString(task.ID),
+		Type:              eventType,
+		WorkspaceID:       event.WorkspaceID,
+		ProjectID:         util.UUIDToString(issue.ProjectID),
+		IssueID:           util.UUIDToString(issue.ID),
+		AccountableUserID: util.UUIDToString(task.AccountableUserID),
+		Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+	})
+	return err
+}
+
+func (r *Runtime) loadIssueTask(ctx context.Context, event events.Event) (db.AgentTaskQueue, db.Issue, error) {
+	taskID := event.TaskID
+	if taskID == "" {
+		if payload, ok := event.Payload.(map[string]any); ok {
+			taskID, _ = payload["task_id"].(string)
+		}
+	}
+	if taskID == "" {
+		return db.AgentTaskQueue{}, db.Issue{}, nil
+	}
+	id, err := util.ParseUUID(taskID)
+	if err != nil {
+		return db.AgentTaskQueue{}, db.Issue{}, err
+	}
+	task, err := r.taskSvc.Queries.GetAgentTask(ctx, id)
+	if err != nil {
+		return db.AgentTaskQueue{}, db.Issue{}, err
+	}
+	if !task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
+		return db.AgentTaskQueue{}, db.Issue{}, nil
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		return db.AgentTaskQueue{}, db.Issue{}, err
+	}
+	return task, issue, nil
+}
+
+func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgtype.UUID) (pgtype.UUID, pgtype.UUID, error) {
+	ownerID := ownerHint
+	preferredSquad := pgtype.UUID{}
+
+	if !ownerID.Valid {
+		switch {
+		case issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid:
+			ownerID = issue.AssigneeID
+		case issue.AssigneeType.Valid && issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid:
+			preferredSquad = issue.AssigneeID
+			if err := r.pool.QueryRow(ctx, `
+				SELECT leader_id
+				FROM squad
+				WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
+			`, issue.AssigneeID, issue.WorkspaceID).Scan(&ownerID); err != nil {
+				return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf("resolve squad leader: %w", err)
+			}
+		default:
+			return pgtype.UUID{}, pgtype.UUID{}, errors.New("issue has no agent or squad assignee")
+		}
+	}
+	if !ownerID.Valid {
+		return pgtype.UUID{}, pgtype.UUID{}, errors.New("workflow owner agent is missing")
+	}
+
+	reviewerID, err := r.resolveReviewer(ctx, issue.WorkspaceID, ownerID, preferredSquad)
+	if err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	return ownerID, reviewerID, nil
+}
+
+func (r *Runtime) resolveReviewer(ctx context.Context, workspaceID, ownerID, preferredSquad pgtype.UUID) (pgtype.UUID, error) {
+	if r.config.ReviewerAgentID != "" {
+		configured, err := util.ParseUUID(r.config.ReviewerAgentID)
+		if err != nil {
+			return pgtype.UUID{}, fmt.Errorf("parse configured reviewer agent: %w", err)
+		}
+		var reviewer pgtype.UUID
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent
+			WHERE id = $1
+			  AND workspace_id = $2
+			  AND archived_at IS NULL
+			  AND kind = 'user'
+			  AND runtime_id IS NOT NULL
+		`, configured, workspaceID).Scan(&reviewer)
+		if err != nil {
+			return pgtype.UUID{}, fmt.Errorf("configured reviewer is not an active runnable agent in this workspace: %w", err)
+		}
+		if reviewer == ownerID {
+			return pgtype.UUID{}, errors.New("configured reviewer must be different from workflow owner")
+		}
+		return reviewer, nil
+	}
+
+	var reviewer pgtype.UUID
+	err := r.pool.QueryRow(ctx, `
+		SELECT a.id
+		FROM squad_member reviewer_member
+		JOIN squad s ON s.id = reviewer_member.squad_id
+		JOIN agent a
+		  ON reviewer_member.member_type = 'agent'
+		 AND a.id = reviewer_member.member_id
+		WHERE s.workspace_id = $1
+		  AND s.archived_at IS NULL
+		  AND lower(trim(reviewer_member.role)) = lower(trim($2))
+		  AND a.archived_at IS NULL
+		  AND a.kind = 'user'
+		  AND a.runtime_id IS NOT NULL
+		  AND a.id <> $3
+		  AND (
+			($4::uuid IS NOT NULL AND s.id = $4)
+			OR EXISTS (
+				SELECT 1
+				FROM squad_member owner_member
+				WHERE owner_member.squad_id = s.id
+				  AND owner_member.member_type = 'agent'
+				  AND owner_member.member_id = $3
+			)
+		  )
+		ORDER BY
+		  CASE WHEN $4::uuid IS NOT NULL AND s.id = $4 THEN 0 ELSE 1 END,
+		  reviewer_member.created_at ASC,
+		  a.created_at ASC
+		LIMIT 1
+	`, workspaceID, r.config.ReviewerRole, ownerID, nullableUUID(preferredSquad)).Scan(&reviewer)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, fmt.Errorf("no runnable squad agent has role %q; set that squad-member role or MULTICA_AUTONOMOUS_REVIEWER_AGENT_ID", r.config.ReviewerRole)
+	}
+	if err != nil {
+		return pgtype.UUID{}, fmt.Errorf("resolve reviewer role: %w", err)
+	}
+	return reviewer, nil
+}
+
+// ExecuteWorkflowAction maps durable actions onto Multica's normal task and
+// issue services rather than bypassing their safety gates.
+func (r *Runtime) ExecuteWorkflowAction(ctx context.Context, run workflow.Run, pending workflow.PendingAction) error {
+	issueID, err := util.ParseUUID(run.IssueID)
+	if err != nil {
+		return err
+	}
+	switch pending.Action.Type {
+	case "set_issue_status":
+		status := strings.TrimSpace(pending.Action.Params["status"])
+		if status == "" {
+			return errors.New("set_issue_status action is missing status")
+		}
+		_, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, status)
+		return err
+
+	case "trigger_agent":
+		selector := strings.TrimSpace(pending.Action.Params["selector"])
+		targetID := ""
+		switch selector {
+		case "owner":
+			targetID = run.OwnerAgentID
+		case "reviewer":
+			targetID = run.ReviewerAgentID
+		default:
+			return fmt.Errorf("unsupported workflow agent selector %q", selector)
+		}
+		if targetID == "" {
+			return fmt.Errorf("workflow %s agent is not resolved", selector)
+		}
+
+		agentID, err := util.ParseUUID(targetID)
+		if err != nil {
+			return err
+		}
+		accountableID := pgtype.UUID{}
+		if run.AccountableUserID != "" {
+			accountableID, err = util.ParseUUID(run.AccountableUserID)
+			if err != nil {
+				return err
+			}
+		}
+		issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+		if err != nil {
+			return err
+		}
+		_, err = r.taskSvc.EnqueueTaskForWorkflow(
+			ctx,
+			issue,
+			agentID,
+			accountableID,
+			pending.Action.Params["handoff"],
+		)
+		if errors.Is(err, service.ErrDuplicatePendingTask) {
+			return nil
+		}
+		return err
+	default:
+		return fmt.Errorf("unsupported workflow action type %q", pending.Action.Type)
+	}
+}
+
+type issueSnapshot struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Revision int64  `json:"revision"`
+}
+
+func issueSnapshotFromEvent(event events.Event) (issueSnapshot, string, error) {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		return issueSnapshot{}, "", nil
+	}
+	raw, err := json.Marshal(payload["issue"])
+	if err != nil {
+		return issueSnapshot{}, "", err
+	}
+	var snapshot issueSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return issueSnapshot{}, "", err
+	}
+	prevStatus, _ := payload["prev_status"].(string)
+	return snapshot, prevStatus, nil
+}
+
+func issueEventID(prefix string, snapshot issueSnapshot) string {
+	return fmt.Sprintf("%s:%s:%d:%s", prefix, snapshot.ID, snapshot.Revision, snapshot.Status)
+}
+
+func accountableFromEvent(event events.Event) string {
+	if event.ActorType == "member" {
+		return event.ActorID
+	}
+	return ""
+}
+
+func retryPending(payload any) bool {
+	fields, ok := payload.(map[string]any)
+	if !ok {
+		return false
+	}
+	value, _ := fields["retry_pending"].(bool)
+	return value
+}
+
+func nullableUUID(value pgtype.UUID) any {
+	if !value.Valid {
+		return nil
+	}
+	return value
+}
