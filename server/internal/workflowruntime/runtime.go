@@ -67,12 +67,14 @@ func ConfigFromEnv() Config {
 }
 
 type Runtime struct {
-	pool    *pgxpool.Pool
-	taskSvc *service.TaskService
-	store   *workflow.PostgresStore
-	engine  *workflow.Engine
-	team    *teamprovision.Provisioner
-	config  Config
+	ctx         context.Context
+	pool        *pgxpool.Pool
+	taskSvc     *service.TaskService
+	store       *workflow.PostgresStore
+	engine      *workflow.Engine
+	team        *teamprovision.Provisioner
+	planningSem chan struct{}
+	config      Config
 }
 
 func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config) (*Runtime, error) {
@@ -94,11 +96,13 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		return nil, fmt.Errorf("build autonomous workflow engine: %w", err)
 	}
 	r := &Runtime{
+		ctx: ctx,
 		pool: pool,
 		taskSvc: taskSvc,
 		store: store,
 		engine: engine,
 		team: teamprovision.New(pool, taskSvc.Queries, planner),
+		planningSem: make(chan struct{}, 4),
 		config: cfg,
 	}
 
