@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -520,6 +521,124 @@ func (r *Runtime) openProjectEscalation(
 	`, workspaceID, projectID, string(node.Risk),
 		summary, contextJSON, node.Key, category)
 	return err
+}
+
+func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) error {
+	var nodeID, planID pgtype.UUID
+	var kind string
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, plan_id, kind
+		FROM autonomous_project_plan_node
+		WHERE workspace_id = $1
+		  AND materialized_issue_id = $2
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, issue.WorkspaceID, issue.ID).Scan(&nodeID, &planID, &kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	var taskResult any = map[string]any{}
+	if len(task.Result) > 0 {
+		if err := json.Unmarshal(task.Result, &taskResult); err != nil {
+			taskResult = map[string]any{"raw": string(task.Result)}
+		}
+	}
+	content, _ := json.Marshal(map[string]any{
+		"task_id": util.UUIDToString(task.ID),
+		"agent_id": util.UUIDToString(task.AgentID),
+		"issue_id": util.UUIDToString(issue.ID),
+		"result": taskResult,
+	})
+	artifactType := projectArtifactType(projectorchestration.NodeKind(kind))
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_artifact (
+			workspace_id, project_id, plan_id, node_id, artifact_type,
+			name, content, producer_agent_id
+		)
+		SELECT $1, $2, $3, $4, $5, $6, $7, $8
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM autonomous_project_artifact
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND node_id = $4
+			  AND content ->> 'task_id' = $9
+		)
+	`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, artifactType,
+		"Task result: "+issue.Title, content, task.AgentID, util.UUIDToString(task.ID)); err != nil {
+		return fmt.Errorf("record project task artifact: %w", err)
+	}
+
+	gateType := projectQualityGateType(projectorchestration.NodeKind(kind))
+	if gateType != "" {
+		evidence, _ := json.Marshal(map[string]any{
+			"task_id": util.UUIDToString(task.ID),
+			"artifact_type": artifactType,
+		})
+		if _, err := r.pool.Exec(ctx, `
+			INSERT INTO autonomous_project_quality_gate_run (
+				workspace_id, project_id, plan_id, node_id, gate_type,
+				status, required, evidence, attempt, started_at, completed_at
+			)
+			SELECT $1, $2, $3, $4, $5, 'passed', TRUE, $6, 1, now(), now()
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM autonomous_project_quality_gate_run
+				WHERE workspace_id = $1
+				  AND project_id = $2
+				  AND node_id = $4
+				  AND gate_type = $5
+				  AND evidence ->> 'task_id' = $7
+			)
+		`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, gateType, evidence, util.UUIDToString(task.ID)); err != nil {
+			return fmt.Errorf("record project quality evidence: %w", err)
+		}
+	}
+	return nil
+}
+
+func projectArtifactType(kind projectorchestration.NodeKind) string {
+	switch kind {
+	case projectorchestration.NodeProduct:
+		return "product_spec"
+	case projectorchestration.NodeArchitecture:
+		return "architecture"
+	case projectorchestration.NodeReview:
+		return "review"
+	case projectorchestration.NodeQA:
+		return "qa_report"
+	case projectorchestration.NodeSecurity:
+		return "security_review"
+	case projectorchestration.NodeIntegration:
+		return "integration_report"
+	case projectorchestration.NodeRelease:
+		return "release_manifest"
+	case projectorchestration.NodeDeploy:
+		return "deployment_record"
+	case projectorchestration.NodeIncident:
+		return "incident_report"
+	default:
+		return "implementation_handoff"
+	}
+}
+
+func projectQualityGateType(kind projectorchestration.NodeKind) string {
+	switch kind {
+	case projectorchestration.NodeReview:
+		return "review"
+	case projectorchestration.NodeQA:
+		return "acceptance"
+	case projectorchestration.NodeSecurity:
+		return "security"
+	case projectorchestration.NodeIntegration:
+		return "integration_test"
+	default:
+		return ""
+	}
 }
 
 func (r *Runtime) completeNonImplementationProjectNode(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) (bool, error) {
