@@ -2,6 +2,7 @@ package teamprovision
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -61,5 +62,46 @@ func TestRuntimeBackedPlannerAcceptsMarkdownJSONFence(t *testing.T) {
 	planner := NewRuntimeBackedPlanner(exec, RuntimeBackedPlannerConfig{Required: true})
 	if _, err := planner.Plan(context.Background(), PlanningInput{Project: db.Project{Title: "Web app"}}); err != nil {
 		t.Fatalf("Plan() fenced JSON error = %v", err)
+	}
+}
+
+
+func TestRuntimeBackedPlannerFailsClosedWhenRuntimeUnavailable(t *testing.T) {
+	runtimeErr := errors.New("runtime unavailable")
+	exec := &fakeRuntimePlanExecutor{err: runtimeErr}
+	planner := NewRuntimeBackedPlanner(exec, RuntimeBackedPlannerConfig{
+		Required:  true,
+		MaxAgents: 8,
+	})
+
+	_, err := planner.Plan(context.Background(), PlanningInput{
+		Project: db.Project{Title: "Todo web app"},
+	})
+	if !errors.Is(err, runtimeErr) {
+		t.Fatalf("Plan() error = %v, want wrapped runtime error", err)
+	}
+	if exec.calls != 2 {
+		t.Fatalf("executor calls = %d, want 2 repair attempts", exec.calls)
+	}
+}
+
+func TestRuntimeBackedPlannerCanFallbackWhenRuntimeUnavailable(t *testing.T) {
+	exec := &fakeRuntimePlanExecutor{err: errors.New("runtime unavailable")}
+	planner := NewRuntimeBackedPlanner(exec, RuntimeBackedPlannerConfig{
+		Required:  false,
+		MaxAgents: 8,
+	})
+
+	plan, err := planner.Plan(context.Background(), PlanningInput{
+		Project: db.Project{Title: "Todo web app"},
+	})
+	if err != nil {
+		t.Fatalf("Plan() fallback error = %v", err)
+	}
+	if plan.PlannerName != "heuristic" {
+		t.Fatalf("PlannerName = %q, want heuristic fallback", plan.PlannerName)
+	}
+	if exec.calls != 2 {
+		t.Fatalf("executor calls = %d, want 2 runtime attempts before fallback", exec.calls)
 	}
 }
