@@ -1582,7 +1582,7 @@ func (r *Runtime) enforceProjectNodePolicy(
 	err := r.pool.QueryRow(ctx, `
 		SELECT policy
 		FROM autonomous_project_plan
-		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
+		WHERE workspace_id = $1 AND project_id = $2 AND status IN ('active', 'blocked')
 		ORDER BY revision DESC
 		LIMIT 1
 	`, workspaceID, projectID).Scan(&raw)
