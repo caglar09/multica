@@ -173,6 +173,20 @@ func (e *MikaTeamPlanExecutor) ensurePlannerCarrier(ctx context.Context, workspa
 	if err != nil {
 		return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("reload Mika for team planner: %w", err)
 	}
+
+	// Freeze the exact Mika execution profile we are about to inherit. The
+	// workspace advisory lock only serializes planner calls; it does not block a
+	// member changing Mika's runtime/model from the UI. Taking a row lock here
+	// makes the two outcomes deterministic: either that edit commits first and
+	// this planner call inherits the new profile, or this call commits its
+	// carrier snapshot first and the edit applies to the next planning call.
+	mika, err = qtx.GetAgentForUpdate(ctx, mika.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Agent{}, db.AgentRuntime{}, teamprovision.ErrMikaUnavailable
+	}
+	if err != nil {
+		return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("lock Mika execution profile for team planner: %w", err)
+	}
 	if !mika.RuntimeID.Valid {
 		return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("%w: Mika has no runtime", teamprovision.ErrMikaUnavailable)
 	}
