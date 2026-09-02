@@ -382,6 +382,8 @@ func (r *Runtime) processTeamDraftProvisioning(ctx context.Context) error {
 	for _, item := range pending {
 		var raw map[string]struct {
 			RuntimeID string   `json:"runtime_id"`
+			Model     string   `json:"model"`
+			SkillMode string   `json:"skill_mode"`
 			SkillIDs  []string `json:"skill_ids"`
 		}
 		if err := json.Unmarshal(item.selections, &raw); err != nil {
@@ -404,8 +406,9 @@ func (r *Runtime) processTeamDraftProvisioning(ctx context.Context) error {
 			assignments = append(assignments, teamprovision.RoleRuntimeSelection{
 				Role: role,
 				RuntimeID: runtimeID,
+				Model: strings.TrimSpace(selected.Model),
 				SkillIDs: skillIDs,
-				SkillsSpecified: true,
+				SkillsSpecified: strings.EqualFold(strings.TrimSpace(selected.SkillMode), "custom"),
 			})
 		}
 
