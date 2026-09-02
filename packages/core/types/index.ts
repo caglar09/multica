@@ -343,4 +343,10 @@ export type {
   AutonomousDecision,
   AutonomousProjectHealth,
   AutonomousProjectSnapshot,
+  AutonomousProjectPlanNode,
+  AutonomousProjectPlanEdge,
+  AutonomousProjectPlanSnapshot,
+  AutonomousQualityGate,
+  AutonomousEscalation,
+  AutonomousBudget,
 } from "./autonomous";
