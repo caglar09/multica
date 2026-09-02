@@ -312,7 +312,7 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 }
 
 func (r *Runtime) onProjectCreated(event events.Event) {
-	if r.team == nil || event.WorkspaceID == "" || event.ActorType != "agent" || event.ActorID == "" {
+	if r.team == nil || event.WorkspaceID == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -320,10 +320,6 @@ func (r *Runtime) onProjectCreated(event events.Event) {
 
 	workspaceID, err := util.ParseUUID(event.WorkspaceID)
 	if err != nil {
-		return
-	}
-	actorID, err := util.ParseUUID(event.ActorID)
-	if err != nil || !r.team.IsMikaAgent(ctx, workspaceID, actorID) {
 		return
 	}
 	projectIDValue := projectIDFromEvent(event)
