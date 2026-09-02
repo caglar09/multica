@@ -809,9 +809,9 @@ func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgt
 			if err != nil {
 				return pgtype.UUID{}, pgtype.UUID{}, err
 			}
-			reviewerID, ok := team.Agent(teamprovision.RoleCodeReviewer)
+			reviewerID, _, ok := team.AgentByFamily("review")
 			if !ok {
-				return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no code reviewer")
+				return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no review-family agent")
 			}
 			if implementationID == reviewerID {
 				return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project implementation and review agents must differ")
@@ -821,17 +821,18 @@ func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgt
 
 		if teamExists {
 			if role, generated := existingTeam.RoleForAgent(ownerID); generated {
-				if !teamprovision.IsImplementationRole(role) {
+				spec, ok := existingTeam.RoleSpec(role)
+				if !ok || !teamprovision.IsImplementationFamily(spec.Family) {
 					// Planning/architecture/QA/review tasks are allowed to run
 					// under those roles, but this implementation->review state
-					// machine must not reinterpret them as code delivery.
+					// machine must not reinterpret them as delivery work.
 					return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf(
 						"issue is assigned to non-implementation project role %q", role,
 					)
 				}
-				reviewerID, ok := existingTeam.Agent(teamprovision.RoleCodeReviewer)
+				reviewerID, _, ok := existingTeam.AgentByFamily("review")
 				if !ok {
-					return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no code reviewer")
+					return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no review-family agent")
 				}
 				return ownerID, reviewerID, nil
 			}
@@ -839,7 +840,7 @@ func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgt
 			// An explicitly assigned external/user-created implementation agent
 			// keeps ownership, while the project registry still supplies the
 			// independent reviewer.
-			if reviewerID, ok := existingTeam.Agent(teamprovision.RoleCodeReviewer); ok && reviewerID != ownerID {
+			if reviewerID, _, ok := existingTeam.AgentByFamily("review"); ok && reviewerID != ownerID {
 				return ownerID, reviewerID, nil
 			}
 		}
