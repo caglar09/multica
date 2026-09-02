@@ -740,6 +740,27 @@ func (r *Runtime) handleProjectCreated(ctx context.Context, event events.Event) 
 	if err != nil {
 		return err
 	}
+	var autonomyMode string
+	err = r.pool.QueryRow(ctx, `
+		SELECT autonomy_mode
+		FROM autonomous_project_bootstrap
+		WHERE workspace_id = $1 AND project_id = $2 AND status <> 'cancelled'
+	`, workspaceID, projectID).Scan(&autonomyMode)
+	if errors.Is(err, pgx.ErrNoRows) || autonomyMode != "autonomous" {
+		// Standard projects deliberately stay outside the autonomous control
+		// plane. Autonomous entry must be explicit through bootstrap metadata.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load project bootstrap mode: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_project_bootstrap
+		SET status = 'started', updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2 AND status = 'ready'
+	`, workspaceID, projectID); err != nil {
+		return fmt.Errorf("mark autonomous bootstrap started: %w", err)
+	}
 	draft, err := r.team.PrepareProject(ctx, workspaceID, projectID)
 	if err != nil {
 		if errors.Is(err, teamprovision.ErrMikaUnavailable) {
