@@ -22,13 +22,28 @@ type TeamRole struct {
 	AgentID      string
 }
 
+type PlanningContextItem struct {
+	Type    string `json:"type"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+type PlanningResource struct {
+	Type string          `json:"type"`
+	Ref  json.RawMessage `json:"ref"`
+}
+
 type PlanningInput struct {
-	WorkspaceID       pgtype.UUID
-	ProjectID         pgtype.UUID
-	ProjectTitle      string
+	WorkspaceID        pgtype.UUID
+	ProjectID          pgtype.UUID
+	ProjectTitle       string
 	ProjectDescription string
-	Team              []TeamRole
-	CurrentPlan       *Plan
+	BootstrapBrief     string
+	Context            []PlanningContextItem
+	Resources          []PlanningResource
+	Team               []TeamRole
+	CurrentPlan        *Plan
+	Policy             Policy
 }
 
 type RuntimeExecution struct {
@@ -75,7 +90,7 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 	if err == nil {
 		// Policy is backend-owned. The model may echo a policy object for schema
 		// stability, but it cannot raise autonomy, loosen approvals or budgets.
-		plan.Policy = p.policy
+		plan.Policy = effectivePlanningPolicy(p.policy, input.Policy)
 		plan = HardenPlan(plan)
 		if err = ValidatePlan(plan, p.maxNodes); err == nil {
 			return plan, execution, nil
@@ -98,12 +113,62 @@ Original output:
 	if parseErr != nil {
 		return Plan{}, repaired, fmt.Errorf("decode repaired project plan: %w", parseErr)
 	}
-	plan.Policy = p.policy
+	plan.Policy = effectivePlanningPolicy(p.policy, input.Policy)
 	plan = HardenPlan(plan)
 	if validateErr := ValidatePlan(plan, p.maxNodes); validateErr != nil {
 		return Plan{}, repaired, fmt.Errorf("repaired project plan rejected: %w", validateErr)
 	}
 	return plan, repaired, nil
+}
+
+func effectivePlanningPolicy(server Policy, requested Policy) Policy {
+	out := server
+	rank := func(level AutonomyLevel) int {
+		switch level {
+		case AutonomyAssisted:
+			return 0
+		case AutonomyDevelopment:
+			return 1
+		case AutonomyDelivery:
+			return 2
+		case AutonomyClosedLoop:
+			return 3
+		default:
+			return 1
+		}
+	}
+	if requested.Autonomy != "" && rank(requested.Autonomy) < rank(out.Autonomy) {
+		out.Autonomy = requested.Autonomy
+	}
+	out.Approvals.DatabaseMigration = out.Approvals.DatabaseMigration || requested.Approvals.DatabaseMigration
+	out.Approvals.ProductionDeploy = out.Approvals.ProductionDeploy || requested.Approvals.ProductionDeploy
+	out.Approvals.MajorDependency = out.Approvals.MajorDependency || requested.Approvals.MajorDependency
+	out.Approvals.CriticalRisk = out.Approvals.CriticalRisk || requested.Approvals.CriticalRisk
+
+	minPositiveInt := func(serverValue, requestedValue int) int {
+		if requestedValue <= 0 {
+			return serverValue
+		}
+		if serverValue <= 0 || requestedValue < serverValue {
+			return requestedValue
+		}
+		return serverValue
+	}
+	minPositiveInt64 := func(serverValue, requestedValue int64) int64 {
+		if requestedValue <= 0 {
+			return serverValue
+		}
+		if serverValue <= 0 || requestedValue < serverValue {
+			return requestedValue
+		}
+		return serverValue
+	}
+	out.Budget.MaxParallelNodes = minPositiveInt(out.Budget.MaxParallelNodes, requested.Budget.MaxParallelNodes)
+	out.Budget.MaxTotalAttempts = minPositiveInt(out.Budget.MaxTotalAttempts, requested.Budget.MaxTotalAttempts)
+	out.Budget.TokenLimit = minPositiveInt64(out.Budget.TokenLimit, requested.Budget.TokenLimit)
+	out.Budget.RuntimeSeconds = minPositiveInt64(out.Budget.RuntimeSeconds, requested.Budget.RuntimeSeconds)
+	out.Budget.CostMicrounits = minPositiveInt64(out.Budget.CostMicrounits, requested.Budget.CostMicrounits)
+	return out
 }
 
 func ParsePlan(raw string) (Plan, error) {
