@@ -1,3 +1,4 @@
+import type { AutonomousRoleRuntimeAssignment } from "../types";
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useWorkspaceId } from "../hooks";
@@ -63,6 +64,27 @@ export function useRetryAutonomousAction() {
       projectId: string;
       actionId: string;
     }) => api.retryProjectAutonomousAction(projectId, actionId),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
+}
+
+
+export function useConfirmAutonomousTeam() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      assignments,
+    }: {
+      projectId: string;
+      assignments: AutonomousRoleRuntimeAssignment[];
+    }) => api.confirmProjectAutonomousTeam(projectId, assignments),
     onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({
         queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
