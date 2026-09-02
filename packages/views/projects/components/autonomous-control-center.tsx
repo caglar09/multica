@@ -462,9 +462,9 @@ function TeamDraftConfigurator({
                     </div>
                     {selected.skill_mode === "inherit" ? (
                       <div className="rounded-md border border-dashed bg-muted/20 p-2.5 text-caption text-muted-foreground">
-                        No manual assignment required. The agent inherits Mika&apos;s
-                        enabled workspace skills and all skills exposed by its selected
-                        runtime, so it can use the appropriate skill when needed.
+                        No manual assignment required. The agent inherits all
+                        workspace skills plus the skills exposed by its selected
+                        runtime, so it can use the appropriate capability when needed.
                       </div>
                     ) : snapshot.skills.length > 0 ? (
                       <div>
