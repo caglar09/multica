@@ -200,6 +200,7 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 		WHERE workspace_id = $1
 		  AND project_id = $2
 		  AND superseded_by IS NULL
+		  AND source_type <> 'bootstrap'
 		ORDER BY created_at ASC
 		LIMIT 200
 	`, workspaceID, projectID)
