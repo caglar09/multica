@@ -382,8 +382,11 @@ func TestFailTaskResettableQuotaCreatesDeferredRetry(t *testing.T) {
 
 	var parentID pgtype.UUID
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts)
-		VALUES ($1, $2, $3, 'running', 0, 1, 2)
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts,
+			session_id, work_dir
+		)
+		VALUES ($1, $2, $3, 'running', 0, 1, 2, 'quota-poisoned-session', '/tmp/quota-workdir')
 		RETURNING id
 	`, agentID, runtimeID, issueID).Scan(&parentID); err != nil {
 		t.Fatalf("insert parent task: %v", err)
@@ -406,11 +409,13 @@ func TestFailTaskResettableQuotaCreatesDeferredRetry(t *testing.T) {
 	var childStatus string
 	var fireAt pgtype.Timestamptz
 	var retryOf pgtype.UUID
+	var childSession, childWorkDir pgtype.Text
+	var forceFresh bool
 	if err := pool.QueryRow(ctx, `
-		SELECT status, fire_at, retry_of_task_id
+		SELECT status, fire_at, retry_of_task_id, session_id, work_dir, force_fresh_session
 		FROM agent_task_queue
 		WHERE parent_task_id = $1
-	`, parentID).Scan(&childStatus, &fireAt, &retryOf); err != nil {
+	`, parentID).Scan(&childStatus, &fireAt, &retryOf, &childSession, &childWorkDir, &forceFresh); err != nil {
 		t.Fatalf("read quota retry child: %v", err)
 	}
 	if childStatus != "deferred" || !fireAt.Valid {
@@ -418,6 +423,15 @@ func TestFailTaskResettableQuotaCreatesDeferredRetry(t *testing.T) {
 	}
 	if !retryOf.Valid || retryOf != parentID {
 		t.Fatalf("retry_of_task_id = %s, want %s", util.UUIDToString(retryOf), util.UUIDToString(parentID))
+	}
+	if childSession.Valid {
+		t.Fatalf("quota retry inherited poisoned session %q; want fresh session", childSession.String)
+	}
+	if !childWorkDir.Valid || childWorkDir.String != "/tmp/quota-workdir" {
+		t.Fatalf("quota retry work_dir = %+v, want preserved /tmp/quota-workdir", childWorkDir)
+	}
+	if !forceFresh {
+		t.Fatal("quota retry force_fresh_session = false, want true")
 	}
 	minFireAt := before.Add(52*time.Minute + 8*time.Second)
 	maxFireAt := before.Add(52*time.Minute + 20*time.Second)
@@ -468,5 +482,12 @@ func TestFailTaskQuotaWithoutResetRemainsTerminal(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("quota without reset created %d retry children, want 0", count)
+	}
+}
+
+
+func TestProviderQuotaFailureIsResumeUnsafe(t *testing.T) {
+	if !ResumeUnsafeFailure("agent_error.provider_quota_limit", "Individual quota reached. Resets in 52m8s.") {
+		t.Fatal("provider quota failure must not resume the same agent session")
 	}
 }
