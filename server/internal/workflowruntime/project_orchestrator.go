@@ -887,7 +887,7 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 	}
 
 	rows, err := r.pool.Query(ctx, `
-		SELECT DISTINCT i.id, i.status, n.node_key, p.revision
+		SELECT DISTINCT ON (i.id) i.id, i.status, n.node_key, p.revision
 		FROM autonomous_project_plan_node n
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		JOIN issue i ON i.id = n.materialized_issue_id
@@ -901,7 +901,7 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		      WHERE current_node.plan_id = $3
 		        AND current_node.materialized_issue_id = i.id
 		  )
-		ORDER BY p.revision DESC
+		ORDER BY i.id, p.revision DESC
 	`, workspaceID, projectID, latestPlanID)
 	if err != nil {
 		return fmt.Errorf("query stale superseded project issues: %w", err)
