@@ -79,9 +79,24 @@ func (e *MikaProjectPlanExecutor) ExecuteProjectPlan(
 		return projectorchestration.RuntimeExecution{}, err
 	}
 	category := controlPlaneUsageCategory(projectorchestration.UsageProjectPlanning, userPrompt)
+	brainContext := make([]projectorchestration.PlanningContextItem, 0, len(input.Context))
+	for _, item := range input.Context {
+		if item.Source == "brain" {
+			brainContext = append(brainContext, item)
+		}
+	}
+	brainContextTokens := int64(0)
+	brainContextEstimated := false
+	if len(brainContext) > 0 {
+		if rawBrain, marshalErr := json.Marshal(brainContext); marshalErr == nil {
+			brainContextTokens = estimateInjectedTokens(string(rawBrain))
+			brainContextEstimated = brainContextTokens > 0
+		}
+	}
 	if _, usageErr := accountRuntimeTaskUsage(
 		ctx, e.pool, projectorchestration.NewStore(e.pool),
-		input.WorkspaceID, input.ProjectID, sent.Task.ID, category, 0, false,
+		input.WorkspaceID, input.ProjectID, sent.Task.ID, category,
+		brainContextTokens, brainContextEstimated,
 	); usageErr != nil && !errors.Is(usageErr, projectorchestration.ErrBudgetExceeded) {
 		return projectorchestration.RuntimeExecution{}, fmt.Errorf("account project planner usage: %w", usageErr)
 	}

@@ -327,6 +327,7 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 				Type: strings.TrimSpace(item.Kind),
 				Title: strings.TrimSpace(item.Title),
 				Content: strings.TrimSpace(item.Content),
+				Source: "bootstrap",
 			})
 		}
 	}
@@ -370,6 +371,7 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 			Type: entryType,
 			Title: subject,
 			Content: content,
+			Source: "brain",
 		})
 	}
 	if err := brainRows.Err(); err != nil {

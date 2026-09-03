@@ -26,6 +26,9 @@ type PlanningContextItem struct {
 	Type    string `json:"type"`
 	Title   string `json:"title"`
 	Content string `json:"content"`
+	// Source is accounting metadata only. It is deliberately excluded from the
+	// planner prompt so the existing ProjectPlan input contract stays stable.
+	Source string `json:"-"`
 }
 
 type PlanningResource struct {
