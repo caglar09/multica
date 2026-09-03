@@ -1214,6 +1214,10 @@ func (r *Runtime) processProjectSchedulingForProject(
 					slog.Warn("project conductor materialization escalation failed",
 						"project_id", util.UUIDToString(projectID), "node", node.Key, "error", escalationErr)
 				}
+				if blockErr := r.blockProjectNodeForSchedulingCause(ctx, workspaceID, projectID, node.ReadyNode, err); blockErr != nil {
+					slog.Warn("project conductor materialization block failed",
+						"project_id", util.UUIDToString(projectID), "node", node.Key, "error", blockErr)
+				}
 				continue
 			}
 			materialized = true
@@ -1477,6 +1481,8 @@ func (r *Runtime) blockProjectNodeForSchedulingCause(
 		category = "external_dependency"
 	case errors.Is(cause, projectorchestration.ErrBudgetExceeded):
 		category = "budget"
+	case errors.Is(cause, projectorchestration.ErrNoEligibleAgent):
+		category = "no_eligible_agent"
 	}
 	if category == "" {
 		return nil
@@ -1562,6 +1568,15 @@ blockedNodeLoop:
 				if err != nil {
 					return err
 				}
+			}
+		case "no_eligible_agent":
+			team, ok, teamErr := r.team.FindProject(ctx, workspaceID, projectID)
+			if teamErr != nil {
+				return teamErr
+			}
+			if ok {
+				_, _, _, selectErr := r.selectProjectNodeAgent(ctx, team, node.ReadyNode)
+				resolved = selectErr == nil
 			}
 		case "budget":
 			err := r.pool.QueryRow(ctx, `
@@ -1961,6 +1976,9 @@ func (r *Runtime) selectProjectNodeAgent(
 		addFamily("devops"); addFamily("release"); addFamily("sre")
 	case projectorchestration.NodeObserve, projectorchestration.NodeIncident:
 		addFamily("sre"); addFamily("devops")
+	case projectorchestration.NodeImplementation, projectorchestration.NodeMigration, projectorchestration.NodeIntegration:
+		// When the planner omitted a family, implementation-capable roles are
+		// considered below. RequiredCapabilities remains a hard filter.
 	}
 
 	type candidate struct {
@@ -1976,10 +1994,28 @@ func (r *Runtime) selectProjectNodeAgent(
 				continue
 			}
 			id, ok := team.Agent(spec.Role)
-			if !ok {
+			if !ok || !projectorchestration.CapabilitiesCover(spec.Capabilities, node.RequiredCapabilities) {
 				continue
 			}
 			if projectNodeUsesIssueWorkflow(node.Kind) && !teamprovision.IsImplementationFamily(spec.Family) {
+				continue
+			}
+			var online bool
+			if err := r.pool.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1
+					FROM agent a
+					JOIN agent_runtime ar ON ar.id = a.runtime_id
+					WHERE a.id = $1
+					  AND a.archived_at IS NULL
+					  AND a.status = 'active'
+					  AND ar.status = 'online'
+					  AND ar.last_seen_at > now() - interval '2 minutes'
+				)
+			`, id).Scan(&online); err != nil {
+				return pgtype.UUID{}, "", "", err
+			}
+			if !online {
 				continue
 			}
 			performance, err := r.projectStore.AgentPerformance(ctx, team.WorkspaceID, id, spec.Family)
@@ -1995,22 +2031,72 @@ func (r *Runtime) selectProjectNodeAgent(
 			`, id).Scan(&active); err != nil {
 				return pgtype.UUID{}, "", "", err
 			}
-			// Earlier family preferences are a weak tiebreaker; live queue load
-			// dominates history so a strong but saturated agent does not hoard work.
-			score := performance.Score() - float64(active*25) - float64(familyIndex)
+			specialization := projectorchestration.SpecializationConfidence(spec.Capabilities, node.RequiredCapabilities)
+			latencyPenalty := 0.0
+			if performance.TasksCompleted > 0 && performance.TotalRuntimeSeconds > 0 {
+				avgSeconds := float64(performance.TotalRuntimeSeconds) / float64(performance.TasksCompleted)
+				latencyPenalty = min(avgSeconds/60.0, 20.0)
+			}
+			score := performance.Score() +
+				(specialization * 20.0) -
+				float64(active*25) -
+				latencyPenalty -
+				float64(familyIndex)
 			candidates = append(candidates, candidate{id: id, role: spec.Role, family: spec.Family, score: score})
 		}
 	}
-	if len(candidates) == 0 && projectNodeUsesIssueWorkflow(node.Kind) && team.Plan.ImplementationRole != "" {
-		if id, ok := team.Agent(team.Plan.ImplementationRole); ok {
-			if spec, found := team.RoleSpec(team.Plan.ImplementationRole); found {
-				return id, spec.Role, spec.Family, nil
+	if len(families) == 0 && projectNodeUsesIssueWorkflow(node.Kind) {
+		for _, spec := range team.Plan.Roles {
+			if !teamprovision.IsImplementationFamily(spec.Family) ||
+				!projectorchestration.CapabilitiesCover(spec.Capabilities, node.RequiredCapabilities) {
+				continue
 			}
+			id, ok := team.Agent(spec.Role)
+			if !ok {
+				continue
+			}
+			var online bool
+			if err := r.pool.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM agent a
+					JOIN agent_runtime ar ON ar.id = a.runtime_id
+					WHERE a.id = $1 AND a.archived_at IS NULL AND a.status = 'active'
+					  AND ar.status = 'online'
+					  AND ar.last_seen_at > now() - interval '2 minutes'
+				)
+			`, id).Scan(&online); err != nil {
+				return pgtype.UUID{}, "", "", err
+			}
+			if !online {
+				continue
+			}
+			performance, err := r.projectStore.AgentPerformance(ctx, team.WorkspaceID, id, spec.Family)
+			if err != nil {
+				return pgtype.UUID{}, "", "", err
+			}
+			var active int
+			if err := r.pool.QueryRow(ctx, `
+				SELECT COUNT(*) FROM agent_task_queue
+				WHERE agent_id = $1
+				  AND status IN ('queued','dispatched','running','waiting_local_directory','deferred')
+			`, id).Scan(&active); err != nil {
+				return pgtype.UUID{}, "", "", err
+			}
+			specialization := projectorchestration.SpecializationConfidence(spec.Capabilities, node.RequiredCapabilities)
+			latencyPenalty := 0.0
+			if performance.TasksCompleted > 0 && performance.TotalRuntimeSeconds > 0 {
+				latencyPenalty = min((float64(performance.TotalRuntimeSeconds)/float64(performance.TasksCompleted))/60.0, 20.0)
+			}
+			candidates = append(candidates, candidate{
+				id: id, role: spec.Role, family: spec.Family,
+				score: performance.Score() + specialization*20.0 - float64(active*25) - latencyPenalty,
+			})
 		}
 	}
 	if len(candidates) == 0 {
 		return pgtype.UUID{}, "", "", fmt.Errorf(
-			"no provisioned specialist can execute node %q (kind=%s family=%q capabilities=%v)",
+			"%w: node %q kind=%s family=%q capabilities=%v has no online capability-complete candidate",
+			projectorchestration.ErrNoEligibleAgent,
 			node.Key, node.Kind, node.RequiredRoleFamily, node.RequiredCapabilities,
 		)
 	}
@@ -2022,7 +2108,6 @@ func (r *Runtime) selectProjectNodeAgent(
 	}
 	return best.id, best.role, best.family, nil
 }
-
 func (r *Runtime) enforceProjectNodePolicy(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
@@ -2094,6 +2179,9 @@ func (r *Runtime) openProjectEscalation(
 	} else if errors.Is(cause, projectorchestration.ErrAdapterNotConfigured) {
 		category = "external_dependency"
 		summary = "Project delivery adapter is not configured: " + node.Title
+	} else if errors.Is(cause, projectorchestration.ErrNoEligibleAgent) {
+		category = "no_eligible_agent"
+		summary = "No eligible online agent can execute: " + node.Title
 	}
 	contextJSON, _ := json.Marshal(map[string]any{
 		"node_key": node.Key,
@@ -2101,6 +2189,11 @@ func (r *Runtime) openProjectEscalation(
 		"required_role_family": node.RequiredRoleFamily,
 		"required_capabilities": node.RequiredCapabilities,
 		"error": cause.Error(),
+		"suggested_team_delta": map[string]any{
+			"mode": "add_only",
+			"required_role_family": node.RequiredRoleFamily,
+			"required_capabilities": node.RequiredCapabilities,
+		},
 	})
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO autonomous_project_escalation (
