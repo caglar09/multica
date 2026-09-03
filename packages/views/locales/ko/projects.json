@@ -70,6 +70,7 @@
     "prop_start_date": "시작일",
     "prop_due_date": "마감일",
     "prop_directory": "프로젝트 폴더",
+    "project_folder_pending": "첫 로컬 작업이 시작되면 프로젝트 폴더가 표시됩니다.",
     "no_start_date": "시작일 없음",
     "no_due_date": "마감일 없음",
     "description_placeholder": "설명 추가...",
