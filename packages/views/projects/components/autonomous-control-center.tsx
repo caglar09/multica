@@ -969,7 +969,7 @@ function BrainConfigurator({
                 <option value="">Runtime default</option>
                 {models.map((item) => (
                   <option key={item.id} value={item.id}>
-                    {item.name || item.id}
+                    {item.label || item.id}
                   </option>
                 ))}
               </select>
