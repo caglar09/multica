@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_autonomous_project_handoff_issue;

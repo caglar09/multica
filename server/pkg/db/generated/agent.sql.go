@@ -2978,7 +2978,7 @@ func (q *Queries) CreateQuickCreateTask(ctx context.Context, arg CreateQuickCrea
 
 const createRetryTask = `-- name: CreateRetryTask :one
 WITH retry_parent AS MATERIALIZED (
-    SELECT parent.*
+    SELECT parent.id, parent.agent_id, parent.issue_id, parent.status, parent.priority, parent.dispatched_at, parent.started_at, parent.completed_at, parent.result, parent.error, parent.created_at, parent.context, parent.runtime_id, parent.session_id, parent.work_dir, parent.trigger_comment_id, parent.chat_session_id, parent.autopilot_run_id, parent.attempt, parent.max_attempts, parent.parent_task_id, parent.failure_reason, parent.trigger_summary, parent.force_fresh_session, parent.is_leader_task, parent.wait_reason, parent.initiator_user_id, parent.handoff_note, parent.prepare_lease_expires_at, parent.squad_id, parent.runtime_mcp_overlay, parent.escalation_for_task_id, parent.fire_at, parent.originator_user_id, parent.runtime_connected_apps, parent.coalesced_comment_ids, parent.delivered_comment_ids, parent.chat_input_task_id, parent.chat_finalize_deferred_at, parent.originator_source, parent.delegated_from_task_id, parent.retry_of_task_id, parent.rerun_of_task_id, parent.rule_version_id, parent.trigger_evidence_kind, parent.trigger_evidence_ref_id, parent.accountable_user_id, parent.session_rollout_missing, parent.retired_session_id, parent.quick_actions_disabled, parent.regenerate_quick_actions_for, parent.branch_name, parent.durable_work_dir, parent.channel_context_revision
     FROM agent_task_queue AS parent
     WHERE parent.id = $1
     FOR UPDATE OF parent
@@ -3026,7 +3026,7 @@ WHERE lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
       WHERE child.retry_of_task_id = p.id
   )
 ON CONFLICT DO NOTHING
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision
+RETURNING retry_child.id, retry_child.agent_id, retry_child.issue_id, retry_child.status, retry_child.priority, retry_child.dispatched_at, retry_child.started_at, retry_child.completed_at, retry_child.result, retry_child.error, retry_child.created_at, retry_child.context, retry_child.runtime_id, retry_child.session_id, retry_child.work_dir, retry_child.trigger_comment_id, retry_child.chat_session_id, retry_child.autopilot_run_id, retry_child.attempt, retry_child.max_attempts, retry_child.parent_task_id, retry_child.failure_reason, retry_child.trigger_summary, retry_child.force_fresh_session, retry_child.is_leader_task, retry_child.wait_reason, retry_child.initiator_user_id, retry_child.handoff_note, retry_child.prepare_lease_expires_at, retry_child.squad_id, retry_child.runtime_mcp_overlay, retry_child.escalation_for_task_id, retry_child.fire_at, retry_child.originator_user_id, retry_child.runtime_connected_apps, retry_child.coalesced_comment_ids, retry_child.delivered_comment_ids, retry_child.chat_input_task_id, retry_child.chat_finalize_deferred_at, retry_child.originator_source, retry_child.delegated_from_task_id, retry_child.retry_of_task_id, retry_child.rerun_of_task_id, retry_child.rule_version_id, retry_child.trigger_evidence_kind, retry_child.trigger_evidence_ref_id, retry_child.accountable_user_id, retry_child.session_rollout_missing, retry_child.retired_session_id, retry_child.quick_actions_disabled, retry_child.regenerate_quick_actions_for, retry_child.branch_name, retry_child.durable_work_dir, retry_child.channel_context_revision
 `
 
 type CreateRetryTaskParams struct {
@@ -3057,7 +3057,13 @@ type CreateRetryTaskParams struct {
 // already holds the slot keeps it, and a deliberate human rerun therefore wins
 // over an automatic retry.
 //
-// Both fences surface the same way — zero rows, i.e. pgx.ErrNoRows from this
+// Parent retry creation is additionally serialized on the source row. A parent
+// may have at most one automatic retry child for its entire lifetime, including
+// after that child is cancelled or completed. This prevents the 10-second
+// autonomous reconciler from recreating the same deferred quota retry on every
+// pass. Manual rerun lineage is separate and remains available to operators.
+//
+// All fences surface the same way — zero rows, i.e. pgx.ErrNoRows from this
 // :one query. Callers must treat that as "no retry was created" and still commit
 // their own work, NOT as a failure.
 // Clones a parent task into a fresh queued attempt. Carries forward the
