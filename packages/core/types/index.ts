@@ -359,4 +359,8 @@ export type {
   AutonomousQualityGate,
   AutonomousEscalation,
   AutonomousBudget,
+  AutonomousBrainRuntimeMode,
+  AutonomousBrainLearningMode,
+  AutonomousBrainConfig,
+  UpdateAutonomousBrainConfig,
 } from "./autonomous";
