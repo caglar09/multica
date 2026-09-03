@@ -920,17 +920,62 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 			ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
 			LIMIT 1
 		`, issueID, ownerID, reviewerID, run.UpdatedAt).Scan(&retryTaskID)
+		if err == nil {
+			return r.handleTaskCompleted(ctx, events.Event{
+				Type:        protocol.EventTaskCompleted,
+				WorkspaceID: run.WorkspaceID,
+				TaskID:      util.UUIDToString(retryTaskID),
+			})
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		// Mixed-version/self-host recovery: an older server may have persisted a
+		// transient runtime/provider failure as terminal and moved this durable
+		// workflow to Blocked before the retry policy knew how to defer it. Re-run
+		// the canonical TaskService retry decision against the newest matching
+		// failure. This is intentionally narrow: MaybeRetryFailedTask creates a
+		// child only for retryable infrastructure failures or quota errors carrying
+		// an explicit reset window, and its pending-task guard makes this idempotent.
+		var failedTaskID pgtype.UUID
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND status = 'failed'
+			  AND (
+				($2::uuid IS NOT NULL AND agent_id = $2)
+				OR ($3::uuid IS NOT NULL AND agent_id = $3)
+			  )
+			  AND COALESCE(completed_at, created_at) > $4
+			ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+			LIMIT 1
+		`, issueID, ownerID, reviewerID, run.UpdatedAt).Scan(&failedTaskID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		return r.handleTaskCompleted(ctx, events.Event{
-			Type:        protocol.EventTaskCompleted,
-			WorkspaceID: run.WorkspaceID,
-			TaskID:      util.UUIDToString(retryTaskID),
-		})
+		failedTask, err := r.taskSvc.Queries.GetAgentTask(ctx, failedTaskID)
+		if err != nil {
+			return err
+		}
+		retryTask, err := r.taskSvc.MaybeRetryFailedTask(ctx, failedTask)
+		if err != nil {
+			return fmt.Errorf("recover blocked autonomous workflow retry: %w", err)
+		}
+		if retryTask != nil {
+			slog.Info("recovered blocked autonomous workflow with task retry",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"failed_task_id", util.UUIDToString(failedTask.ID),
+				"retry_task_id", util.UUIDToString(retryTask.ID),
+				"retry_status", retryTask.Status,
+			)
+		}
+		return nil
 	}
 
 	targetID := run.OwnerAgentID
