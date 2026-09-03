@@ -2978,12 +2978,12 @@ func (q *Queries) CreateQuickCreateTask(ctx context.Context, arg CreateQuickCrea
 
 const createRetryTask = `-- name: CreateRetryTask :one
 WITH retry_parent AS MATERIALIZED (
-    SELECT *
-    FROM agent_task_queue
-    WHERE id = $1
-    FOR UPDATE
+    SELECT parent.*
+    FROM agent_task_queue AS parent
+    WHERE parent.id = $1
+    FOR UPDATE OF parent
 )
-INSERT INTO agent_task_queue (
+INSERT INTO agent_task_queue AS retry_child (
     agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,
     status, priority, trigger_comment_id, coalesced_comment_ids, trigger_summary, context,
     session_id, work_dir,
