@@ -236,6 +236,57 @@ func (s *Store) PersistPlan(
 	}, nil
 }
 
+// ResumeCompletedPlanForDiscoveredWork reopens the latest completed plan when
+// an autonomous team member discovers additional project work after the plan
+// reached Done. Completion is a quiescent state for a closed-loop project, not
+// a tombstone: newly discovered work must be adoptable without a manual replan.
+//
+// The latest-plan fence prevents an older completed revision from being revived
+// after a concurrent replan has already produced a newer plan.
+func (s *Store) ResumeCompletedPlanForDiscoveredWork(
+	ctx context.Context,
+	workspaceID, projectID, planID pgtype.UUID,
+) error {
+	if s == nil || s.pool == nil {
+		return errors.New("project orchestration store is not configured")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan p
+		SET status = 'active', updated_at = now()
+		WHERE p.id = $1
+		  AND p.workspace_id = $2
+		  AND p.project_id = $3
+		  AND p.status = 'completed'
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM autonomous_project_plan newer
+		      WHERE newer.workspace_id = p.workspace_id
+		        AND newer.project_id = p.project_id
+		        AND newer.revision > p.revision
+		  )
+	`, planID, workspaceID, projectID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+
+	var status string
+	err = s.pool.QueryRow(ctx, `
+		SELECT status
+		FROM autonomous_project_plan
+		WHERE id = $1 AND workspace_id = $2 AND project_id = $3
+	`, planID, workspaceID, projectID).Scan(&status)
+	if err != nil {
+		return err
+	}
+	if status == "active" || status == "blocked" {
+		return nil
+	}
+	return fmt.Errorf("project plan cannot be resumed from status %q", status)
+}
+
 func (s *Store) AppendPlanDelta(
 	ctx context.Context,
 	workspaceID, projectID, planID pgtype.UUID,
