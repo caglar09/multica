@@ -2,9 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - "**"
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -224,7 +226,7 @@ jobs:
 
       - name: Install dependencies
         if: ${{ needs.changes.outputs.frontend == 'true' }}
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       # `node-version: 22` above floats across patch releases, and turbo's
       # global hash does not include the interpreter at all (`engines` is null
@@ -334,7 +336,7 @@ jobs:
 
       - name: Install dependencies
         if: ${{ needs.changes.outputs.frontend == 'true' }}
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Resolve runtime for cache key
         id: runtime
@@ -396,7 +398,7 @@ jobs:
 
       - name: Install dependencies
         if: ${{ needs.changes.outputs.frontend == 'true' }}
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Resolve runtime for cache key
         id: runtime
@@ -521,6 +523,10 @@ jobs:
       - name: Build
         if: ${{ needs.changes.outputs.backend == 'true' }}
         run: cd server && go build ./...
+
+      - name: Vet
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        run: cd server && go vet ./...
 
       - name: Run migrations
         if: ${{ needs.changes.outputs.backend == 'true' }}
