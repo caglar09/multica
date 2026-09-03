@@ -1974,6 +1974,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/autonomous/pause", h.PauseProjectAutonomous)
 					r.With(handler.RequireHumanActor).Post("/autonomous/resume", h.ResumeProjectAutonomous)
 					r.With(handler.RequireHumanActor).Post("/autonomous/replan", h.ReplanProjectAutonomous)
+					r.With(handler.RequireHumanActor).Put("/autonomous/brain/config", h.UpdateProjectAutonomousBrainConfig)
 					r.With(handler.RequireHumanActor).Post("/autonomous/team/confirm", h.ConfirmProjectAutonomousTeam)
 					r.With(handler.RequireHumanActor).Post("/autonomous/actions/{actionId}/retry", h.RetryProjectAutonomousAction)
 					r.With(handler.RequireHumanActor).Post("/autonomous/escalations/{escalationId}/resolve", h.ResolveProjectAutonomousEscalation)
