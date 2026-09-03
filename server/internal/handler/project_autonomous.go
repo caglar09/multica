@@ -145,6 +145,20 @@ type AutonomousProjectHealthResponse struct {
 	FailedActions   int64  `json:"failed_actions"`
 }
 
+type AutonomousBrainResponse struct {
+	Enabled             bool    `json:"enabled"`
+	RuntimeMode         string  `json:"runtime_mode"`
+	RuntimeID           *string `json:"runtime_id"`
+	Model               *string `json:"model"`
+	ThinkingLevel       *string `json:"thinking_level"`
+	ServiceTier         *string `json:"service_tier"`
+	LearningMode        string  `json:"learning_mode"`
+	ActiveMemories      int64   `json:"active_memories"`
+	SupersededMemories  int64   `json:"superseded_memories"`
+	PendingLearningJobs int64   `json:"pending_learning_jobs"`
+	DeferredLearningJobs int64  `json:"deferred_learning_jobs"`
+}
+
 type AutonomousProjectResponse struct {
 	Enabled   bool                              `json:"enabled"`
 	Control   AutonomousControlResponse         `json:"control"`
@@ -162,6 +176,7 @@ type AutonomousProjectResponse struct {
 	QualityGates []AutonomousQualityGateResponse     `json:"quality_gates"`
 	Escalations  []AutonomousEscalationResponse      `json:"escalations"`
 	Budget       *AutonomousBudgetResponse            `json:"budget"`
+	Brain        *AutonomousBrainResponse             `json:"brain"`
 }
 
 type AutonomousProjectPlanNodeResponse struct {
@@ -313,6 +328,51 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	resp.Control.ReplanRequestedAt = nullableTimestampString(replanRequestedAt)
 	resp.Control.ReplanCompletedAt = nullableTimestampString(replanCompletedAt)
 	resp.Control.LastError = nullableTextString(lastError)
+
+	brain := AutonomousBrainResponse{
+		Enabled: true,
+		RuntimeMode: "inherit_mika",
+		LearningMode: "adaptive",
+	}
+	var brainRuntimeID pgtype.UUID
+	var brainModel, brainThinking, brainTier pgtype.Text
+	brainErr := h.DB.QueryRow(r.Context(), `
+		SELECT enabled, runtime_mode, runtime_id, model, thinking_level, service_tier, learning_mode
+		FROM autonomous_project_brain_config
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID).Scan(
+		&brain.Enabled, &brain.RuntimeMode, &brainRuntimeID,
+		&brainModel, &brainThinking, &brainTier, &brain.LearningMode,
+	)
+	if brainErr != nil && !errors.Is(brainErr, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to load project brain configuration")
+		return
+	}
+	brain.RuntimeID = nullableUUIDString(brainRuntimeID)
+	brain.Model = nullableTextString(brainModel)
+	brain.ThinkingLevel = nullableTextString(brainThinking)
+	brain.ServiceTier = nullableTextString(brainTier)
+	if err := h.DB.QueryRow(r.Context(), `
+		SELECT
+			COUNT(*) FILTER (WHERE status='active' AND superseded_by IS NULL),
+			COUNT(*) FILTER (WHERE status='superseded' OR superseded_by IS NOT NULL)
+		FROM autonomous_project_brain_entry
+		WHERE workspace_id=$1 AND project_id=$2
+	`, workspaceID, projectID).Scan(&brain.ActiveMemories, &brain.SupersededMemories); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load project brain memory statistics")
+		return
+	}
+	if err := h.DB.QueryRow(r.Context(), `
+		SELECT
+			COUNT(*) FILTER (WHERE status IN ('pending','running')),
+			COUNT(*) FILTER (WHERE status='deferred')
+		FROM autonomous_project_brain_learning_job
+		WHERE workspace_id=$1 AND project_id=$2
+	`, workspaceID, projectID).Scan(&brain.PendingLearningJobs, &brain.DeferredLearningJobs); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load project brain learning statistics")
+		return
+	}
+	resp.Brain = &brain
 
 	var bootstrap AutonomousProjectBootstrapResponse
 	var bootstrapKnowledge, bootstrapPolicy, bootstrapBudget []byte
@@ -1044,6 +1104,116 @@ func (h *Handler) requireAutonomousControlAdmin(
 		return pgtype.UUID{}, false
 	}
 	return userUUID, true
+}
+
+
+func (h *Handler) UpdateProjectAutonomousBrainConfig(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok { return }
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok { return }
+	userUUID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok { return }
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	var req struct {
+		Enabled       bool   `json:"enabled"`
+		RuntimeMode   string `json:"runtime_mode"`
+		RuntimeID     string `json:"runtime_id"`
+		Model         string `json:"model"`
+		ThinkingLevel string `json:"thinking_level"`
+		ServiceTier   string `json:"service_tier"`
+		LearningMode  string `json:"learning_mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid project brain configuration")
+		return
+	}
+	req.RuntimeMode = strings.ToLower(strings.TrimSpace(req.RuntimeMode))
+	req.LearningMode = strings.ToLower(strings.TrimSpace(req.LearningMode))
+	if req.RuntimeMode == "" { req.RuntimeMode = "inherit_mika" }
+	if req.LearningMode == "" { req.LearningMode = "adaptive" }
+	if req.RuntimeMode != "inherit_mika" && req.RuntimeMode != "custom" {
+		writeError(w, http.StatusBadRequest, "brain runtime_mode must be inherit_mika or custom")
+		return
+	}
+	if req.LearningMode != "deterministic" && req.LearningMode != "assisted" && req.LearningMode != "adaptive" {
+		writeError(w, http.StatusBadRequest, "brain learning_mode must be deterministic, assisted or adaptive")
+		return
+	}
+
+	var runtimeID pgtype.UUID
+	if req.RuntimeMode == "custom" {
+		if strings.TrimSpace(req.RuntimeID) == "" {
+			writeError(w, http.StatusBadRequest, "custom project brain runtime is required")
+			return
+		}
+		var parsed bool
+		runtimeID, parsed = parseUUIDOrBadRequest(w, req.RuntimeID, "runtime_id")
+		if !parsed { return }
+		var status, visibility string
+		var ownerID pgtype.UUID
+		if err := h.DB.QueryRow(r.Context(), `
+			SELECT status, visibility, owner_id
+			FROM agent_runtime
+			WHERE id=$1 AND workspace_id=$2
+		`, runtimeID, workspaceID).Scan(&status, &visibility, &ownerID); err != nil {
+			writeError(w, http.StatusBadRequest, "selected brain runtime is not available in this workspace")
+			return
+		}
+		if status != "online" {
+			writeError(w, http.StatusConflict, "selected brain runtime must be online")
+			return
+		}
+		if ownerID.Valid && ownerID != userUUID && visibility != "public" {
+			writeError(w, http.StatusForbidden, "selected brain runtime is private to another member")
+			return
+		}
+		model := strings.TrimSpace(req.Model)
+		if model != "" {
+			if catalog := h.cachedModelCatalog(r.Context(), uuidToString(runtimeID)); catalog != nil && catalog.Supported && len(catalog.Models) > 0 {
+				found := false
+				for _, candidate := range catalog.Models {
+					if candidate.ID == model { found = true; break }
+				}
+				if !found {
+					writeError(w, http.StatusBadRequest, "selected brain model is not available on the selected runtime")
+					return
+				}
+			}
+		}
+	} else {
+		req.RuntimeID, req.Model, req.ThinkingLevel, req.ServiceTier = "", "", "", ""
+	}
+
+	_, err := h.DB.Exec(r.Context(), `
+		INSERT INTO autonomous_project_brain_config (
+			project_id, workspace_id, enabled, runtime_mode, runtime_id, model,
+			thinking_level, service_tier, learning_mode, updated_by, updated_at
+		)
+		VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),$9,$10,now())
+		ON CONFLICT (project_id) DO UPDATE
+		SET enabled=EXCLUDED.enabled,
+		    runtime_mode=EXCLUDED.runtime_mode,
+		    runtime_id=EXCLUDED.runtime_id,
+		    model=EXCLUDED.model,
+		    thinking_level=EXCLUDED.thinking_level,
+		    service_tier=EXCLUDED.service_tier,
+		    learning_mode=EXCLUDED.learning_mode,
+		    updated_by=EXCLUDED.updated_by,
+		    updated_at=now()
+		WHERE autonomous_project_brain_config.workspace_id=EXCLUDED.workspace_id
+	`, projectID, workspaceID, req.Enabled, req.RuntimeMode, runtimeID,
+		strings.TrimSpace(req.Model), strings.TrimSpace(req.ThinkingLevel),
+		strings.TrimSpace(req.ServiceTier), req.LearningMode, userUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update project brain configuration")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": true})
 }
 
 func (h *Handler) PauseProjectAutonomous(w http.ResponseWriter, r *http.Request) {
