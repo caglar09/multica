@@ -867,7 +867,7 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		SELECT n.materialized_issue_id, n.status, i.status
 		FROM autonomous_project_plan_node n
 		JOIN issue i ON i.id = n.materialized_issue_id
-		WHERE n.plan_id = $1
+		WHERE n.plan_id = $1::uuid
 		  AND n.materialized_issue_id IS NOT NULL
 		  AND n.status IN ('completed','cancelled')
 	`, latestPlanID)
@@ -948,12 +948,16 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		    resolved_at = now()
 		FROM autonomous_project_plan_node n
 		WHERE e.node_id = n.id
-		  AND e.workspace_id = $1
-		  AND e.project_id = $2
+		  AND e.workspace_id = $1::uuid
+		  AND e.project_id = $2::uuid
 		  AND n.status IN ('completed','cancelled')
 		  AND e.status IN ('open','acknowledged')
 	`, workspaceID, projectID); err != nil {
-		return fmt.Errorf("resolve terminal-node project escalations: %w", err)
+		slog.Warn("autonomous repair could not close terminal-node escalations",
+			"workspace_id", util.UUIDToString(workspaceID),
+			"project_id", util.UUIDToString(projectID),
+			"error", err,
+		)
 	}
 
 	// Escalations attached to superseded nodes are historical evidence, not
@@ -965,19 +969,24 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		    resolution = jsonb_build_object(
 		        'decision', 'auto_resolved',
 		        'reason', 'plan_superseded',
-		        'current_plan_revision', $4
+		        'current_plan_revision', $4::bigint
 		    ),
 		    resolved_at = now()
 		FROM autonomous_project_plan_node n
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		WHERE e.node_id = n.id
-		  AND e.workspace_id = $1
-		  AND e.project_id = $2
-		  AND p.id <> $3
+		  AND e.workspace_id = $1::uuid
+		  AND e.project_id = $2::uuid
+		  AND p.id <> $3::uuid
 		  AND p.status IN ('superseded','completed')
 		  AND e.status IN ('open','acknowledged')
 	`, workspaceID, projectID, latestPlanID, latestRevision); err != nil {
-		return fmt.Errorf("resolve historical project escalations: %w", err)
+		slog.Warn("autonomous repair could not close historical escalations",
+			"workspace_id", util.UUIDToString(workspaceID),
+			"project_id", util.UUIDToString(projectID),
+			"current_plan_revision", latestRevision,
+			"error", err,
+		)
 	}
 
 	rows, err := r.pool.Query(ctx, `
@@ -985,10 +994,10 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		FROM autonomous_project_plan_node n
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		JOIN issue i ON i.id = n.materialized_issue_id
-		WHERE p.workspace_id = $1
-		  AND p.project_id = $2
+		WHERE p.workspace_id = $1::uuid
+		  AND p.project_id = $2::uuid
 		  AND p.status IN ('superseded','completed')
-		  AND p.id <> $3
+		  AND p.id <> $3::uuid
 		  AND NOT EXISTS (
 		      SELECT 1
 		      FROM autonomous_project_plan_node current_node
