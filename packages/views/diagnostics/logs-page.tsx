@@ -188,7 +188,7 @@ export function LogsPage() {
                 No log lines match the current filters.
               </div>
             ) : (
-              <div className="min-w-max py-1 font-mono text-[12px] leading-5">
+              <div className="min-w-max py-1 font-mono text-micro leading-5">
                 {entries.map((entry, index) => (
                   <div
                     key={[
