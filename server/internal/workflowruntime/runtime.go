@@ -1589,6 +1589,27 @@ func (r *Runtime) ExecuteWorkflowAction(ctx context.Context, run workflow.Run, p
 			return nil
 		}
 		handoff := marker + "\n" + pending.Action.Params["handoff"]
+		if issue.ProjectID.Valid && r.projectStore != nil {
+			memories, recallErr := r.projectStore.RecallMemories(
+				ctx, issue.WorkspaceID, issue.ProjectID, issue.Title, 12, 12000,
+			)
+			if recallErr != nil {
+				slog.Warn("project brain recall failed; dispatching without learned context",
+					"issue_id", util.UUIDToString(issue.ID), "error", recallErr)
+			} else if len(memories) > 0 {
+				var brainContext strings.Builder
+				brainContext.WriteString("\n\nProject Brain context (backend-selected, evidence-backed, current revisions only):")
+				for _, memory := range memories {
+					brainContext.WriteString("\n- [")
+					brainContext.WriteString(memory.Type)
+					brainContext.WriteString("] ")
+					brainContext.WriteString(memory.Subject)
+					brainContext.WriteString(": ")
+					brainContext.WriteString(memory.Content)
+				}
+				handoff += brainContext.String()
+			}
+		}
 		_, err = r.taskSvc.EnqueueTaskForWorkflow(
 			ctx,
 			issue,
