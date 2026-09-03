@@ -48,9 +48,9 @@ function toStatus(s: DaemonStatusLike | undefined): LocalDaemonStatus {
  * Live snapshot of the desktop's local daemon: the daemon_id it registers
  * under, the OS device name, and whether the supervisor is currently running.
  *
- * On web (no `window.daemonAPI`) every field is null/false — components can
- * unconditionally call this hook and branch on `daemonId` to decide whether
- * a local_directory resource matches "this machine".
+ * On web (no `window.daemonAPI`) the hook probes the default daemon health
+ * endpoint on loopback. If no local daemon is reachable it falls back to
+ * null/false, so remote web deployments remain safe.
  *
  * The initial paint reads `getStatus()` once so the UI doesn't flash a
  * "no daemon" state while waiting for the first push from `onStatusChange`.
