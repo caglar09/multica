@@ -14,6 +14,7 @@ type claimContinuityGapProbe struct {
 	Task *struct {
 		ID                            string `json:"id"`
 		PriorSessionID                string `json:"prior_session_id"`
+		PriorWorkDir                  string `json:"prior_work_dir"`
 		PriorSessionResumeUnavailable bool   `json:"prior_session_resume_unavailable"`
 	} `json:"task"`
 }
@@ -142,5 +143,72 @@ func TestClaimTaskByRuntime_RerunSourceRolloutMissingDisclosesGap(t *testing.T) 
 	probe := claimOneTaskForRuntime(t, runtimeID, "rerun-gap-claim-test")
 	if !probe.Task.PriorSessionResumeUnavailable {
 		t.Fatalf("expected rerun claim to disclose the source task's continuity gap; response task=%+v", *probe.Task)
+	}
+}
+
+
+// TestClaimTaskByRuntime_RerunQuotaFailureStartsFreshSession pins the recovery
+// contract for provider quotas: keep the source workdir so partial work
+// survives, but never resume the session that ended with the quota terminal
+// marker. Antigravity can otherwise replay the same stale quota result after
+// the provider has recovered, leaving autonomous workflows permanently blocked.
+func TestClaimTaskByRuntime_RerunQuotaFailureStartsFreshSession(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	agentID := createHandlerTestAgent(t, "RerunQuotaClaimAgent", []byte("[]"))
+	runtimeID := handlerTestRuntimeID(t)
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, assignee_type, assignee_id, number)
+		VALUES ($1, 'rerun quota issue', 'todo', 'none', 'member', $2, 'agent', $3,
+		        (SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1))
+		RETURNING id
+	`, testWorkspaceID, testUserID, agentID).Scan(&issueID); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+
+	var srcID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority, started_at, completed_at,
+			failure_reason, error, session_id, work_dir
+		)
+		VALUES (
+			$1, $2, $3, 'failed', 0, now() - interval '2 minutes', now() - interval '1 minute',
+			'agent_error.provider_quota_limit',
+			'Individual quota reached. Resets in 52m8s.',
+			'quota-poisoned-session', '/tmp/quota-workdir'
+		)
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&srcID); err != nil {
+		t.Fatalf("insert quota source task: %v", err)
+	}
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority, rerun_of_task_id, force_fresh_session
+		)
+		VALUES ($1, $2, $3, 'queued', 1000, $4, TRUE)
+		RETURNING id
+	`, agentID, runtimeID, issueID, srcID).Scan(&taskID); err != nil {
+		t.Fatalf("create quota rerun task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	probe := claimOneTaskForRuntime(t, runtimeID, "rerun-quota-claim-test")
+	if probe.Task.PriorSessionID != "" {
+		t.Fatalf("quota rerun prior_session_id = %q, want fresh session", probe.Task.PriorSessionID)
+	}
+	if probe.Task.PriorWorkDir != "/tmp/quota-workdir" {
+		t.Fatalf("quota rerun prior_work_dir = %q, want preserved workdir", probe.Task.PriorWorkDir)
 	}
 }
