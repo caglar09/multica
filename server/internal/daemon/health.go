@@ -408,6 +408,14 @@ const (
 // so tests can exercise it without spinning up a listener.
 func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !allowLocalUIOrigin(w, r) {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		d.mu.Lock()
 		var wsList []healthWorkspace
 		for id, ws := range d.workspaces {
