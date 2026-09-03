@@ -4688,32 +4688,30 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			// error text on the in-memory parent so retryEligible can apply
 			// reset-aware provider quota policy using the same path as the sweeper.
 			parent.Error = pgtype.Text{String: errMsg, Valid: strings.TrimSpace(errMsg) != ""}
-			if !retryEligible(failureReason, parent) {
-				goto retryPrecomputeDone
-			}
-			wantRetry = true
-			// Persist the reason-aware effective budget into the child so the
-			// retry chain self-describes (e.g. provider_network → max_attempts=3),
-			// rather than leaking a contradictory attempt=N/max_attempts=2 row.
-			retryMaxAttempts = pgtype.Int4{Int32: retryAttemptCeiling(failureReason, parent.MaxAttempts), Valid: true}
-			// Defer this attempt when the reason's schedule calls for a backoff
-			// (provider_network's final attempt waits ~5s); a zero delay leaves
-			// fire_at NULL so the child is created immediately-claimable.
-			if fireAt, ok := retryFireAtForFailure(failureReason, errMsg, parent.Attempt, time.Time{}); ok {
-				retryFireAt = pgtype.Timestamptz{Time: fireAt, Valid: true}
-			}
-			if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
-				// Best-effort: a missing overlay is not retry-fatal — the child
-				// simply runs without the Composio overlay.
-				slog.Warn("fail task auto-retry: load agent for overlay failed",
-					"task_id", util.UUIDToString(taskID),
-					"agent_id", util.UUIDToString(parent.AgentID), "error", aerr)
-			} else {
-				retryOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
+			if retryEligible(failureReason, parent) {
+				wantRetry = true
+				// Persist the reason-aware effective budget into the child so the
+				// retry chain self-describes (e.g. provider_network → max_attempts=3),
+				// rather than leaking a contradictory attempt=N/max_attempts=2 row.
+				retryMaxAttempts = pgtype.Int4{Int32: retryAttemptCeiling(failureReason, parent.MaxAttempts), Valid: true}
+				// Defer this attempt when the reason's schedule calls for a backoff
+				// (provider_network's final attempt waits ~5s); a zero delay leaves
+				// fire_at NULL so the child is created immediately-claimable.
+				if fireAt, ok := retryFireAtForFailure(failureReason, errMsg, parent.Attempt, time.Time{}); ok {
+					retryFireAt = pgtype.Timestamptz{Time: fireAt, Valid: true}
+				}
+				if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
+					// Best-effort: a missing overlay is not retry-fatal — the child
+					// simply runs without the Composio overlay.
+					slog.Warn("fail task auto-retry: load agent for overlay failed",
+						"task_id", util.UUIDToString(taskID),
+						"agent_id", util.UUIDToString(parent.AgentID), "error", aerr)
+				} else {
+					retryOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
+				}
 			}
 		}
 	}
-retryPrecomputeDone:
 
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
