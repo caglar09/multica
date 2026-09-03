@@ -163,6 +163,33 @@ export interface AutonomousProjectHealth {
   failed_actions: number;
 }
 
+export type AutonomousBrainRuntimeMode = "inherit_mika" | "custom";
+export type AutonomousBrainLearningMode = "deterministic" | "assisted" | "adaptive";
+
+export interface AutonomousBrainConfig {
+  enabled: boolean;
+  runtime_mode: AutonomousBrainRuntimeMode;
+  runtime_id: string | null;
+  model: string | null;
+  thinking_level: string | null;
+  service_tier: string | null;
+  learning_mode: AutonomousBrainLearningMode;
+  active_memories: number;
+  superseded_memories: number;
+  pending_learning_jobs: number;
+  deferred_learning_jobs: number;
+}
+
+export interface UpdateAutonomousBrainConfig {
+  enabled: boolean;
+  runtime_mode: AutonomousBrainRuntimeMode;
+  runtime_id?: string;
+  model?: string;
+  thinking_level?: string;
+  service_tier?: string;
+  learning_mode: AutonomousBrainLearningMode;
+}
+
 
 export interface AutonomousProjectPlanNode {
   id: string;
@@ -262,4 +289,5 @@ export interface AutonomousProjectSnapshot {
   quality_gates: AutonomousQualityGate[];
   escalations: AutonomousEscalation[];
   budget: AutonomousBudget | null;
+  brain: AutonomousBrainConfig | null;
 }
