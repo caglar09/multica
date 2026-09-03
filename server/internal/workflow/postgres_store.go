@@ -266,13 +266,46 @@ func (s *PostgresStore) ListActiveRuns(ctx context.Context, limit int) ([]Run, e
 		WHERE wr.state IN ('in_progress', 'in_review')
 		   OR (
 			wr.state = 'blocked'
-			AND EXISTS (
-				SELECT 1
-				FROM agent_task_queue t
-				WHERE t.issue_id = wr.issue_id
-				  AND (t.retry_of_task_id IS NOT NULL OR t.rerun_of_task_id IS NOT NULL)
-				  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'completed')
-				  AND COALESCE(t.completed_at, t.created_at) > wr.updated_at
+			AND (
+				-- Normal post-block Retry/Rerun lineage.
+				EXISTS (
+					SELECT 1
+					FROM agent_task_queue t
+					WHERE t.issue_id = wr.issue_id
+					  AND (t.retry_of_task_id IS NOT NULL OR t.rerun_of_task_id IS NOT NULL)
+					  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'completed')
+					  AND COALESCE(t.completed_at, t.created_at) > wr.updated_at
+				)
+				OR
+				-- Rolling-upgrade/self-host repair: an older server may have
+				-- persisted a retryable failure as terminal immediately before
+				-- writing the workflow Blocked state. Such a run has no successor
+				-- lineage yet, so the normal EXISTS above cannot make the run visible
+				-- to reconcileRun. Select only the narrow set of retry candidates
+				-- that TaskService.MaybeRetryFailedTask can actually revive.
+				EXISTS (
+					SELECT 1
+					FROM agent_task_queue t
+					WHERE t.issue_id = wr.issue_id
+					  AND t.status = 'failed'
+					  AND (t.agent_id = wr.owner_agent_id OR t.agent_id = wr.reviewer_agent_id)
+					  AND COALESCE(t.completed_at, t.created_at) >= wr.updated_at - interval '1 minute'
+					  AND COALESCE(t.completed_at, t.created_at) <= wr.updated_at + interval '5 seconds'
+					  AND (
+						t.failure_reason IN (
+							'runtime_offline',
+							'runtime_recovery',
+							'timeout',
+							'codex_semantic_inactivity',
+							'agent_error.provider_network',
+							'skill_bundle_unavailable'
+						)
+						OR (
+							t.failure_reason = 'agent_error.provider_quota_limit'
+							AND lower(COALESCE(t.error, '')) ~ 'resets?[[:space:]]+in[[:space:]]+[0-9]'
+						)
+					  )
+				)
 			)
 		   )
 		ORDER BY wr.updated_at ASC
