@@ -25,6 +25,7 @@ import type {
   AutonomousDecision,
   AutonomousProjectSnapshot,
   AutonomousRoleRuntimeAssignment,
+  UpdateAutonomousBrainConfig,
   AutonomousTeamMember,
   AutonomousWorkflowRun,
 } from "@multica/core/types";
@@ -35,6 +36,7 @@ import {
   useReplanAutonomousProject,
   useResumeAutonomousProject,
   useRetryAutonomousAction,
+  useUpdateAutonomousBrain,
   useResolveAutonomousEscalation,
 } from "@multica/core/projects";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -847,6 +849,206 @@ function DecisionCard({ decision }: { decision: AutonomousDecision }) {
   );
 }
 
+
+function BrainConfigurator({
+  snapshot,
+  canControl,
+  isPending,
+  onSave,
+}: {
+  snapshot: AutonomousProjectSnapshot;
+  canControl: boolean;
+  isPending: boolean;
+  onSave: (config: UpdateAutonomousBrainConfig) => void;
+}) {
+  const brain = snapshot.brain;
+  const [enabled, setEnabled] = useState(brain?.enabled ?? true);
+  const [runtimeMode, setRuntimeMode] = useState<"inherit_mika" | "custom">(
+    brain?.runtime_mode ?? "inherit_mika",
+  );
+  const [runtimeId, setRuntimeId] = useState(brain?.runtime_id ?? "");
+  const [model, setModel] = useState(brain?.model ?? "");
+  const [learningMode, setLearningMode] = useState<
+    "deterministic" | "assisted" | "adaptive"
+  >(brain?.learning_mode ?? "adaptive");
+
+  useEffect(() => {
+    setEnabled(brain?.enabled ?? true);
+    setRuntimeMode(brain?.runtime_mode ?? "inherit_mika");
+    setRuntimeId(brain?.runtime_id ?? "");
+    setModel(brain?.model ?? "");
+    setLearningMode(brain?.learning_mode ?? "adaptive");
+  }, [
+    brain?.enabled,
+    brain?.runtime_mode,
+    brain?.runtime_id,
+    brain?.model,
+    brain?.learning_mode,
+  ]);
+
+  const modelQuery = useQuery(runtimeModelsOptions(runtimeMode === "custom" ? runtimeId : ""));
+  const models = modelQuery.data?.models ?? [];
+  const canSave =
+    canControl &&
+    !isPending &&
+    (runtimeMode === "inherit_mika" || Boolean(runtimeId));
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Brain className="size-4" />
+            Project Brain runtime
+          </CardTitle>
+          <CardDescription>
+            Semantic learning runs through a hidden, project-scoped control-plane
+            agent. Existing memory retrieval and deterministic state remain
+            available even when the selected LLM runtime is unavailable.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-center justify-between gap-4 rounded-lg border p-3">
+            <div>
+              <div className="font-medium">Brain enabled</div>
+              <div className="text-caption text-muted-foreground">
+                Disable semantic learning without deleting durable project memory.
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={enabled}
+              disabled={!canControl}
+              onChange={(event) => setEnabled(event.target.checked)}
+              className="size-4"
+            />
+          </label>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <label className="block">
+              <span className="mb-1.5 block text-caption font-medium text-muted-foreground">
+                Brain CLI / Runtime
+              </span>
+              <select
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                value={runtimeMode === "inherit_mika" ? "inherit_mika" : runtimeId}
+                disabled={!canControl}
+                onChange={(event) => {
+                  if (event.target.value === "inherit_mika") {
+                    setRuntimeMode("inherit_mika");
+                    setRuntimeId("");
+                    setModel("");
+                  } else {
+                    setRuntimeMode("custom");
+                    setRuntimeId(event.target.value);
+                    setModel("");
+                  }
+                }}
+              >
+                <option value="inherit_mika">Inherit from Mika</option>
+                {snapshot.runtimes
+                  .filter((runtime) => runtime.status === "online")
+                  .map((runtime) => (
+                    <option key={runtime.id} value={runtime.id}>
+                      {runtime.name} · {runtime.provider}
+                    </option>
+                  ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-caption font-medium text-muted-foreground">
+                Model
+              </span>
+              <select
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                value={model}
+                disabled={!canControl || runtimeMode !== "custom" || !runtimeId}
+                onChange={(event) => setModel(event.target.value)}
+              >
+                <option value="">Runtime default</option>
+                {models.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name || item.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-caption font-medium text-muted-foreground">
+                Learning mode
+              </span>
+              <select
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                value={learningMode}
+                disabled={!canControl}
+                onChange={(event) =>
+                  setLearningMode(
+                    event.target.value as
+                      | "deterministic"
+                      | "assisted"
+                      | "adaptive",
+                  )
+                }
+              >
+                <option value="deterministic">Deterministic only</option>
+                <option value="assisted">Assisted</option>
+                <option value="adaptive">Adaptive</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              disabled={!canSave}
+              onClick={() =>
+                onSave({
+                  enabled,
+                  runtime_mode: runtimeMode,
+                  runtime_id: runtimeMode === "custom" ? runtimeId : undefined,
+                  model: runtimeMode === "custom" ? model || undefined : undefined,
+                  learning_mode: learningMode,
+                })
+              }
+            >
+              Save Brain settings
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          title="Active memories"
+          value={brain?.active_memories ?? 0}
+          description="Current recall candidates"
+          icon={<Brain className="size-4" />}
+        />
+        <MetricCard
+          title="Superseded"
+          value={brain?.superseded_memories ?? 0}
+          description="Retained revision history"
+          icon={<RotateCcw className="size-4" />}
+        />
+        <MetricCard
+          title="Learning queue"
+          value={brain?.pending_learning_jobs ?? 0}
+          description="Pending or running extraction"
+          icon={<Activity className="size-4" />}
+        />
+        <MetricCard
+          title="Deferred"
+          value={brain?.deferred_learning_jobs ?? 0}
+          description="Needs runtime/config attention"
+          icon={<AlertTriangle className="size-4" />}
+        />
+      </div>
+    </div>
+  );
+}
+
 export function AutonomousControlCenter({
   projectId,
   canControl = false,
@@ -866,6 +1068,7 @@ export function AutonomousControlCenter({
   const confirmTeam = useConfirmAutonomousTeam();
   const retryAction = useRetryAutonomousAction();
   const resolveEscalation = useResolveAutonomousEscalation();
+  const updateBrain = useUpdateAutonomousBrain();
   const [createSkillOpen, setCreateSkillOpen] = useState(false);
 
   const replanPending = data ? isReplanPending(data) : false;
@@ -937,7 +1140,7 @@ export function AutonomousControlCenter({
   }
 
   const controlMutationPending =
-    pause.isPending || resume.isPending || replan.isPending || confirmTeam.isPending;
+    pause.isPending || resume.isPending || replan.isPending || confirmTeam.isPending || updateBrain.isPending;
 
   const handlePauseResume = () => {
     const mutation = data.control.paused ? resume : pause;
@@ -1067,6 +1270,9 @@ export function AutonomousControlCenter({
             </TabsTrigger>
             <TabsTrigger value="plan">
               <GitBranch /> Project OS
+            </TabsTrigger>
+            <TabsTrigger value="brain">
+              <Brain /> Brain
             </TabsTrigger>
             <TabsTrigger value="workflow">
               <Workflow /> Workflow
@@ -1620,6 +1826,23 @@ export function AutonomousControlCenter({
                 </CardContent>
               </Card>
             )}
+          </TabsContent>
+
+          <TabsContent value="brain" className="space-y-4">
+            <BrainConfigurator
+              snapshot={data}
+              canControl={canControl}
+              isPending={updateBrain.isPending}
+              onSave={(config) =>
+                updateBrain.mutate(
+                  { projectId, config },
+                  {
+                    onSuccess: () => toast.success("Project Brain settings updated"),
+                    onError: () => toast.error("Could not update Project Brain settings"),
+                  },
+                )
+              }
+            />
           </TabsContent>
 
           <TabsContent value="workflow" className="space-y-4">
