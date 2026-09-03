@@ -70,6 +70,7 @@
     "prop_start_date": "开始日期",
     "prop_due_date": "截止日期",
     "prop_directory": "项目文件夹",
+    "project_folder_pending": "第一个本地任务开始后，这里会显示项目文件夹。",
     "no_start_date": "无开始日期",
     "no_due_date": "无截止日期",
     "description_placeholder": "添加描述...",
