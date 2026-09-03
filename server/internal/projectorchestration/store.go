@@ -157,12 +157,13 @@ func (s *Store) PersistPlan(
 		}
 	}
 
-	// Reuse the prior revision's materialized issue and active execution state
-	// when the planner keeps the same stable node_key. Completed work stays
-	// completed; in-flight/blocked work keeps its state so a replan cannot
-	// fabricate duplicate issues or restart an already-running workflow. Plain
-	// pending/ready nodes are intentionally recomputed from the NEW dependency
-	// graph by refreshReadyTx below.
+	// Reuse the prior revision's materialized issue and execution state when
+	// the planner keeps the same logical node. Matching title+key is the normal
+	// identity fence. In-flight/blocked work is carried by stable key even when
+	// wording changed so a replan cannot kill active side effects mid-run.
+	// Repurposed pending/completed keys with a new title are deliberately NOT
+	// carried: the old issue is retired after commit and the new scope gets a
+	// fresh issue. Plain pending/ready readiness is recomputed from the NEW graph.
 	if previousPlanID.Valid {
 		if _, err := tx.Exec(ctx, `
 			UPDATE autonomous_project_plan_node fresh
@@ -186,6 +187,10 @@ func (s *Store) PersistPlan(
 			  AND prior.plan_id = $2
 			  AND fresh.node_key = prior.node_key
 			  AND prior.materialized_issue_id IS NOT NULL
+			  AND (
+			      fresh.title = prior.title
+			      OR prior.status IN ('running','verification','blocked')
+			  )
 		`, planID, previousPlanID); err != nil {
 			return StoredPlan{}, fmt.Errorf("carry forward project node identity: %w", err)
 		}
