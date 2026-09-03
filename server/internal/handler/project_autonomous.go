@@ -1086,6 +1086,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 
 	taskRows, err := h.DB.Query(r.Context(), `
 		SELECT t.id, t.agent_id, a.name, t.issue_id, i.title, t.status,
+		       t.failure_reason, t.error, t.fire_at, t.retry_of_task_id, t.rerun_of_task_id,
 		       t.created_at, t.completed_at
 		FROM agent_task_queue t
 		JOIN issue i ON i.id = t.issue_id
@@ -1096,11 +1097,16 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	`, workspaceID, projectID)
 	if err == nil {
 		for taskRows.Next() {
-			var taskID, agentID, issueID pgtype.UUID
+			var taskID, agentID, issueID, retryOf, rerunOf pgtype.UUID
 			var agentName, issueTitle, status string
+			var failureReason, taskError pgtype.Text
+			var fireAt, completedAt pgtype.Timestamptz
 			var createdAt time.Time
-			var completedAt pgtype.Timestamptz
-			if taskRows.Scan(&taskID, &agentID, &agentName, &issueID, &issueTitle, &status, &createdAt, &completedAt) == nil {
+			if taskRows.Scan(
+				&taskID, &agentID, &agentName, &issueID, &issueTitle, &status,
+				&failureReason, &taskError, &fireAt, &retryOf, &rerunOf,
+				&createdAt, &completedAt,
+			) == nil {
 				at := createdAt
 				if completedAt.Valid {
 					at = completedAt.Time
@@ -1108,16 +1114,36 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 				taskIDString := uuidToString(taskID)
 				agentIDString := uuidToString(agentID)
 				issueIDString := uuidToString(issueID)
+				detail := issueTitle
+				if failureReason.Valid && strings.TrimSpace(failureReason.String) != "" {
+					detail += " · " + failureReason.String
+				}
+				if taskError.Valid && strings.TrimSpace(taskError.String) != "" {
+					detail += " · " + taskError.String
+				}
+				metadata := map[string]any{"task_id": taskIDString}
+				if failureReason.Valid {
+					metadata["failure_reason"] = failureReason.String
+				}
+				if fireAt.Valid {
+					metadata["fire_at"] = fireAt.Time.UTC().Format(time.RFC3339Nano)
+				}
+				if retryOf.Valid {
+					metadata["retry_of_task_id"] = uuidToString(retryOf)
+				}
+				if rerunOf.Valid {
+					metadata["rerun_of_task_id"] = uuidToString(rerunOf)
+				}
 				sortable = append(sortable, autonomousActivitySortable{
 					At: at,
 					Item: AutonomousActivityResponse{
 						ID: "task:" + taskIDString + ":" + status,
 						Type: "task." + status,
 						Title: agentName + " · " + status,
-						Detail: issueTitle,
+						Detail: detail,
 						IssueID: &issueIDString,
 						AgentID: &agentIDString,
-						Metadata: map[string]any{"task_id": taskIDString},
+						Metadata: metadata,
 						CreatedAt: at.UTC().Format(time.RFC3339Nano),
 					},
 				})
