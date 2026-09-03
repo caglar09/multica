@@ -19,6 +19,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { toast } from "sonner";
+import { clientErrorMessage } from "@multica/core/api";
 
 import type {
   AutonomousActivityItem,
@@ -1272,15 +1273,18 @@ export function AutonomousControlCenter({
             ? "Autonomous project resumed"
             : "Autonomous project paused",
         ),
-      onError: () =>
-        toast.error("Could not update autonomous project state"),
+      onError: (error) =>
+        toast.error(
+          clientErrorMessage(error) ?? "Could not update autonomous project state",
+        ),
     });
   };
 
   const handleReplan = () => {
     replan.mutate(projectId, {
       onSuccess: () => toast.success("Runtime team replan requested"),
-      onError: () => toast.error("Could not request team replan"),
+      onError: (error) =>
+        toast.error(clientErrorMessage(error) ?? "Could not request team replan"),
     });
   };
 
@@ -1288,14 +1292,20 @@ export function AutonomousControlCenter({
     restartWorkflow.mutate(projectId, {
       onSuccess: () =>
         toast.success("Autonomous state repaired; eligible work is continuing"),
-      onError: () => toast.error("Could not repair and continue autonomous work"),
+      onError: (error) =>
+        toast.error(
+          clientErrorMessage(error) ?? "Could not repair and continue autonomous work",
+        ),
     });
   };
 
   const handleResumeProject = () => {
     resume.mutate(projectId, {
       onSuccess: () => toast.success("Autonomous project resumed"),
-      onError: () => toast.error("Could not resume autonomous project"),
+      onError: (error) =>
+        toast.error(
+          clientErrorMessage(error) ?? "Could not resume autonomous project",
+        ),
     });
   };
 
