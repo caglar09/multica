@@ -3,16 +3,25 @@
 -- retry_of_task_id is automatic-retry lineage. Manual operator reruns use
 -- rerun_of_task_id and are intentionally unaffected. Older builds could create
 -- several deferred children for the same parent because deferred rows did not
--- occupy the issue/agent pending slot. Preserve the earliest child as the
--- canonical retry and retain the duplicate lineage in context for audit before
--- clearing the conflicting column.
+-- occupy the issue/agent pending slot. Preserve the child that can still affect
+-- execution first (active/deferred, then completed, then failed, cancelled last)
+-- so an in-flight blocked workflow keeps useful retry lineage. Retain duplicate
+-- lineage in context for audit before clearing the conflicting column.
 WITH ranked AS (
     SELECT
         id,
         retry_of_task_id,
         row_number() OVER (
             PARTITION BY retry_of_task_id
-            ORDER BY created_at ASC, id ASC
+            ORDER BY
+                CASE
+                    WHEN status IN ('queued','dispatched','running','waiting_local_directory','deferred') THEN 0
+                    WHEN status = 'completed' THEN 1
+                    WHEN status = 'failed' THEN 2
+                    ELSE 3
+                END,
+                created_at DESC,
+                id DESC
         ) AS rn
     FROM agent_task_queue
     WHERE retry_of_task_id IS NOT NULL
