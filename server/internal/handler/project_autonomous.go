@@ -1699,7 +1699,7 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
-	_, err := h.DB.Exec(r.Context(), `
+	tag, err := h.DB.Exec(r.Context(), `
 		INSERT INTO autonomous_project_control (
 			project_id, workspace_id, paused, paused_at, paused_by, updated_at
 		)
@@ -1713,7 +1713,22 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 		WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
 	`, projectID, workspaceID, paused, userUUID)
 	if err != nil {
+		slog.Error("autonomous project control update failed",
+			"workspace_id", uuidToString(workspaceID),
+			"project_id", uuidToString(projectID),
+			"paused", paused,
+			"error", err,
+		)
 		writeError(w, http.StatusInternalServerError, "failed to update autonomous project control")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		slog.Error("autonomous project control ownership mismatch",
+			"workspace_id", uuidToString(workspaceID),
+			"project_id", uuidToString(projectID),
+			"paused", paused,
+		)
+		writeError(w, http.StatusConflict, "autonomous project control belongs to a different workspace; repair project ownership before continuing")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"paused": paused})
