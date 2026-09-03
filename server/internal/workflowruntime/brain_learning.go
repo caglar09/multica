@@ -26,17 +26,27 @@ func (r *Runtime) enqueueBrainLearning(ctx context.Context, task db.AgentTaskQue
 		return nil
 	}
 
-	result := append([]byte(nil), task.Result...)
 	const maxEvidenceBytes = 24000
-	if len(result) > maxEvidenceBytes {
-		result = result[:maxEvidenceBytes]
-	}
 	evidence := map[string]any{
 		"task_id": util.UUIDToString(task.ID),
 		"issue_id": util.UUIDToString(issue.ID),
 		"agent_id": util.UUIDToString(task.AgentID),
 		"task_status": task.Status,
-		"result": json.RawMessage(result),
+	}
+	if len(task.Result) > 0 {
+		if len(task.Result) <= maxEvidenceBytes {
+			var result any
+			if json.Unmarshal(task.Result, &result) == nil {
+				evidence["result"] = result
+			} else {
+				evidence["result_text"] = string(task.Result)
+			}
+		} else {
+			// Keep the evidence envelope valid JSON. Raw JSON must never be byte-sliced:
+			// a truncated object would make the durable learning job impossible to encode.
+			evidence["result_excerpt"] = string(task.Result[:maxEvidenceBytes])
+			evidence["result_truncated"] = true
+		}
 	}
 	return r.projectStore.EnqueueBrainLearning(ctx, issue.WorkspaceID, issue.ProjectID, task.ID, evidence)
 }
