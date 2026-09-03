@@ -737,7 +737,7 @@ func (r *Runtime) RestartProjectWorkflow(
 		if err := r.projectStore.RefreshReady(ctx, workspaceID, projectID); err != nil {
 			return fmt.Errorf("refresh project readiness after restart: %w", err)
 		}
-		if err := r.processProjectScheduling(ctx); err != nil {
+		if err := r.processProjectSchedulingForProject(ctx, workspaceID, projectID); err != nil {
 			return fmt.Errorf("resume project scheduling after restart: %w", err)
 		}
 	}
