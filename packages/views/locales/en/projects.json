@@ -71,6 +71,7 @@
     "prop_start_date": "Start date",
     "prop_due_date": "Due date",
     "prop_directory": "Project folder",
+    "project_folder_pending": "The project folder will appear after the first local task starts.",
     "no_start_date": "No start date",
     "no_due_date": "No due date",
     "description_placeholder": "Add description...",
