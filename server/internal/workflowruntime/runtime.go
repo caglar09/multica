@@ -653,31 +653,12 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
 
-	// A review rejection may have committed while its issue:updated event was
-	// lost. The issue row itself is the durable rejection signal.
-	if run.State == issuestatus.InReview && effective == issuestatus.InProgress {
-		eventType := "review.changes_requested"
-		if run.ReviewCycles >= r.config.MaxReviewCycles {
-			eventType = "review.exhausted"
-		}
-		if eventType == "review.changes_requested" {
-			run, err = r.refreshRunTeam(ctx, run, issue, run.AccountableUserID)
-			if err != nil {
-				return fmt.Errorf("refresh reconciled review team: %w", err)
-			}
-		}
-		_, err := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
-			ID:                fmt.Sprintf("reconcile-review-change:%s:%d", run.IssueID, issue.Revision),
-			Type:              eventType,
-			WorkspaceID:       run.WorkspaceID,
-			ProjectID:         util.UUIDToString(issue.ProjectID),
-			IssueID:           run.IssueID,
-			AccountableUserID: run.AccountableUserID,
-			Payload:           map[string]any{"status": issue.Status},
-		})
-		return err
-	}
-
+	// Do not infer review rejection from the current issue row alone. Project OS
+	// and other server-owned projections can also write issue status. The
+	// realtime issue event carries actor provenance, and a terminal reviewer task
+	// is durable evidence that can be reconciled below. Treating a bare
+	// in_review -> in_progress row as reviewer intent caused crash recovery to
+	// manufacture review cycles after daemon/server restarts.
 	// Blocked runs are normally terminal from the workflow's point of view, but
 	// task-level Retry/Rerun can create a durable successor after the blocking
 	// transition (notably after a daemon/server restart). Reconcile only explicit
@@ -1094,14 +1075,14 @@ func (r *Runtime) refreshRunTeam(ctx context.Context, run workflow.Run, issue db
 	}
 	implementationID, team, err := r.team.ImplementationAgent(ctx, issue)
 	if err != nil {
-		return run, err
+		return preserveDurableRunTeam(run, err)
 	}
 	reviewerID, _, ok := team.AgentByFamily("review")
 	if !ok {
-		return run, errors.New("LLM project team has no review-family agent")
+		return preserveDurableRunTeam(run, errors.New("LLM project team has no review-family agent"))
 	}
 	if implementationID == reviewerID {
-		return run, errors.New("LLM project implementation and review agents must differ")
+		return preserveDurableRunTeam(run, errors.New("LLM project implementation and review agents must differ"))
 	}
 	return r.store.UpdateRunActors(
 		ctx,
@@ -1110,6 +1091,30 @@ func (r *Runtime) refreshRunTeam(ctx context.Context, run workflow.Run, issue db
 		util.UUIDToString(reviewerID),
 		accountableUserID,
 	)
+}
+
+func preserveDurableRunTeam(run workflow.Run, cause error) (workflow.Run, error) {
+	if strings.TrimSpace(run.OwnerAgentID) == "" ||
+		strings.TrimSpace(run.ReviewerAgentID) == "" ||
+		run.OwnerAgentID == run.ReviewerAgentID {
+		return run, cause
+	}
+	// The run actors are durable orchestration state. A temporary planner/runtime
+	// outage must not prevent replaying an already-started workflow after a
+	// daemon/server restart. A later successful replan can still refresh them.
+	slog.Warn("autonomous team refresh unavailable; keeping durable workflow actors",
+		"run_id", run.ID,
+		"issue_id", run.IssueID,
+		"owner_agent_id", run.OwnerAgentID,
+		"reviewer_agent_id", run.ReviewerAgentID,
+		"error", cause,
+	)
+	return run, nil
+}
+
+func isSystemStatusProjection(event events.Event) bool {
+	return strings.EqualFold(strings.TrimSpace(event.ActorType), "system") &&
+		strings.TrimSpace(event.ActorID) == ""
 }
 
 func (r *Runtime) onIssueEvent(event events.Event) {
@@ -1172,6 +1177,21 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		if prevEffective != issuestatus.InReview {
 			return nil
 		}
+		if isSystemStatusProjection(event) {
+			// Project OS board projection and workflow actions use the server-owned
+			// status path (ActorType=system). They are not reviewer intent. Reassert
+			// In Review immediately so a later reviewer completion cannot be
+			// misclassified as "changes requested".
+			if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.InReview); err != nil {
+				return fmt.Errorf("restore review status after system projection: %w", err)
+			}
+			slog.Info("ignored system-owned in_review -> in_progress projection",
+				"run_id", run.ID,
+				"issue_id", snapshot.ID,
+			)
+			return nil
+		}
+
 		eventType := "review.changes_requested"
 		if run.ReviewCycles >= r.config.MaxReviewCycles {
 			eventType = "review.exhausted"

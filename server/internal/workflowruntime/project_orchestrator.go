@@ -1011,6 +1011,28 @@ func (r *Runtime) syncProjectNodeBoardState(
 		}
 	case "running":
 		target = issuestatus.InProgress
+		if projectNodeUsesIssueWorkflow(node.Kind) {
+			// Once the issue-level software-development workflow exists, it owns
+			// the board status for a running implementation node. The Project OS
+			// node intentionally remains "running" across implementation and
+			// review, so blindly projecting running -> In Progress here races the
+			// workflow's In Review state and fabricates review rejections.
+			run, exists, runErr := r.store.FindRun(
+				ctx,
+				softwareDevelopmentWorkflow,
+				util.UUIDToString(workspaceID),
+				node.MaterializedIssueID,
+			)
+			if runErr != nil {
+				return fmt.Errorf("resolve workflow-owned project node status: %w", runErr)
+			}
+			if exists {
+				switch run.State {
+				case issuestatus.InProgress, issuestatus.InReview, issuestatus.Done, issuestatus.Blocked:
+					target = run.State
+				}
+			}
+		}
 	case "verification":
 		target = issuestatus.InReview
 	case "blocked":

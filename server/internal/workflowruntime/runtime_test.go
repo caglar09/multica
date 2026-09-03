@@ -1,10 +1,12 @@
 package workflowruntime
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -84,6 +86,39 @@ func TestBlockedRetryCompletionEvent(t *testing.T) {
 	run.State = issuestatus.InProgress
 	if got := blockedRetryCompletionEvent(run, implementationRetry); got != "" {
 		t.Fatalf("non-blocked run unexpectedly recovered with %q", got)
+	}
+}
+
+func TestSystemStatusProjection(t *testing.T) {
+	if !isSystemStatusProjection(events.Event{ActorType: "system"}) {
+		t.Fatal("server-owned status write was not recognized as a system projection")
+	}
+	if isSystemStatusProjection(events.Event{ActorType: "agent", ActorID: "agent-1"}) {
+		t.Fatal("agent status update was incorrectly treated as a system projection")
+	}
+	if isSystemStatusProjection(events.Event{ActorType: "member", ActorID: "member-1"}) {
+		t.Fatal("member status update was incorrectly treated as a system projection")
+	}
+}
+
+func TestPreserveDurableRunTeam(t *testing.T) {
+	run := workflow.Run{
+		ID:              "run-1",
+		IssueID:         "issue-1",
+		OwnerAgentID:    "owner-1",
+		ReviewerAgentID: "reviewer-1",
+	}
+	got, err := preserveDurableRunTeam(run, errors.New("planner offline"))
+	if err != nil {
+		t.Fatalf("durable run team should survive planner outage: %v", err)
+	}
+	if got.OwnerAgentID != run.OwnerAgentID || got.ReviewerAgentID != run.ReviewerAgentID {
+		t.Fatalf("durable run actors changed: got %#v want %#v", got, run)
+	}
+
+	_, err = preserveDurableRunTeam(workflow.Run{}, errors.New("planner offline"))
+	if err == nil {
+		t.Fatal("missing durable actors should not hide planner failure")
 	}
 }
 
