@@ -4679,11 +4679,18 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		retryFireAt      pgtype.Timestamptz
 		retryMaxAttempts pgtype.Int4
 	)
-	if retryableReasons[failureReason] {
+	if retryableFailure(failureReason, errMsg) {
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if retryEligible(failureReason, parent) {
+		} else {
+			// FailTask has not persisted the terminal error yet. Put the authoritative
+			// error text on the in-memory parent so retryEligible can apply
+			// reset-aware provider quota policy using the same path as the sweeper.
+			parent.Error = pgtype.Text{String: errMsg, Valid: strings.TrimSpace(errMsg) != ""}
+			if !retryEligible(failureReason, parent) {
+				goto retryPrecomputeDone
+			}
 			wantRetry = true
 			// Persist the reason-aware effective budget into the child so the
 			// retry chain self-describes (e.g. provider_network → max_attempts=3),
@@ -4692,8 +4699,8 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			// Defer this attempt when the reason's schedule calls for a backoff
 			// (provider_network's final attempt waits ~5s); a zero delay leaves
 			// fire_at NULL so the child is created immediately-claimable.
-			if delay := retryDelayForAttempt(failureReason, parent.Attempt); delay > 0 {
-				retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
+			if fireAt, ok := retryFireAtForFailure(failureReason, errMsg, parent.Attempt, time.Time{}); ok {
+				retryFireAt = pgtype.Timestamptz{Time: fireAt, Valid: true}
 			}
 			if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
 				// Best-effort: a missing overlay is not retry-fatal — the child
@@ -4706,6 +4713,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			}
 		}
 	}
+retryPrecomputeDone:
 
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
@@ -5052,6 +5060,84 @@ var retryableReasons = map[string]bool{
 	string(taskfailure.ReasonSkillBundleUnavailable): true,
 }
 
+const (
+	providerQuotaResetSafetyBuffer = 5 * time.Second
+	providerQuotaResetMaxDelay     = 7 * 24 * time.Hour
+)
+
+// providerQuotaResetDelay recognises provider errors that explicitly promise a
+// reset window (for example Antigravity: "Resets in 52m8s."). A quota error
+// without a reset hint remains terminal: "credits exhausted" and similar
+// billing failures must never become an unattended retry loop.
+func providerQuotaResetDelay(rawError string) (time.Duration, bool) {
+	lower := strings.ToLower(strings.TrimSpace(rawError))
+	for _, marker := range []string{"resets in ", "reset in "} {
+		idx := strings.Index(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		rest := lower[idx+len(marker):]
+		var b strings.Builder
+		for _, r := range rest {
+			switch {
+			case r >= '0' && r <= '9':
+				b.WriteRune(r)
+			case r == 'h' || r == 'm' || r == 's':
+				b.WriteRune(r)
+			case r == ' ' || r == '\t':
+				// Providers sometimes render "52m 8s"; ParseDuration expects
+				// the compact equivalent, so whitespace is intentionally skipped.
+			default:
+				goto parsed
+			}
+		}
+	parsed:
+		candidate := b.String()
+		if candidate == "" {
+			continue
+		}
+		delay, err := time.ParseDuration(candidate)
+		if err != nil || delay <= 0 || delay > providerQuotaResetMaxDelay {
+			continue
+		}
+		return delay + providerQuotaResetSafetyBuffer, true
+	}
+	return 0, false
+}
+
+func retryableFailure(reason, rawError string) bool {
+	if retryableReasons[reason] {
+		return true
+	}
+	if reason == string(taskfailure.ReasonAgentProviderQuotaLimit) {
+		_, ok := providerQuotaResetDelay(rawError)
+		return ok
+	}
+	return false
+}
+
+// retryFireAtForFailure returns an absolute fire time when the next retry must
+// be deferred. For reset-aware quota recovery, failedAt anchors the provider's
+// relative reset promise so a server restart after the deadline does not wait
+// the whole reset window a second time.
+func retryFireAtForFailure(reason, rawError string, failedAttempt int32, failedAt time.Time) (time.Time, bool) {
+	if reason == string(taskfailure.ReasonAgentProviderQuotaLimit) {
+		delay, ok := providerQuotaResetDelay(rawError)
+		if !ok {
+			return time.Time{}, false
+		}
+		base := failedAt
+		if base.IsZero() {
+			base = time.Now()
+		}
+		return base.Add(delay), true
+	}
+	if delay := retryDelayForAttempt(reason, failedAttempt); delay > 0 {
+		return time.Now().Add(delay), true
+	}
+	return time.Time{}, false
+}
+
 // runtime_offline retries start deferred, not queued: their positive fire_at
 // routes them through health-gated promotion after a fresh runtime heartbeat
 // returns. The queue sweeper also exempts this retry lineage, covering the race
@@ -5175,7 +5261,11 @@ func ResumeUnsafeFailure(failureReason, errorText string) bool {
 // FailTask's in-transaction retry and the orphan sweeper's MaybeRetryFailedTask
 // so both agree on which failures re-run.
 func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
-	return retryableReasons[failureReason] &&
+	rawError := ""
+	if t.Error.Valid {
+		rawError = t.Error.String
+	}
+	return retryableFailure(failureReason, rawError) &&
 		t.Attempt < retryAttemptCeiling(failureReason, t.MaxAttempts) &&
 		!t.AutopilotRunID.Valid &&
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
@@ -5234,7 +5324,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if parent.FailureReason.Valid {
 		reason = parent.FailureReason.String
 	}
-	if !retryableReasons[reason] {
+	rawError := ""
+	if parent.Error.Valid {
+		rawError = parent.Error.String
+	}
+	if !retryableFailure(reason, rawError) {
 		return nil, nil
 	}
 	// Use the reason-aware ceiling, not the raw max_attempts column, so an
@@ -5277,8 +5371,12 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// NULL for an immediate child), and write the reason-aware ceiling into the
 	// child's max_attempts so the retry chain stays self-consistent.
 	var retryFireAt pgtype.Timestamptz
-	if delay := retryDelayForAttempt(reason, parent.Attempt); delay > 0 {
-		retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
+	failedAt := time.Time{}
+	if parent.CompletedAt.Valid {
+		failedAt = parent.CompletedAt.Time
+	}
+	if fireAt, ok := retryFireAtForFailure(reason, rawError, parent.Attempt, failedAt); ok {
+		retryFireAt = pgtype.Timestamptz{Time: fireAt, Valid: true}
 	}
 	// Same advisory slot check as FailTask's path, for the same reason: skip the
 	// work when a successor is already visible. Losing the race is handled by
