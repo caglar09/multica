@@ -1130,14 +1130,16 @@ func (s *Store) FailNodeByIssue(
 	var nodeKey string
 	var attempt, maxAttempts int
 	err = tx.QueryRow(ctx, `
-		SELECT id, project_id, node_key, attempt, max_attempts
-		FROM autonomous_project_plan_node
-		WHERE workspace_id = $1
-		  AND materialized_issue_id = $2
-		  AND status IN ('running', 'verification', 'ready')
-		ORDER BY updated_at DESC
+		SELECT n.id, n.project_id, n.node_key, n.attempt, n.max_attempts
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.workspace_id = $1
+		  AND n.materialized_issue_id = $2
+		  AND n.status IN ('running', 'verification', 'ready')
+		  AND p.status IN ('active', 'blocked')
+		ORDER BY p.revision DESC, n.updated_at DESC
 		LIMIT 1
-		FOR UPDATE
+		FOR UPDATE OF n
 	`, workspaceID, issueID).Scan(&nodeID, &projectID, &nodeKey, &attempt, &maxAttempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", pgtype.UUID{}, nil
@@ -1194,26 +1196,28 @@ func (s *Store) ResumePlanAfterNodeRetry(
 
 func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pgtype.UUID) error {
 	var projectID, planID pgtype.UUID
-	tag, err := s.pool.Exec(ctx, `
+	err := s.pool.QueryRow(ctx, `
 		UPDATE autonomous_project_plan_node
-		SET status = 'completed', completed_at = COALESCE(completed_at, now()), updated_at = now()
-		WHERE workspace_id = $1
-		  AND materialized_issue_id = $2
-		  AND status NOT IN ('completed', 'cancelled')
-	`, workspaceID, issueID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
+		SET status = 'completed',
+		    completed_at = COALESCE(completed_at, now()),
+		    updated_at = now()
+		WHERE id = (
+			SELECT n.id
+			FROM autonomous_project_plan_node n
+			JOIN autonomous_project_plan p ON p.id = n.plan_id
+			WHERE n.workspace_id = $1
+			  AND n.materialized_issue_id = $2
+			  AND n.status NOT IN ('completed', 'cancelled')
+			  AND p.status IN ('active', 'blocked')
+			ORDER BY p.revision DESC, n.updated_at DESC
+			LIMIT 1
+		)
+		RETURNING project_id, plan_id
+	`, workspaceID, issueID).Scan(&projectID, &planID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
-	if err := s.pool.QueryRow(ctx, `
-		SELECT project_id, plan_id
-		FROM autonomous_project_plan_node
-		WHERE workspace_id = $1 AND materialized_issue_id = $2
-		ORDER BY updated_at DESC
-		LIMIT 1
-	`, workspaceID, issueID).Scan(&projectID, &planID); err != nil {
+	if err != nil {
 		return err
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -1540,9 +1544,17 @@ func (s *Store) ResetDeletedIssue(
 		      ELSE blocked_reason
 		    END,
 		    updated_at = now()
-		WHERE workspace_id = $1
-		  AND materialized_issue_id = $2
-		  AND status NOT IN ('completed', 'cancelled')
+		WHERE id = (
+			SELECT n.id
+			FROM autonomous_project_plan_node n
+			JOIN autonomous_project_plan p ON p.id = n.plan_id
+			WHERE n.workspace_id = $1
+			  AND n.materialized_issue_id = $2
+			  AND n.status NOT IN ('completed', 'cancelled')
+			  AND p.status IN ('active', 'blocked')
+			ORDER BY p.revision DESC, n.updated_at DESC
+			LIMIT 1
+		)
 	`, workspaceID, issueID)
 	return err
 }
