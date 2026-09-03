@@ -64,7 +64,6 @@ export function useRerunAutonomousIssue() {
 
   return useMutation({
     mutationFn: ({
-      projectId,
       issueId,
       taskId,
     }: {
