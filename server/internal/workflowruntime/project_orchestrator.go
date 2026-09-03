@@ -929,7 +929,7 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		    resolution = jsonb_build_object(
 		        'decision', 'auto_resolved',
 		        'reason', 'plan_superseded',
-		        'current_plan_revision', $3
+		        'current_plan_revision', $4
 		    ),
 		    resolved_at = now()
 		FROM autonomous_project_plan_node n
