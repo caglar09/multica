@@ -160,6 +160,7 @@ type AutonomousDiagnosticResponse struct {
 	IssueID      *string        `json:"issue_id,omitempty"`
 	IssueTitle   *string        `json:"issue_title,omitempty"`
 	ActionID     *string        `json:"action_id,omitempty"`
+	TaskID       *string        `json:"task_id,omitempty"`
 	ResumeAction string         `json:"resume_action,omitempty"`
 	CanResume    bool           `json:"can_resume"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
@@ -1214,9 +1215,12 @@ func (h *Handler) loadAutonomousDiagnostics(
 	}
 
 	type taskState struct {
+		ID            string
 		Status        string
 		FailureReason string
 		Error         string
+		Attempt       int
+		MaxAttempts   int
 		FireAt        *time.Time
 		At            time.Time
 	}
@@ -1228,8 +1232,8 @@ func (h *Handler) loadAutonomousDiagnostics(
 		}
 		rows, err := h.DB.Query(ctx, `
 			SELECT DISTINCT ON (t.issue_id)
-			       t.issue_id, t.status, COALESCE(t.failure_reason, ''),
-			       COALESCE(t.error, ''), t.fire_at,
+			       t.id, t.issue_id, t.status, COALESCE(t.failure_reason, ''),
+			       COALESCE(t.error, ''), t.attempt, t.max_attempts, t.fire_at,
 			       COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at)
 			FROM agent_task_queue t
 			JOIN autonomous_project_plan_node n ON n.materialized_issue_id = t.issue_id
@@ -1240,13 +1244,17 @@ func (h *Handler) loadAutonomousDiagnostics(
 			return nil, err
 		}
 		for rows.Next() {
-			var issueID pgtype.UUID
+			var taskID, issueID pgtype.UUID
 			var state taskState
 			var fireAt pgtype.Timestamptz
-			if err := rows.Scan(&issueID, &state.Status, &state.FailureReason, &state.Error, &fireAt, &state.At); err != nil {
+			if err := rows.Scan(
+				&taskID, &issueID, &state.Status, &state.FailureReason, &state.Error,
+				&state.Attempt, &state.MaxAttempts, &fireAt, &state.At,
+			); err != nil {
 				rows.Close()
 				return nil, err
 			}
+			state.ID = uuidToString(taskID)
 			if fireAt.Valid {
 				v := fireAt.Time.UTC()
 				state.FireAt = &v
@@ -1328,6 +1336,13 @@ func (h *Handler) loadAutonomousDiagnostics(
 				}
 				action := "restart_workflow"
 				canResume := true
+				var taskID *string
+				if latest.Status == "failed" && latest.ID != "" &&
+					latest.MaxAttempts > 0 && latest.Attempt >= latest.MaxAttempts {
+					action = "rerun_issue"
+					value := latest.ID
+					taskID = &value
+				}
 				if node.BlockedCategory != nil {
 					switch *node.BlockedCategory {
 					case "approval":
@@ -1351,8 +1366,12 @@ func (h *Handler) loadAutonomousDiagnostics(
 				add(AutonomousDiagnosticResponse{
 					Code: code, Severity: "warning", Title: title, Detail: detail,
 					NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
-					CanResume: canResume, ResumeAction: action,
-					Metadata: map[string]any{"failure_reason": latest.FailureReason},
+					CanResume: canResume, ResumeAction: action, TaskID: taskID,
+					Metadata: map[string]any{
+						"failure_reason": latest.FailureReason,
+						"attempt": latest.Attempt,
+						"max_attempts": latest.MaxAttempts,
+					},
 					UpdatedAt: node.UpdatedAt,
 				})
 			case "running", "verification":
@@ -1369,11 +1388,19 @@ func (h *Handler) loadAutonomousDiagnostics(
 				}
 				run, hasRun := workflowByIssue[*issueID]
 				if hasRun && run.State == "blocked" {
+					action := "restart_workflow"
+					var taskID *string
+					if latest.Status == "failed" && latest.ID != "" &&
+						latest.MaxAttempts > 0 && latest.Attempt >= latest.MaxAttempts {
+						action = "rerun_issue"
+						value := latest.ID
+						taskID = &value
+					}
 					add(AutonomousDiagnosticResponse{
 						Code: "workflow_blocked", Severity: "warning", Title: title,
 						Detail: "Issue workflow is blocked and requires recovery before Project OS can advance.",
 						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
-						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: run.UpdatedAt,
+						TaskID: taskID, CanResume: true, ResumeAction: action, UpdatedAt: run.UpdatedAt,
 					})
 				} else if age > 2*time.Minute &&
 					(latest.Status == "" || latest.Status == "failed" || latest.Status == "completed" || latest.Status == "cancelled") {
