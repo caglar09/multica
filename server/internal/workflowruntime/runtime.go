@@ -352,6 +352,9 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 			if err := r.reconcileUnstartedIssues(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Warn("autonomous unstarted issue reconciliation failed", "error", err)
 			}
+			if err := r.reconcileAllSupersededProjectIssues(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Warn("autonomous stale replan issue reconciliation failed", "error", err)
+			}
 		}
 		cycle++
 		select {
@@ -595,6 +598,13 @@ func (r *Runtime) RestartProjectWorkflow(
 	// ActionWorker can reclaim expired running actions itself; resetting only
 	// expired leases here makes the operator action immediate without duplicating
 	// a healthy in-flight side effect.
+	// Repair Project OS ownership first. A stale issue from a superseded plan is
+	// not restartable workflow work; it must be retired before workflow replay
+	// so the operator gets a truthful "nothing left to run" state.
+	if err := r.reconcileSupersededProjectIssues(ctx, workspaceID, projectID); err != nil {
+		return fmt.Errorf("repair autonomous project ownership before restart: %w", err)
+	}
+
 	if _, err := r.pool.Exec(ctx, `
 		UPDATE autonomous_workflow_action a
 		SET status = 'pending',
@@ -717,6 +727,18 @@ func (r *Runtime) RestartProjectWorkflow(
 		}
 		if err := r.handleIssueEvent(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
 			return fmt.Errorf("restart unstarted autonomous workflow: %w", err)
+		}
+	}
+
+	// Recompute dependency readiness and run the scheduler immediately rather
+	// than waiting up to the next 10s conductor tick. Restart is therefore a
+	// genuine "continue from durable state" action, not just a workflow replay.
+	if r.projectStore != nil {
+		if err := r.projectStore.RefreshReady(ctx, workspaceID, projectID); err != nil {
+			return fmt.Errorf("refresh project readiness after restart: %w", err)
+		}
+		if err := r.processProjectScheduling(ctx); err != nil {
+			return fmt.Errorf("resume project scheduling after restart: %w", err)
 		}
 	}
 
