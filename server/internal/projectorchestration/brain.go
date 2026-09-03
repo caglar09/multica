@@ -99,7 +99,8 @@ func (s *Store) ClaimBrainLearning(ctx context.Context, lease time.Duration) (Br
 	err = tx.QueryRow(ctx, `
 		SELECT id, workspace_id, project_id, task_id, evidence, attempts, max_attempts
 		FROM autonomous_project_brain_learning_job
-		WHERE status='pending' AND available_at <= now()
+		WHERE (status='pending' AND available_at <= now())
+		   OR (status='running' AND lease_expires_at < now())
 		ORDER BY created_at
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1
@@ -207,19 +208,18 @@ func (s *Store) RetainMemory(ctx context.Context, workspaceID, projectID pgtype.
 		return tx.Commit(ctx)
 	}
 
-	var newID pgtype.UUID
-	err = tx.QueryRow(ctx, `
-		INSERT INTO autonomous_project_brain_entry
-		(workspace_id,project_id,entry_type,subject,content,source_type,source_id,confidence,revision,created_by_type,canonical_key,status,importance,last_confirmed_at)
-		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,'system',$10,'active',$11,now())
-		RETURNING id
-	`,workspaceID,projectID,candidate.Type,candidate.Subject,candidate.Content,sourceType,sourceID,candidate.Confidence,currentRevision+1,key,candidate.Importance).Scan(&newID)
-	if err != nil { return err }
+	newID := dbid.NewV7()
 	_, err = tx.Exec(ctx, `
 		UPDATE autonomous_project_brain_entry
 		SET status='superseded', superseded_by=$2
 		WHERE id=$1
 	`, currentID, newID)
+	if err != nil { return err }
+	_, err = tx.Exec(ctx, `
+		INSERT INTO autonomous_project_brain_entry
+		(id,workspace_id,project_id,entry_type,subject,content,source_type,source_id,confidence,revision,created_by_type,canonical_key,status,importance,last_confirmed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,'system',$11,'active',$12,now())
+	`,newID,workspaceID,projectID,candidate.Type,candidate.Subject,candidate.Content,sourceType,sourceID,candidate.Confidence,currentRevision+1,key,candidate.Importance)
 	if err != nil { return err }
 	return tx.Commit(ctx)
 }
