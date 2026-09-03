@@ -591,12 +591,12 @@ WHERE id = $1 AND issue_id IS NULL
 -- task API (MUL-4910). The Go retryAttemptCeiling already refuses to raise a
 -- disabled (max_attempts<=1) task, so this only ever widens, never revives.
 WITH retry_parent AS MATERIALIZED (
-    SELECT *
-    FROM agent_task_queue
-    WHERE id = $1
-    FOR UPDATE
+    SELECT parent.*
+    FROM agent_task_queue AS parent
+    WHERE parent.id = $1
+    FOR UPDATE OF parent
 )
-INSERT INTO agent_task_queue (
+INSERT INTO agent_task_queue AS retry_child (
     agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,
     status, priority, trigger_comment_id, coalesced_comment_ids, trigger_summary, context,
     session_id, work_dir,
@@ -639,7 +639,7 @@ WHERE lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
       WHERE child.retry_of_task_id = p.id
   )
 ON CONFLICT DO NOTHING
-RETURNING *;
+RETURNING retry_child.*;
 
 -- name: CreateManualQuickCreateRetryTask :one
 -- A human retry of an issue-less quick-create is a new direct_human run, not
