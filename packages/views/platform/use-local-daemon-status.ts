@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+const LOCAL_DAEMON_HEALTH_URL = "http://127.0.0.1:19514/health";
+
 /** Subset of the daemonAPI status shape that the local_directory UI consumes.
  *  Redeclared here so this hook doesn't depend on the desktop preload types. */
 export interface LocalDaemonStatus {
@@ -62,21 +64,53 @@ export function useLocalDaemonStatus(): LocalDaemonStatus {
 
   useEffect(() => {
     const api = readDaemonAPI();
-    if (!api) return;
     let cancelled = false;
-    if (api.getStatus) {
-      api.getStatus().then((s) => {
-        if (!cancelled) setStatus(toStatus(s));
-      }).catch(() => {
-        // Ignore — onStatusChange will populate once the daemon comes up.
+
+    if (api) {
+      if (api.getStatus) {
+        api.getStatus().then((s) => {
+          if (!cancelled) setStatus(toStatus(s));
+        }).catch(() => {
+          // Ignore — onStatusChange will populate once the daemon comes up.
+        });
+      }
+      const unsubscribe = api.onStatusChange?.((s) => {
+        setStatus(toStatus(s));
       });
+      return () => {
+        cancelled = true;
+        unsubscribe?.();
+      };
     }
-    const unsubscribe = api.onStatusChange?.((s) => {
-      setStatus(toStatus(s));
-    });
+
+    // The web app can still be running on the same machine as the daemon
+    // (the common self-host/dev setup). Probe the daemon's loopback-only health
+    // endpoint so project detail can match daemon-owned absolute paths even
+    // outside Electron. Remote deployments simply fail this fetch and keep the
+    // existing null/offline fallback.
+    fetch(LOCAL_DAEMON_HEALTH_URL, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("daemon health unavailable");
+        return response.json() as Promise<{
+          status?: string;
+          daemon_id?: string;
+          device_name?: string;
+        }>;
+      })
+      .then((health) => {
+        if (cancelled) return;
+        setStatus({
+          daemonId: health.daemon_id ?? null,
+          deviceName: health.device_name ?? null,
+          running: health.status === "running",
+        });
+      })
+      .catch(() => {
+        // No local daemon reachable from this browser. Keep the safe fallback.
+      });
+
     return () => {
       cancelled = true;
-      unsubscribe?.();
     };
   }, []);
 
