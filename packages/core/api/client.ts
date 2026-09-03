@@ -98,6 +98,7 @@ import type {
   Project,
   AutonomousProjectSnapshot,
   AutonomousRoleRuntimeAssignment,
+  UpdateAutonomousBrainConfig,
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,
@@ -3567,6 +3568,16 @@ export class ApiClient {
 
   async replanProjectAutonomous(id: string): Promise<{ requested: boolean }> {
     return this.fetch(`/api/projects/${id}/autonomous/replan`, { method: "POST" });
+  }
+
+  async updateProjectAutonomousBrain(
+    id: string,
+    config: UpdateAutonomousBrainConfig,
+  ): Promise<{ updated: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/brain/config`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
   }
 
   async confirmProjectAutonomousTeam(
