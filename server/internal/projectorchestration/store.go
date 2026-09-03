@@ -911,6 +911,115 @@ func (s *Store) ResumeBlockedNode(
 	return true, tx.Commit(ctx)
 }
 
+// ResumeNodeForWorkflowRetry re-attaches a successful task-level retry to the
+// Project OS node that was already running before an execution failure blocked
+// it. This is a continuation of the same logical node attempt, so it does not
+// increment the node/project attempt budget.
+//
+// The method intentionally refuses policy-owned blocks (approval, dependency,
+// external dependency, budget). A Retry button must not become a back door
+// around deterministic project policy. If the issue is not materialized by
+// Project OS, true is returned so the issue-level workflow can recover normally.
+func (s *Store) ResumeNodeForWorkflowRetry(
+	ctx context.Context,
+	workspaceID, issueID pgtype.UUID,
+) (bool, error) {
+	if s == nil || s.pool == nil {
+		return false, errors.New("project orchestration store is not configured")
+	}
+	if !workspaceID.Valid || !issueID.Valid {
+		return true, nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var nodeID, planID pgtype.UUID
+	var status, category string
+	err = tx.QueryRow(ctx, `
+		SELECT n.id, n.plan_id, n.status, COALESCE(n.blocked_category, '')
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.workspace_id = $1
+		  AND n.materialized_issue_id = $2
+		  AND p.status IN ('active', 'blocked')
+		  AND n.status NOT IN ('completed', 'cancelled')
+		ORDER BY p.revision DESC, n.updated_at DESC
+		LIMIT 1
+		FOR UPDATE OF n
+	`, workspaceID, issueID).Scan(&nodeID, &planID, &status, &category)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, tx.Commit(ctx)
+	}
+	if err != nil {
+		return false, err
+	}
+
+	switch status {
+	case "running", "verification":
+		return true, tx.Commit(ctx)
+	case "ready":
+		// A conductor cycle may already have cleared the technical block while
+		// the manual retry was active. Attach that already-running task instead
+		// of letting the scheduler dispatch a duplicate attempt.
+	case "blocked":
+		if category != "technical_failure" && category != "manual" {
+			return false, tx.Commit(ctx)
+		}
+	default:
+		return false, tx.Commit(ctx)
+	}
+
+	var depsSatisfied bool
+	if err := tx.QueryRow(ctx, `
+		SELECT NOT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan_edge e
+			JOIN autonomous_project_plan_node dep
+			  ON dep.plan_id = e.plan_id
+			 AND dep.node_key = e.from_node_key
+			JOIN autonomous_project_plan_node current
+			  ON current.plan_id = e.plan_id
+			 AND current.id = $1
+			WHERE e.plan_id = $2
+			  AND e.to_node_key = current.node_key
+			  AND e.dependency_type IN ('hard', 'artifact')
+			  AND dep.status <> 'completed'
+		)
+	`, nodeID, planID).Scan(&depsSatisfied); err != nil {
+		return false, err
+	}
+	if !depsSatisfied {
+		return false, tx.Commit(ctx)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET status = 'running',
+		    started_at = COALESCE(started_at, now()),
+		    blocked_category = NULL,
+		    blocked_reason = NULL,
+		    updated_at = now()
+		WHERE id = $1
+	`, nodeID); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status = 'active', updated_at = now()
+		WHERE id = $1 AND status = 'blocked'
+	`, planID); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) AccountTaskUsage(
 	ctx context.Context,
 	workspaceID, projectID, taskID pgtype.UUID,

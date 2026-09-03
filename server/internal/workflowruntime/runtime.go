@@ -267,6 +267,13 @@ func definition() workflow.Definition {
 			{From: issuestatus.InReview, Event: "review.changes_requested", To: issuestatus.InProgress},
 			{From: issuestatus.InReview, Event: "review.exhausted", To: issuestatus.Blocked},
 			{From: issuestatus.InReview, Event: "review.failed", To: issuestatus.Blocked},
+			// A human/system task retry is a recovery signal for a run that was
+			// durably blocked by the failed execution. We wait for the retry to
+			// complete before leaving Blocked, so the transition cannot enqueue a
+			// duplicate implementation/review task ahead of the already-running
+			// retry.
+			{From: issuestatus.Blocked, Event: "implementation.retry_completed", To: issuestatus.InReview},
+			{From: issuestatus.Blocked, Event: "review.retry_completed", To: issuestatus.Done},
 		},
 	}
 }
@@ -669,6 +676,57 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 			Payload:           map[string]any{"status": issue.Status},
 		})
 		return err
+	}
+
+	// Blocked runs are normally terminal from the workflow's point of view, but
+	// task-level Retry/Rerun can create a durable successor after the blocking
+	// transition (notably after a daemon/server restart). Reconcile only explicit
+	// retry lineage here; an unrelated completed task must never resurrect a
+	// blocked workflow.
+	if run.State == issuestatus.Blocked {
+		var ownerID, reviewerID pgtype.UUID
+		if run.OwnerAgentID != "" {
+			ownerID, err = util.ParseUUID(run.OwnerAgentID)
+			if err != nil {
+				return err
+			}
+		}
+		if run.ReviewerAgentID != "" {
+			reviewerID, err = util.ParseUUID(run.ReviewerAgentID)
+			if err != nil {
+				return err
+			}
+		}
+		if !ownerID.Valid && !reviewerID.Valid {
+			return nil
+		}
+
+		var retryTaskID pgtype.UUID
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND status = 'completed'
+			  AND (
+				($2::uuid IS NOT NULL AND agent_id = $2)
+				OR ($3::uuid IS NOT NULL AND agent_id = $3)
+			  )
+			  AND (retry_of_task_id IS NOT NULL OR rerun_of_task_id IS NOT NULL)
+			  AND COALESCE(completed_at, created_at) > $4
+			ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+			LIMIT 1
+		`, issueID, ownerID, reviewerID, run.UpdatedAt).Scan(&retryTaskID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return r.handleTaskCompleted(ctx, events.Event{
+			Type:        protocol.EventTaskCompleted,
+			WorkspaceID: run.WorkspaceID,
+			TaskID:      util.UUIDToString(retryTaskID),
+		})
 	}
 
 	targetID := run.OwnerAgentID
@@ -1237,6 +1295,37 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 		return err
 	}
 
+	if retryEvent := blockedRetryCompletionEvent(run, task); retryEvent != "" {
+		// Project OS keeps its own durable node state. A task-level retry must
+		// repair that state before the issue workflow can advance, otherwise the
+		// conductor can project the stale node-level Blocked state back onto the
+		// board after the retry succeeds.
+		if r.projectStore != nil {
+			resumed, resumeErr := r.projectStore.ResumeNodeForWorkflowRetry(ctx, issue.WorkspaceID, issue.ID)
+			if resumeErr != nil {
+				return fmt.Errorf("resume autonomous project node from task retry: %w", resumeErr)
+			}
+			if !resumed {
+				slog.Info("autonomous workflow task retry completed but project node policy remains blocked",
+					"issue_id", issueID,
+					"task_id", util.UUIDToString(task.ID),
+					"event", retryEvent,
+				)
+				return nil
+			}
+		}
+		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                retryEvent + ":" + util.UUIDToString(task.ID),
+			Type:              retryEvent,
+			WorkspaceID:       event.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           issueID,
+			AccountableUserID: util.UUIDToString(task.AccountableUserID),
+			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "recovered_from": issuestatus.Blocked},
+		})
+		return err
+	}
+
 	switch {
 	case run.State == issuestatus.InProgress && run.OwnerAgentID == util.UUIDToString(task.AgentID):
 		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
@@ -1710,6 +1799,27 @@ func accountableFromEvent(event events.Event) string {
 		return event.ActorID
 	}
 	return ""
+}
+
+func blockedRetryCompletionEvent(run workflow.Run, task db.AgentTaskQueue) string {
+	if run.State != issuestatus.Blocked {
+		return ""
+	}
+	// retry_of_task_id is an infrastructure/system retry; rerun_of_task_id is
+	// the explicit execution-log Retry action. Both are durable evidence that
+	// this completion is a successor of prior work rather than unrelated work.
+	if !task.RetryOfTaskID.Valid && !task.RerunOfTaskID.Valid {
+		return ""
+	}
+	agentID := util.UUIDToString(task.AgentID)
+	switch {
+	case agentID != "" && agentID == run.OwnerAgentID:
+		return "implementation.retry_completed"
+	case agentID != "" && agentID == run.ReviewerAgentID:
+		return "review.retry_completed"
+	default:
+		return ""
+	}
 }
 
 func retryPending(payload any) bool {

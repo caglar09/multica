@@ -1226,6 +1226,43 @@ func (r *Runtime) reconcileProjectBlockedNodes(
 					return loadErr
 				} else {
 					resolved = issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) != issuestatus.Blocked
+					if resolved && projectNodeUsesIssueWorkflow(node.Kind) {
+						// A task-level retry may already be executing while the
+						// Project OS node still carries the old technical block.
+						// Attach that retry to the node instead of converting the
+						// node to Ready and projecting Todo over the live task.
+						var activeRetry bool
+						if err := r.pool.QueryRow(ctx, `
+							SELECT EXISTS (
+								SELECT 1
+								FROM agent_task_queue t
+								JOIN autonomous_workflow_run wr
+								  ON wr.workspace_id = $1
+								 AND wr.issue_id = t.issue_id
+								 AND wr.workflow_name = $3
+								WHERE t.issue_id = $2
+								  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+								  AND (t.retry_of_task_id IS NOT NULL OR t.rerun_of_task_id IS NOT NULL)
+								  AND (t.agent_id = wr.owner_agent_id OR t.agent_id = wr.reviewer_agent_id)
+							)
+						`, workspaceID, issueID, softwareDevelopmentWorkflow).Scan(&activeRetry); err != nil {
+							return err
+						}
+						if activeRetry {
+							attached, err := r.projectStore.ResumeNodeForWorkflowRetry(ctx, workspaceID, issueID)
+							if err != nil {
+								return err
+							}
+							if attached {
+								slog.Info("project conductor attached active task retry to blocked node",
+									"project_id", util.UUIDToString(projectID),
+									"node", node.Key,
+									"issue_id", node.MaterializedIssueID,
+								)
+								continue
+							}
+						}
+					}
 				}
 			}
 			if !resolved {

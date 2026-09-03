@@ -252,12 +252,15 @@ func (s *PostgresStore) UpdateRunActors(ctx context.Context, runID, ownerAgentID
 		RETURNING `+runColumns, id, nullableUUID(owner), nullableUUID(reviewer), nullableUUID(accountable)))
 }
 
-// ListActiveRuns returns bounded non-terminal runs for restart reconciliation.
+// ListActiveRuns returns bounded runs that can still receive a durable recovery
+// signal. Blocked is included because task-level Retry/Rerun can complete after
+// the blocking transition; the runtime reconciler only revives explicit retry
+// lineage, so ordinary blocked runs remain blocked.
 func (s *PostgresStore) ListActiveRuns(ctx context.Context, limit int) ([]Run, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, "SELECT "+runColumns+" FROM autonomous_workflow_run WHERE state IN ('in_progress', 'in_review') ORDER BY updated_at ASC LIMIT $1", limit)
+	rows, err := s.pool.Query(ctx, "SELECT "+runColumns+" FROM autonomous_workflow_run WHERE state IN ('in_progress', 'in_review', 'blocked') ORDER BY updated_at ASC LIMIT $1", limit)
 	if err != nil {
 		return nil, fmt.Errorf("list active workflow runs: %w", err)
 	}

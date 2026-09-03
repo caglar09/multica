@@ -3,8 +3,13 @@ package workflowruntime
 import (
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
+	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/workflow"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestSoftwareDevelopmentWorkflowDefinition(t *testing.T) {
@@ -24,6 +29,8 @@ func TestSoftwareDevelopmentWorkflowDefinition(t *testing.T) {
 		"in_review/review.changes_requested":      "in_progress",
 		"in_review/review.exhausted":              "blocked",
 		"in_review/review.failed":                 "blocked",
+		"blocked/implementation.retry_completed":   "in_review",
+		"blocked/review.retry_completed":           "done",
 	}
 	for _, tr := range def.Transitions {
 		key := tr.From + "/" + tr.Event
@@ -46,6 +53,37 @@ func TestIssueEventIDIncludesRevisionAndStatus(t *testing.T) {
 	want := "workflow-start:issue-1:42:in_progress"
 	if got != want {
 		t.Fatalf("issueEventID = %q, want %q", got, want)
+	}
+}
+
+func TestBlockedRetryCompletionEvent(t *testing.T) {
+	ownerID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	reviewerID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
+	lineageID := pgtype.UUID{Bytes: [16]byte{9}, Valid: true}
+	run := workflow.Run{
+		State:           issuestatus.Blocked,
+		OwnerAgentID:    util.UUIDToString(ownerID),
+		ReviewerAgentID: util.UUIDToString(reviewerID),
+	}
+
+	implementationRetry := db.AgentTaskQueue{AgentID: ownerID, RerunOfTaskID: lineageID}
+	if got := blockedRetryCompletionEvent(run, implementationRetry); got != "implementation.retry_completed" {
+		t.Fatalf("implementation retry event = %q", got)
+	}
+
+	reviewRetry := db.AgentTaskQueue{AgentID: reviewerID, RetryOfTaskID: lineageID}
+	if got := blockedRetryCompletionEvent(run, reviewRetry); got != "review.retry_completed" {
+		t.Fatalf("review retry event = %q", got)
+	}
+
+	unrelated := db.AgentTaskQueue{AgentID: ownerID}
+	if got := blockedRetryCompletionEvent(run, unrelated); got != "" {
+		t.Fatalf("unrelated completion unexpectedly recovered blocked run with %q", got)
+	}
+
+	run.State = issuestatus.InProgress
+	if got := blockedRetryCompletionEvent(run, implementationRetry); got != "" {
+		t.Fatalf("non-blocked run unexpectedly recovered with %q", got)
 	}
 }
 
