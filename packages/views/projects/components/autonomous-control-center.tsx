@@ -35,6 +35,7 @@ import {
   useConfirmAutonomousTeam,
   usePauseAutonomousProject,
   useReplanAutonomousProject,
+  useRerunAutonomousIssue,
   useRestartAutonomousWorkflow,
   useResumeAutonomousProject,
   useRetryAutonomousAction,
@@ -743,6 +744,7 @@ function DiagnosticCard({
   onResume,
   onReplan,
   onRetryAction,
+  onRerunIssue,
 }: {
   diagnostic: AutonomousDiagnostic;
   canControl: boolean;
@@ -751,6 +753,7 @@ function DiagnosticCard({
   onResume: () => void;
   onReplan: () => void;
   onRetryAction: (actionId: string) => void;
+  onRerunIssue: (issueId: string, taskId?: string) => void;
 }) {
   const variant =
     diagnostic.severity === "error"
@@ -766,7 +769,8 @@ function DiagnosticCard({
     ((action === "retry_action" && Boolean(diagnostic.action_id)) ||
       action === "restart_workflow" ||
       action === "resume_project" ||
-      action === "replan");
+      action === "replan" ||
+      (action === "rerun_issue" && Boolean(diagnostic.issue_id)));
 
   const actionLabel =
     action === "retry_action"
@@ -775,6 +779,8 @@ function DiagnosticCard({
         ? "Resume project"
         : action === "replan"
           ? "Replan"
+          : action === "rerun_issue"
+            ? "Rerun failed task"
           : action === "restart_workflow"
             ? "Repair & continue"
             : "";
@@ -789,6 +795,11 @@ function DiagnosticCard({
         break;
       case "replan":
         onReplan();
+        break;
+      case "rerun_issue":
+        if (diagnostic.issue_id) {
+          onRerunIssue(diagnostic.issue_id, diagnostic.task_id);
+        }
         break;
       case "restart_workflow":
         onRepair();
@@ -1171,6 +1182,7 @@ export function AutonomousControlCenter({
   const restartWorkflow = useRestartAutonomousWorkflow();
   const confirmTeam = useConfirmAutonomousTeam();
   const retryAction = useRetryAutonomousAction();
+  const rerunIssue = useRerunAutonomousIssue();
   const resolveEscalation = useResolveAutonomousEscalation();
   const updateBrain = useUpdateAutonomousBrain();
   const [createSkillOpen, setCreateSkillOpen] = useState(false);
@@ -1293,6 +1305,17 @@ export function AutonomousControlCenter({
       {
         onSuccess: () => toast.success("Workflow action queued for retry"),
         onError: () => toast.error("Could not retry workflow action"),
+      },
+    );
+  };
+
+  const handleRerunDiagnosticIssue = (issueId: string, taskId?: string) => {
+    rerunIssue.mutate(
+      { projectId, issueId, taskId },
+      {
+        onSuccess: () =>
+          toast.success("Fresh issue run queued; workflow will continue from its durable state"),
+        onError: () => toast.error("Could not rerun the failed issue task"),
       },
     );
   };
@@ -1432,12 +1455,14 @@ export function AutonomousControlCenter({
                   pending={
                     controlMutationPending ||
                     retryAction.isPending ||
+                    rerunIssue.isPending ||
                     resolveEscalation.isPending
                   }
                   onRepair={handleRestartWorkflow}
                   onResume={handleResumeProject}
                   onReplan={handleReplan}
                   onRetryAction={handleRetryDiagnosticAction}
+                  onRerunIssue={handleRerunDiagnosticIssue}
                 />
               ))}
             </CardContent>
