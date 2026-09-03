@@ -2533,11 +2533,12 @@ func (s *TaskService) OpenMikaOnboardingChat(ctx context.Context, session db.Cha
 // affected agent's status, and broadcasts task:cancelled events so frontends
 // clear their live cards.
 //
-// Callers are explicit issue-lifecycle cleanup paths only — DeleteIssue and
-// BatchDeleteIssues, where the owning issue row is going away so its tasks
-// must not be left orphaned. A plain status flip, `cancelled` included, no
-// longer routes here (MUL-4465): cancelling an issue is not an implicit "stop
-// all runs" switch. Do not re-add a status-driven caller.
+// Callers are explicit issue-lifecycle cleanup paths only — DeleteIssue,
+// BatchDeleteIssues, and autonomous-plan supersession where Project OS has
+// deterministically retired the owning logical node. A plain status flip,
+// `cancelled` included, does not route here (MUL-4465): cancelling an issue is
+// not an implicit "stop all runs" switch. The autonomous caller is explicit
+// lifecycle ownership cleanup, not status-driven cancellation.
 //
 // Before #1587 this path was "cancel rows and return", which left each affected
 // agent stuck at status="working" indefinitely, requiring a manual
