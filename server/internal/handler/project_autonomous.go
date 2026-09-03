@@ -937,6 +937,8 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		resp.Health.Status = "attention"
 	case resp.Health.ActiveWorkflows > 0:
 		resp.Health.Status = "running"
+	case resp.Plan != nil && (resp.Plan.Status == "active" || resp.Plan.Status == "blocked"):
+		resp.Health.Status = "running"
 	case resp.Enabled:
 		resp.Health.Status = "ready"
 	}
