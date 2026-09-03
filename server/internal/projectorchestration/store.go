@@ -84,6 +84,21 @@ func (s *Store) PersistPlan(
 		return StoredPlan{}, fmt.Errorf("allocate project plan revision: %w", err)
 	}
 
+	// Preserve node/issue identity across replans. node_key is the planner's
+	// stable logical identity; the latest prior revision is therefore the only
+	// authoritative source for carry-forward state.
+	var previousPlanID pgtype.UUID
+	previousPlanErr := tx.QueryRow(ctx, `
+		SELECT id
+		FROM autonomous_project_plan
+		WHERE workspace_id = $1 AND project_id = $2
+		ORDER BY revision DESC
+		LIMIT 1
+	`, workspaceID, projectID).Scan(&previousPlanID)
+	if previousPlanErr != nil && !errors.Is(previousPlanErr, pgx.ErrNoRows) {
+		return StoredPlan{}, fmt.Errorf("load previous project plan: %w", previousPlanErr)
+	}
+
 	specJSON, err := json.Marshal(plan.Specification)
 	if err != nil {
 		return StoredPlan{}, fmt.Errorf("encode project specification: %w", err)
@@ -139,6 +154,40 @@ func (s *Store) PersistPlan(
 			node.Description, node.Priority, node.RequiredRoleFamily, capabilities,
 			criteria, string(node.Risk), maxAttempts); err != nil {
 			return StoredPlan{}, fmt.Errorf("insert project plan node %q: %w", node.Key, err)
+		}
+	}
+
+	// Reuse the prior revision's materialized issue and active execution state
+	// when the planner keeps the same stable node_key. Completed work stays
+	// completed; in-flight/blocked work keeps its state so a replan cannot
+	// fabricate duplicate issues or restart an already-running workflow. Plain
+	// pending/ready nodes are intentionally recomputed from the NEW dependency
+	// graph by refreshReadyTx below.
+	if previousPlanID.Valid {
+		if _, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_plan_node fresh
+			SET materialized_issue_id = prior.materialized_issue_id,
+			    assigned_role = prior.assigned_role,
+			    assigned_agent_id = prior.assigned_agent_id,
+			    attempt = prior.attempt,
+			    status = CASE
+			        WHEN prior.status IN ('completed','cancelled','running','verification','blocked')
+			            THEN prior.status
+			        ELSE fresh.status
+			    END,
+			    ready_at = CASE WHEN prior.status IN ('running','verification','blocked') THEN prior.ready_at ELSE fresh.ready_at END,
+			    started_at = CASE WHEN prior.status IN ('running','verification','blocked','completed') THEN prior.started_at ELSE fresh.started_at END,
+			    completed_at = CASE WHEN prior.status IN ('completed','cancelled') THEN prior.completed_at ELSE fresh.completed_at END,
+			    blocked_category = CASE WHEN prior.status = 'blocked' THEN prior.blocked_category ELSE NULL END,
+			    blocked_reason = CASE WHEN prior.status = 'blocked' THEN prior.blocked_reason ELSE NULL END,
+			    updated_at = now()
+			FROM autonomous_project_plan_node prior
+			WHERE fresh.plan_id = $1
+			  AND prior.plan_id = $2
+			  AND fresh.node_key = prior.node_key
+			  AND prior.materialized_issue_id IS NOT NULL
+		`, planID, previousPlanID); err != nil {
+			return StoredPlan{}, fmt.Errorf("carry forward project node identity: %w", err)
 		}
 	}
 
@@ -1195,11 +1244,13 @@ func (s *Store) ResumePlanAfterNodeRetry(
 }
 
 func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pgtype.UUID) error {
-	var projectID, planID pgtype.UUID
+	var nodeID, projectID, planID pgtype.UUID
 	err := s.pool.QueryRow(ctx, `
 		UPDATE autonomous_project_plan_node
 		SET status = 'completed',
 		    completed_at = COALESCE(completed_at, now()),
+		    blocked_category = NULL,
+		    blocked_reason = NULL,
 		    updated_at = now()
 		WHERE id = (
 			SELECT n.id
@@ -1212,8 +1263,8 @@ func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pg
 			ORDER BY p.revision DESC, n.updated_at DESC
 			LIMIT 1
 		)
-		RETURNING project_id, plan_id
-	`, workspaceID, issueID).Scan(&projectID, &planID)
+		RETURNING id, project_id, plan_id
+	`, workspaceID, issueID).Scan(&nodeID, &projectID, &planID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -1226,6 +1277,21 @@ func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pg
 	}
 	defer tx.Rollback(ctx)
 	if err := refreshReadyTx(ctx, tx, planID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_escalation
+		SET status = 'resolved',
+		    resolution = jsonb_build_object(
+		        'decision', 'auto_resolved',
+		        'reason', 'node_completed'
+		    ),
+		    resolved_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND node_id = $3
+		  AND status IN ('open','acknowledged')
+	`, workspaceID, projectID, nodeID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -1443,22 +1509,48 @@ func (s *Store) CompleteExternalNode(
 	workspaceID, projectID pgtype.UUID,
 	nodeKey string,
 ) error {
-	tag, err := s.pool.Exec(ctx, `
+	var nodeID pgtype.UUID
+	err := s.pool.QueryRow(ctx, `
 		UPDATE autonomous_project_plan_node
 		SET status = 'completed',
 		    completed_at = COALESCE(completed_at, now()),
+		    blocked_category = NULL,
 		    blocked_reason = NULL,
 		    updated_at = now()
-		WHERE workspace_id = $1
-		  AND project_id = $2
-		  AND node_key = $3
-		  AND status = 'running'
-	`, workspaceID, projectID, nodeKey)
+		WHERE id = (
+			SELECT n.id
+			FROM autonomous_project_plan_node n
+			JOIN autonomous_project_plan p ON p.id = n.plan_id
+			WHERE n.workspace_id = $1
+			  AND n.project_id = $2
+			  AND n.node_key = $3
+			  AND n.status = 'running'
+			  AND p.status IN ('active','blocked')
+			ORDER BY p.revision DESC
+			LIMIT 1
+		)
+		RETURNING id
+	`, workspaceID, projectID, nodeKey).Scan(&nodeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return nil
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE autonomous_project_escalation
+		SET status = 'resolved',
+		    resolution = jsonb_build_object(
+		        'decision', 'auto_resolved',
+		        'reason', 'node_completed'
+		    ),
+		    resolved_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND node_id = $3
+		  AND status IN ('open','acknowledged')
+	`, workspaceID, projectID, nodeID); err != nil {
+		return err
 	}
 	if err := s.RefreshReady(ctx, workspaceID, projectID); err != nil {
 		return err
