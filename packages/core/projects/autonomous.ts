@@ -58,6 +58,28 @@ export function useRestartAutonomousWorkflow() {
   );
 }
 
+export function useRerunAutonomousIssue() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      issueId,
+      taskId,
+    }: {
+      projectId: string;
+      issueId: string;
+      taskId?: string;
+    }) => api.rerunIssue(issueId, taskId),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
+}
+
 export function useRetryAutonomousAction() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
