@@ -337,7 +337,7 @@ func safeRoleInstructions(display, family string, capabilities []string) string 
 	if len(capabilities) > 0 {
 		out += " Your declared capabilities are: " + strings.Join(capabilities, ", ") + "."
 	}
-	out += " Finish only the assigned work. Do not change workflow state to trigger another agent unless your role-specific workflow explicitly requires a review rejection; server-side orchestration owns routing."
+	out += " Finish only the assigned work. Never change issue status to communicate a review verdict or to trigger another agent; return the structured task output requested by the assignment. Server-side orchestration owns routing and state transitions."
 	return truncateText(out, 2400)
 }
 

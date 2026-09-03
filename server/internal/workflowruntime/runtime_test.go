@@ -36,6 +36,7 @@ func TestSoftwareDevelopmentWorkflowDefinition(t *testing.T) {
 		"in_review/issue.completed":               "done",
 		"blocked/implementation.retry_completed":  "in_review",
 		"blocked/review.retry_completed":          "done",
+		"blocked/review.retry_changes_requested":  "in_progress",
 		"blocked/issue.retry_requested":           "in_progress",
 		"blocked/issue.completed":                 "done",
 	}

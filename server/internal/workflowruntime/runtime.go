@@ -221,16 +221,16 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 func definition() workflow.Definition {
 	return workflow.Definition{
 		Name:         softwareDevelopmentWorkflow,
-		Version:      1,
+		Version:      2,
 		InitialState: issuestatus.InProgress,
 		States: map[string]workflow.State{
 			issuestatus.InProgress: {
 				OnEnter: []workflow.Action{{
 					Type: "trigger_agent",
 					Params: map[string]string{
-						"selector": "owner",
+						"selector":   "owner",
 						"when_state": issuestatus.InProgress,
-						"handoff": "Autonomous workflow: implement or revise this issue according to its acceptance criteria and the latest review feedback. Do not manage the workflow or mention/trigger another agent; finish the assigned implementation task normally. The workflow engine routes the next step.",
+						"instructions": "Implement or revise the issue against its acceptance criteria and the structured handoff. Do not change issue status, route work, mention another agent, or encode workflow decisions in prose. Your FINAL response must be exactly one JSON object with keys: summary (string), decisions (string[]), artifacts ({type,ref,description}[]), changed_files (string[]), commit_sha (string), diff (string), tests ({name,status,evidence}[] where status is passed|failed|skipped|not_run), findings ({id,severity,category,description,evidence,blocking}[]), risks (string[]), blockers (string[]). No markdown fence or surrounding prose.",
 					},
 				}},
 			},
@@ -240,9 +240,9 @@ func definition() workflow.Definition {
 					{
 						Type: "trigger_agent",
 						Params: map[string]string{
-							"selector": "reviewer",
+							"selector":   "reviewer",
 							"when_state": issuestatus.InReview,
-							"handoff": "Autonomous workflow review: review the implementation against the issue acceptance criteria and project standards. If changes are required, move the issue to In Progress and explain the requested changes in a comment; the workflow engine will automatically return it to the implementation agent. If approved, finish the review task normally; the workflow engine will mark the issue Done. Do not mention or trigger another agent.",
+							"instructions": "Independently review the structured implementation handoff, diff/artifacts, tests, acceptance criteria, and project standards. NEVER change issue status to communicate the result and never trigger another agent. Your FINAL response must be exactly one JSON object: {\"verdict\":\"approved|changes_requested\",\"summary\":\"...\",\"findings\":[{\"id\":\"F-001\",\"severity\":\"low|medium|high|critical\",\"category\":\"lower_snake_case\",\"description\":\"...\",\"evidence\":\"...\",\"blocking\":true}]}. changes_requested requires at least one blocking finding; approved may contain only non-blocking findings. No markdown fence or surrounding prose.",
 						},
 					},
 				},
@@ -277,6 +277,7 @@ func definition() workflow.Definition {
 			// retry.
 			{From: issuestatus.Blocked, Event: "implementation.retry_completed", To: issuestatus.InReview},
 			{From: issuestatus.Blocked, Event: "review.retry_completed", To: issuestatus.Done},
+			{From: issuestatus.Blocked, Event: "review.retry_changes_requested", To: issuestatus.InProgress},
 			// Project OS can resume a blocked materialized issue by moving it back
 			// to In Progress. This transition is the missing handoff that lets the
 			// issue workflow leave its durable Blocked state and enqueue a fresh
@@ -1663,6 +1664,27 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 
 		eventType := "implementation.completed"
 		eventID := "implementation-completed:" + util.UUIDToString(task.ID)
+		if resolvedOwnerID == task.AgentID {
+			output, contractErr := parseImplementationHandoff(task.Result)
+			if contractErr != nil {
+				_ = r.recordContractViolation(ctx, task, issue, "implementation_handoff", contractErr)
+				_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+					ID:                "implementation-contract-failed:" + util.UUIDToString(task.ID),
+					Type:              "implementation.failed",
+					WorkspaceID:       event.WorkspaceID,
+					ProjectID:         util.UUIDToString(issue.ProjectID),
+					IssueID:           issueID,
+					OwnerAgentID:      util.UUIDToString(resolvedOwnerID),
+					ReviewerAgentID:   util.UUIDToString(reviewerID),
+					AccountableUserID: util.UUIDToString(task.AccountableUserID),
+					Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "contract_error": contractErr.Error()},
+				})
+				return err
+			}
+			if err := r.persistImplementationHandoff(ctx, workflow.Run{}, task, issue, output); err != nil {
+				return fmt.Errorf("persist initial implementation handoff: %w", err)
+			}
+		}
 		if resolvedOwnerID != task.AgentID {
 			// A Mika-owned legacy/manual task completed before the technology
 			// team took ownership. Start the deterministic workflow instead of
@@ -1685,10 +1707,34 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 	}
 
 	if retryEvent := blockedRetryCompletionEvent(run, task); retryEvent != "" {
-		// Project OS keeps its own durable node state. A task-level retry must
-		// repair that state before the issue workflow can advance, otherwise the
-		// conductor can project the stale node-level Blocked state back onto the
-		// board after the retry succeeds.
+		// Validate and persist the task contract before changing Project OS state.
+		// A malformed retry must leave both the node and workflow blocked.
+		eventType := retryEvent
+		switch retryEvent {
+		case "implementation.retry_completed":
+			output, contractErr := parseImplementationHandoff(task.Result)
+			if contractErr != nil {
+				_ = r.recordContractViolation(ctx, task, issue, "implementation_handoff", contractErr)
+				return nil
+			}
+			if err := r.persistImplementationHandoff(ctx, run, task, issue, output); err != nil {
+				return fmt.Errorf("persist retry implementation handoff: %w", err)
+			}
+		case "review.retry_completed":
+			verdict, contractErr := parseReviewVerdict(task.Result)
+			if contractErr != nil {
+				_ = r.recordContractViolation(ctx, task, issue, "review_verdict", contractErr)
+				return nil
+			}
+			if err := r.persistReviewVerdict(ctx, run, task, issue, verdict); err != nil {
+				return fmt.Errorf("persist retry review verdict: %w", err)
+			}
+			if verdict.Verdict == "changes_requested" {
+				_ = r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeReviewRejected)
+				eventType = "review.retry_changes_requested"
+			}
+		}
+
 		if r.projectStore != nil {
 			resumed, resumeErr := r.projectStore.ResumeNodeForWorkflowRetry(ctx, issue.WorkspaceID, issue.ID)
 			if resumeErr != nil {
@@ -1698,14 +1744,15 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 				slog.Info("autonomous workflow task retry completed but project node policy remains blocked",
 					"issue_id", issueID,
 					"task_id", util.UUIDToString(task.ID),
-					"event", retryEvent,
+					"event", eventType,
 				)
 				return nil
 			}
 		}
+
 		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
-			ID:                retryEvent + ":" + util.UUIDToString(task.ID),
-			Type:              retryEvent,
+			ID:                eventType + ":" + util.UUIDToString(task.ID),
+			Type:              eventType,
 			WorkspaceID:       event.WorkspaceID,
 			ProjectID:         util.UUIDToString(issue.ProjectID),
 			IssueID:           issueID,
@@ -1714,9 +1761,25 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 		})
 		return err
 	}
-
 	switch {
 	case run.State == issuestatus.InProgress && run.OwnerAgentID == util.UUIDToString(task.AgentID):
+		output, contractErr := parseImplementationHandoff(task.Result)
+		if contractErr != nil {
+			_ = r.recordContractViolation(ctx, task, issue, "implementation_handoff", contractErr)
+			_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                "implementation-contract-failed:" + util.UUIDToString(task.ID),
+				Type:              "implementation.failed",
+				WorkspaceID:       event.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           issueID,
+				AccountableUserID: util.UUIDToString(task.AccountableUserID),
+				Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "contract_error": contractErr.Error()},
+			})
+			return err
+		}
+		if err := r.persistImplementationHandoff(ctx, run, task, issue, output); err != nil {
+			return fmt.Errorf("persist implementation handoff: %w", err)
+		}
 		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
 			ID:                "implementation-completed:" + util.UUIDToString(task.ID),
 			Type:              "implementation.completed",
@@ -1729,41 +1792,48 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 		return err
 
 	case run.State == issuestatus.InReview && run.ReviewerAgentID == util.UUIDToString(task.AgentID):
-		effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
-		if effective == issuestatus.InProgress {
-			_ = r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeReviewRejected)
-			eventType := "review.changes_requested"
-			if run.ReviewCycles >= r.config.MaxReviewCycles {
-				eventType = "review.exhausted"
-			}
-			if eventType == "review.changes_requested" {
-				run, err = r.refreshRunTeam(ctx, run, issue, util.UUIDToString(task.AccountableUserID))
-				if err != nil {
-					return fmt.Errorf("refresh team before completed review retry: %w", err)
-				}
-			}
+		verdict, contractErr := parseReviewVerdict(task.Result)
+		if contractErr != nil {
+			_ = r.recordContractViolation(ctx, task, issue, "review_verdict", contractErr)
 			_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
-				ID:                "review-change-completed:" + util.UUIDToString(task.ID),
-				Type:              eventType,
+				ID:                "review-contract-failed:" + util.UUIDToString(task.ID),
+				Type:              "review.failed",
 				WorkspaceID:       event.WorkspaceID,
 				ProjectID:         util.UUIDToString(issue.ProjectID),
 				IssueID:           issueID,
 				AccountableUserID: util.UUIDToString(task.AccountableUserID),
-				Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+				Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "contract_error": contractErr.Error()},
 			})
 			return err
 		}
-		if effective != issuestatus.InReview && effective != issuestatus.Done {
-			return nil
+		if err := r.persistReviewVerdict(ctx, run, task, issue, verdict); err != nil {
+			return fmt.Errorf("persist structured review verdict: %w", err)
+		}
+
+		eventType := "review.completed"
+		eventID := "review-approved:" + util.UUIDToString(task.ID)
+		if verdict.Verdict == "changes_requested" {
+			_ = r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeReviewRejected)
+			eventType = "review.changes_requested"
+			eventID = "review-changes-requested:" + util.UUIDToString(task.ID)
+			if run.ReviewCycles >= r.config.MaxReviewCycles {
+				eventType = "review.exhausted"
+				eventID = "review-exhausted:" + util.UUIDToString(task.ID)
+			} else {
+				run, err = r.refreshRunTeam(ctx, run, issue, util.UUIDToString(task.AccountableUserID))
+				if err != nil {
+					return fmt.Errorf("refresh team before structured review retry: %w", err)
+				}
+			}
 		}
 		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
-			ID:                "review-completed:" + util.UUIDToString(task.ID),
-			Type:              "review.completed",
+			ID:                eventID,
+			Type:              eventType,
 			WorkspaceID:       event.WorkspaceID,
 			ProjectID:         util.UUIDToString(issue.ProjectID),
 			IssueID:           issueID,
 			AccountableUserID: util.UUIDToString(task.AccountableUserID),
-			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "verdict": verdict.Verdict},
 		})
 		return err
 	}
@@ -2059,49 +2129,35 @@ func (r *Runtime) ExecuteWorkflowAction(ctx context.Context, run workflow.Run, p
 			return err
 		}
 
-		// Make the side effect idempotent across the narrow crash window between
-		// TaskService committing the queued task and this worker marking its
-		// durable action completed. The marker lives in handoff_note, which is
-		// already task execution metadata and survives terminal task history.
 		marker := "[workflow-action:" + pending.ID + "]"
-		var alreadyDispatched bool
-		if err := r.pool.QueryRow(ctx, `
-			SELECT EXISTS (
-				SELECT 1
-				FROM agent_task_queue
-				WHERE issue_id = $1
-				  AND agent_id = $2
-				  AND handoff_note LIKE $3 || '%'
-			)
-		`, issueID, agentID, marker).Scan(&alreadyDispatched); err != nil {
-			return fmt.Errorf("check workflow dispatch receipt: %w", err)
-		}
-		if alreadyDispatched {
+		var existingTaskID pgtype.UUID
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND agent_id = $2
+			  AND handoff_note LIKE $3 || '%'
+			ORDER BY created_at DESC
+			LIMIT 1
+		`, issueID, agentID, marker).Scan(&existingTaskID)
+		if err == nil {
+			_ = r.bindAssignmentHandoffTask(ctx, pending.ID, existingTaskID)
 			return nil
 		}
-		handoff := marker + "\n" + pending.Action.Params["handoff"]
-		if issue.ProjectID.Valid && r.projectStore != nil {
-			memories, recallErr := r.projectStore.RecallMemories(
-				ctx, issue.WorkspaceID, issue.ProjectID, issue.Title, 12, 12000,
-			)
-			if recallErr != nil {
-				slog.Warn("project brain recall failed; dispatching without learned context",
-					"issue_id", util.UUIDToString(issue.ID), "error", recallErr)
-			} else if len(memories) > 0 {
-				var brainContext strings.Builder
-				brainContext.WriteString("\n\nProject Brain context (backend-selected, evidence-backed, current revisions only):")
-				for _, memory := range memories {
-					brainContext.WriteString("\n- [")
-					brainContext.WriteString(memory.Type)
-					brainContext.WriteString("] ")
-					brainContext.WriteString(memory.Subject)
-					brainContext.WriteString(": ")
-					brainContext.WriteString(memory.Content)
-				}
-				handoff += brainContext.String()
-			}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check workflow dispatch receipt: %w", err)
 		}
-		_, err = r.taskSvc.EnqueueTaskForWorkflow(
+
+		envelope, err := r.prepareAssignmentHandoff(ctx, run, pending, issue, selector, agentID)
+		if err != nil {
+			return fmt.Errorf("prepare structured workflow handoff: %w", err)
+		}
+		rawHandoff, err := json.Marshal(envelope)
+		if err != nil {
+			return fmt.Errorf("encode structured workflow handoff: %w", err)
+		}
+		handoff := marker + "\n" + string(rawHandoff)
+		queued, err := r.taskSvc.EnqueueTaskForWorkflow(
 			ctx,
 			issue,
 			agentID,
@@ -2111,7 +2167,11 @@ func (r *Runtime) ExecuteWorkflowAction(ctx context.Context, run workflow.Run, p
 		if errors.Is(err, service.ErrDuplicatePendingTask) {
 			return nil
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return r.bindAssignmentHandoffTask(ctx, pending.ID, queued.ID)
+
 	default:
 		return fmt.Errorf("unsupported workflow action type %q", pending.Action.Type)
 	}

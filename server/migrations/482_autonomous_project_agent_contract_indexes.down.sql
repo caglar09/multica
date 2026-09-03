@@ -1,0 +1,5 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_autonomous_project_handoff_target_task;
+DROP INDEX CONCURRENTLY IF EXISTS idx_autonomous_project_handoff_implementation_task;
+DROP INDEX CONCURRENTLY IF EXISTS idx_autonomous_project_handoff_issue;
+DROP INDEX CONCURRENTLY IF EXISTS idx_autonomous_project_review_verdict_issue;
+DROP INDEX CONCURRENTLY IF EXISTS idx_autonomous_project_review_finding_open;

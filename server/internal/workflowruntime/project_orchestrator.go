@@ -2209,6 +2209,10 @@ func (r *Runtime) accountProjectTaskUsage(
 	if err != nil {
 		return false, err
 	}
+	brainContextTokens, brainContextEstimated, err := r.brainContextUsageForTask(ctx, task.ID)
+	if err != nil {
+		return false, err
+	}
 	err = r.projectStore.AccountTaskUsageDetailed(
 		ctx,
 		issue.WorkspaceID,
@@ -2221,8 +2225,10 @@ func (r *Runtime) accountProjectTaskUsage(
 			CacheReadTokens:  usage.CacheReadTokens,
 			CacheWriteTokens: usage.CacheWriteTokens,
 			RuntimeSeconds:   usage.RuntimeSeconds,
-			CostUsdTicks:     usage.CostUsdTicks,
-			CostComplete:     usage.CostComplete,
+			CostUsdTicks:          usage.CostUsdTicks,
+			CostComplete:          usage.CostComplete,
+			BrainContextTokens:    brainContextTokens,
+			BrainContextEstimated: brainContextEstimated,
 		},
 	)
 	if err == nil {
