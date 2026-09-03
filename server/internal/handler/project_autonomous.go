@@ -2016,10 +2016,35 @@ func (h *Handler) RestartProjectAutonomousWorkflow(w http.ResponseWriter, r *htt
 			"project_id", uuidToString(projectID),
 			"error", err,
 		)
+		detail := err.Error()
+		if len(detail) > 2000 {
+			detail = detail[:2000]
+		}
+		if _, persistErr := h.DB.Exec(r.Context(), `
+			INSERT INTO autonomous_project_control (
+				project_id, workspace_id, last_error, updated_at
+			)
+			VALUES ($1, $2, $3, now())
+			ON CONFLICT (project_id) DO UPDATE
+			SET workspace_id = EXCLUDED.workspace_id,
+			    last_error = EXCLUDED.last_error,
+			    updated_at = now()
+		`, projectID, workspaceID, detail); persistErr != nil {
+			slog.Warn("failed to persist autonomous repair error",
+				"workspace_id", uuidToString(workspaceID),
+				"project_id", uuidToString(projectID),
+				"error", persistErr,
+			)
+		}
 		code, message := autonomousRepairFailureCode(err)
 		writeErrorCode(w, http.StatusInternalServerError, code, message)
 		return
 	}
+	_, _ = h.DB.Exec(r.Context(), `
+		UPDATE autonomous_project_control
+		SET last_error = NULL, updated_at = now()
+		WHERE project_id = $1 AND workspace_id = $2
+	`, projectID, workspaceID)
 	writeJSON(w, http.StatusOK, map[string]any{"restarted": true})
 }
 
