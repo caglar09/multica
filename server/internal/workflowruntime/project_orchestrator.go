@@ -476,7 +476,13 @@ func (r *Runtime) planProjectRevision(
 		ctx, workspaceID, projectID, sourceRevision,
 		execution.Provider, execution.Model, plan,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// Replanning is a state migration, not just a new DAG insert. Retire any
+	// materialized issues that belonged only to superseded revisions so the
+	// board cannot retain backlog work that the current scheduler can never own.
+	return r.reconcileSupersededProjectIssues(ctx, workspaceID, projectID)
 }
 
 func dbGetProjectParams(projectID, workspaceID pgtype.UUID) db.GetProjectInWorkspaceParams {
@@ -802,6 +808,169 @@ func discoveredProjectPriority(priority string) int {
 	default:
 		return 0
 	}
+}
+
+// reconcileSupersededProjectIssues enforces the board/plan ownership invariant:
+//
+//   every open issue materialized by Project OS is owned by the latest plan.
+//
+// Stable node keys are carried forward by PersistPlan. Any remaining open issue
+// that is referenced only by superseded revisions is therefore stale: either
+// the node was removed by the replan or a newer revision replaced its issue.
+// Stale work is explicitly cancelled (including active agent tasks) instead of
+// being left in Backlog forever with no scheduler owner.
+func (r *Runtime) reconcileSupersededProjectIssues(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) error {
+	if r == nil || r.pool == nil || r.taskSvc == nil {
+		return nil
+	}
+	var latestPlanID pgtype.UUID
+	var latestRevision int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT id, revision
+		FROM autonomous_project_plan
+		WHERE workspace_id = $1 AND project_id = $2
+		ORDER BY revision DESC
+		LIMIT 1
+	`, workspaceID, projectID).Scan(&latestPlanID, &latestRevision); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+
+	// Escalations attached to superseded nodes are historical evidence, not
+	// current operator work. Resolve them durably so recovered projects do not
+	// stay in Attention because of a failure from an obsolete revision.
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_project_escalation e
+		SET status = 'resolved',
+		    resolution = jsonb_build_object(
+		        'decision', 'auto_resolved',
+		        'reason', 'plan_superseded',
+		        'current_plan_revision', $3
+		    ),
+		    resolved_at = now()
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE e.node_id = n.id
+		  AND e.workspace_id = $1
+		  AND e.project_id = $2
+		  AND p.status = 'superseded'
+		  AND e.status IN ('open','acknowledged')
+	`, workspaceID, projectID, latestRevision); err != nil {
+		return fmt.Errorf("resolve superseded project escalations: %w", err)
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT i.id, i.status, n.node_key, p.revision
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		JOIN issue i ON i.id = n.materialized_issue_id
+		WHERE p.workspace_id = $1
+		  AND p.project_id = $2
+		  AND p.status = 'superseded'
+		  AND p.id <> $3
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM autonomous_project_plan_node current_node
+		      WHERE current_node.plan_id = $3
+		        AND current_node.materialized_issue_id = i.id
+		  )
+		ORDER BY p.revision DESC
+	`, workspaceID, projectID, latestPlanID)
+	if err != nil {
+		return fmt.Errorf("query stale superseded project issues: %w", err)
+	}
+	type staleIssue struct {
+		id       pgtype.UUID
+		status   string
+		nodeKey  string
+		revision int64
+	}
+	stale := make([]staleIssue, 0, 16)
+	for rows.Next() {
+		var item staleIssue
+		if err := rows.Scan(&item.id, &item.status, &item.nodeKey, &item.revision); err != nil {
+			rows.Close()
+			return err
+		}
+		stale = append(stale, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, item := range stale {
+		effective := issuestatus.Effective(ctx, r.taskSvc.Queries, workspaceID, item.status)
+		if effective == issuestatus.Done || effective == issuestatus.Cancelled {
+			continue
+		}
+		// Supersession is an explicit orchestration lifecycle cleanup. Stop any
+		// still-running side effects before projecting the issue to Cancelled.
+		if err := r.taskSvc.CancelTasksForIssue(ctx, item.id); err != nil {
+			return fmt.Errorf("cancel tasks for superseded issue %s: %w", util.UUIDToString(item.id), err)
+		}
+		if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, item.id, issuestatus.Cancelled); err != nil {
+			return fmt.Errorf("cancel superseded issue %s: %w", util.UUIDToString(item.id), err)
+		}
+		slog.Info("retired stale autonomous issue after replan",
+			"workspace_id", util.UUIDToString(workspaceID),
+			"project_id", util.UUIDToString(projectID),
+			"issue_id", util.UUIDToString(item.id),
+			"node_key", item.nodeKey,
+			"superseded_revision", item.revision,
+			"current_revision", latestRevision,
+		)
+	}
+	return nil
+}
+
+func (r *Runtime) reconcileAllSupersededProjectIssues(ctx context.Context) error {
+	if r == nil || r.pool == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT workspace_id, project_id
+		FROM autonomous_project_plan
+		WHERE status = 'superseded'
+		ORDER BY project_id
+		LIMIT 200
+	`)
+	if err != nil {
+		return err
+	}
+	type projectRef struct {
+		workspaceID pgtype.UUID
+		projectID   pgtype.UUID
+	}
+	projects := make([]projectRef, 0, 32)
+	for rows.Next() {
+		var item projectRef
+		if err := rows.Scan(&item.workspaceID, &item.projectID); err != nil {
+			rows.Close()
+			return err
+		}
+		projects = append(projects, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, project := range projects {
+		if err := r.reconcileSupersededProjectIssues(ctx, project.workspaceID, project.projectID); err != nil {
+			slog.Warn("autonomous stale replan issue reconciliation failed",
+				"project_id", util.UUIDToString(project.projectID),
+				"error", err,
+			)
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) processProjectScheduling(ctx context.Context) error {
