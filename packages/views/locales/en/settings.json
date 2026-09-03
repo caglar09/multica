@@ -698,7 +698,9 @@
   "labs": {
     "section_placeholder_title": "No experiments yet",
     "section_placeholder_description": "Experimental settings will land here as they ship. Today this tab is intentionally empty.",
-    "toast_failed": "Failed to update setting"
+    "toast_failed": "Failed to update setting",
+    "diagnostics_logs_title": "Deployment logs",
+    "diagnostics_logs_description": "Show the experimental Logs screen for backend, PostgreSQL, frontend and other self-hosted services. Raw logs are restricted to workspace owners/admins and can be exported."
   },
   "github": {
     "page_description": "Connect a GitHub App, control how Pull Requests show up inside Multica, and decide what your agents leave behind in commit history.",

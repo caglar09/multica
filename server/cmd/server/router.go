@@ -1854,6 +1854,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
 
+			// Experimental deployment diagnostics. Raw service logs can contain
+			// project text, paths and operator details, so task-token actors are
+			// blocked and only workspace owners/admins can read or export them.
+			r.Group(func(r chi.Router) {
+				r.Use(handler.RequireHumanActor)
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner", "admin"))
+				r.Get("/api/diagnostics/logs", h.ListDiagnosticLogs)
+				r.Get("/api/diagnostics/logs/export", h.ExportDiagnosticLogs)
+			})
+
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 

@@ -373,3 +373,10 @@ export type {
   ProjectReportDay,
   ProjectReportSnapshot,
 } from "./project-report";
+export type {
+  DiagnosticLogSource,
+  DiagnosticLogLevel,
+  DiagnosticLogEntry,
+  DiagnosticLogsResponse,
+  DiagnosticLogQuery,
+} from "./diagnostics";

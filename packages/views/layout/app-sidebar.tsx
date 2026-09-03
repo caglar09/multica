@@ -87,6 +87,7 @@ import {
 } from "@multica/core/shortcuts";
 import { ShortcutKeycaps } from "../common/shortcut-keycaps";
 import { useAppForeground } from "../common/use-app-foreground";
+import { useDiagnosticsLogsEnabled } from "@multica/core/diagnostics";
 
 // Top-level nav items stay active when the user is on a child route
 // (e.g. "Projects" stays lit on /:slug/projects/:id). Pinned items keep
@@ -120,6 +121,7 @@ type NavKey =
   | "agents"
   | "squads"
   | "usage"
+  | "logs"
   | "runtimes"
   | "skills"
   | "settings";
@@ -136,6 +138,7 @@ type NavLabelKey =
   | "agents"
   | "squads"
   | "usage"
+  | "logs"
   | "runtimes"
   | "skills"
   | "settings";
@@ -159,6 +162,7 @@ const workspaceNav: { key: NavKey; labelKey: NavLabelKey }[] = [
 ];
 
 const configureNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+  { key: "logs", labelKey: "logs" },
   { key: "runtimes", labelKey: "runtimes" },
   { key: "skills", labelKey: "skills" },
   { key: "settings", labelKey: "settings" },
@@ -476,6 +480,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const activeChatSessionId = useChatStore((s) => s.activeSessionId);
   const floatingChatOpen = useChatStore((s) => s.isOpen);
   const appForeground = useAppForeground();
+  const diagnosticsLogsEnabled = useDiagnosticsLogsEnabled();
   const chatHref = p.chat();
   const viewedChatSessionId =
     appForeground && (floatingChatOpen || isNavActive(pathname, chatHref))
@@ -854,7 +859,9 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             <SidebarGroupLabel>{t(($) => $.sidebar.configure_group)}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
-                {configureNav.map((item) => {
+                {configureNav
+                  .filter((item) => item.key !== "logs" || diagnosticsLogsEnabled)
+                  .map((item) => {
                   const href = p[item.key]();
                   const Icon = routeIconForPath(href);
                   const isActive = isNavActive(pathname, href);

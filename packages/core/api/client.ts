@@ -98,6 +98,8 @@ import type {
   Project,
   AutonomousProjectSnapshot,
   ProjectReportSnapshot,
+  DiagnosticLogsResponse,
+  DiagnosticLogQuery,
   AutonomousRoleRuntimeAssignment,
   UpdateAutonomousBrainConfig,
   CreateProjectRequest,
@@ -789,6 +791,33 @@ export class ApiClient {
       return undefined as T;
     }
     return res.json() as Promise<T>;
+  }
+
+  async getDiagnosticLogs(params: DiagnosticLogQuery = {}): Promise<DiagnosticLogsResponse> {
+    const search = new URLSearchParams();
+    if (params.source) search.set("source", params.source);
+    if (params.search) search.set("search", params.search);
+    if (params.tail !== undefined) search.set("tail", String(params.tail));
+    if (params.since !== undefined && params.since > 0) {
+      search.set("since", String(params.since));
+    }
+    const query = search.toString();
+    return this.fetch("/api/diagnostics/logs" + (query ? "?" + query : ""));
+  }
+
+  async exportDiagnosticLogs(params: DiagnosticLogQuery = {}): Promise<Blob> {
+    const search = new URLSearchParams();
+    if (params.source) search.set("source", params.source);
+    if (params.search) search.set("search", params.search);
+    if (params.tail !== undefined) search.set("tail", String(params.tail));
+    if (params.since !== undefined && params.since > 0) {
+      search.set("since", String(params.since));
+    }
+    const query = search.toString();
+    const res = await this.fetchRaw(
+      "/api/diagnostics/logs/export" + (query ? "?" + query : ""),
+    );
+    return res.blob();
   }
 
   // Auth

@@ -52,6 +52,18 @@ services:
       timeout: 5s
       retries: 5
 
+  diagnostics:
+    image: ${MULTICA_BACKEND_IMAGE:-ghcr.io/multica-ai/multica-backend}:${MULTICA_IMAGE_TAG:-latest}
+    entrypoint: ["/app/diagnostics-agent"]
+    environment:
+      PORT: "8090"
+      MULTICA_DIAGNOSTICS_AGENT_TOKEN: ${JWT_SECRET:?JWT_SECRET must be set to a strong random value — generate one with 'openssl rand -hex 32'}
+      MULTICA_DIAGNOSTICS_COMPOSE_PROJECT: multica
+      MULTICA_DIAGNOSTICS_SERVICE_NAME: diagnostics
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
   backend:
     image: ${MULTICA_BACKEND_IMAGE:-ghcr.io/multica-ai/multica-backend}:${MULTICA_IMAGE_TAG:-latest}
     depends_on:
@@ -172,6 +184,10 @@ services:
       MULTICA_AUTONOMOUS_REVIEWER_ROLE: ${MULTICA_AUTONOMOUS_REVIEWER_ROLE:-reviewer}
       MULTICA_AUTONOMOUS_REVIEWER_AGENT_ID: ${MULTICA_AUTONOMOUS_REVIEWER_AGENT_ID:-}
       MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES: ${MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES:-3}
+      # Experimental Logs screen: the backend never receives the Docker socket.
+      # It only talks to the narrow internal diagnostics sidecar.
+      MULTICA_DIAGNOSTICS_AGENT_URL: ${MULTICA_DIAGNOSTICS_AGENT_URL:-http://diagnostics:8090}
+      MULTICA_DIAGNOSTICS_AGENT_TOKEN: ${JWT_SECRET:?JWT_SECRET must be set to a strong random value — generate one with 'openssl rand -hex 32'}
       # Lark / Feishu bot integration. MULTICA_LARK_SECRET_KEY is the
       # opt-in: unset = integration disabled. Mainland 飞书 and international
       # Lark are auto-detected per installation and served side by side, so

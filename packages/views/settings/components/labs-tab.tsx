@@ -1,35 +1,45 @@
 "use client";
 
-import { FlaskConical } from "lucide-react";
+import { ScrollText } from "lucide-react";
+import { Label } from "@multica/ui/components/ui/label";
+import { Switch } from "@multica/ui/components/ui/switch";
 import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@multica/ui/components/ui/empty";
+  setDiagnosticsLogsEnabled,
+  useDiagnosticsLogsEnabled,
+} from "@multica/core/diagnostics";
 import { useT } from "../../i18n";
 import { SettingsCard, SettingsTab } from "./settings-layout";
 
-// The Co-authored-by trailer toggle moved into the dedicated GitHub Settings
-// tab (see github-tab.tsx). Labs is kept as a container for future
-// experimental flags rather than removed from the IA.
 export function LabsTab() {
   const { t } = useT("settings");
+  const logsEnabled = useDiagnosticsLogsEnabled();
+
   return (
     <SettingsTab title={t(($) => $.page.tabs.labs)}>
       <SettingsCard>
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <FlaskConical className="h-4 w-4" />
-            </EmptyMedia>
-            <EmptyTitle>{t(($) => $.labs.section_placeholder_title)}</EmptyTitle>
-            <EmptyDescription>
-              {t(($) => $.labs.section_placeholder_description)}
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <div className="flex items-center justify-between gap-6 p-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="rounded-md border bg-muted/50 p-2 text-muted-foreground">
+              <ScrollText className="h-4 w-4" />
+            </div>
+            <div className="space-y-1">
+              <Label
+                htmlFor="labs-diagnostics-logs"
+                className="text-body font-medium"
+              >
+                {t(($) => $.labs.diagnostics_logs_title)}
+              </Label>
+              <p className="max-w-2xl text-body text-muted-foreground">
+                {t(($) => $.labs.diagnostics_logs_description)}
+              </p>
+            </div>
+          </div>
+          <Switch
+            id="labs-diagnostics-logs"
+            checked={logsEnabled}
+            onCheckedChange={setDiagnosticsLogsEnabled}
+          />
+        </div>
       </SettingsCard>
     </SettingsTab>
   );
