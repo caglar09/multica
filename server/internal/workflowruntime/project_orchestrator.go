@@ -2170,16 +2170,16 @@ func (r *Runtime) accountProjectTaskUsage(
 	if r.projectStore == nil || !issue.ProjectID.Valid {
 		return false, nil
 	}
-	var nodeKey string
+	var nodeKey, nodeKind string
 	err := r.pool.QueryRow(ctx, `
-		SELECT node_key
+		SELECT node_key, kind
 		FROM autonomous_project_plan_node
 		WHERE workspace_id = $1
 		  AND project_id = $2
 		  AND materialized_issue_id = $3
 		ORDER BY updated_at DESC
 		LIMIT 1
-	`, issue.WorkspaceID, issue.ProjectID, issue.ID).Scan(&nodeKey)
+	`, issue.WorkspaceID, issue.ProjectID, issue.ID).Scan(&nodeKey, &nodeKind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -2187,35 +2187,43 @@ func (r *Runtime) accountProjectTaskUsage(
 		return false, err
 	}
 
-	var tokens, costTicks int64
+	category := usageCategoryForNodeKind(nodeKind)
+	var reviewerTask bool
 	if err := r.pool.QueryRow(ctx, `
-		SELECT
-			COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0)::bigint,
-			COALESCE(SUM(cost_usd_ticks), 0)::bigint
-		FROM task_usage
-		WHERE task_id = $1
-	`, task.ID).Scan(&tokens, &costTicks); err != nil {
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_workflow_run
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND issue_id = $3
+			  AND reviewer_agent_id = $4
+		)
+	`, issue.WorkspaceID, issue.ProjectID, issue.ID, task.AgentID).Scan(&reviewerTask); err != nil {
 		return false, err
 	}
-	var runtimeSeconds int64
-	if task.StartedAt.Valid && task.CompletedAt.Valid && task.CompletedAt.Time.After(task.StartedAt.Time) {
-		runtimeSeconds = int64(task.CompletedAt.Time.Sub(task.StartedAt.Time).Seconds())
+	if reviewerTask {
+		category = projectorchestration.UsageReview
 	}
-	// task_usage cost is stored in 1e-10 USD ticks; Project OS budget uses
-	// micro-USD, so 10,000 ticks = 1 micro-USD. Round up so tiny authoritative
-	// charges are never silently treated as free.
-	costMicrounits := int64(0)
-	if costTicks > 0 {
-		costMicrounits = (costTicks + 9999) / 10000
+
+	usage, err := loadTaskUsageSnapshot(ctx, r.pool, task.ID)
+	if err != nil {
+		return false, err
 	}
-	err = r.projectStore.AccountTaskUsage(
+	err = r.projectStore.AccountTaskUsageDetailed(
 		ctx,
 		issue.WorkspaceID,
 		issue.ProjectID,
 		task.ID,
-		tokens,
-		runtimeSeconds,
-		costMicrounits,
+		projectorchestration.UsageAttribution{
+			Category:         category,
+			InputTokens:      usage.InputTokens,
+			OutputTokens:     usage.OutputTokens,
+			CacheReadTokens:  usage.CacheReadTokens,
+			CacheWriteTokens: usage.CacheWriteTokens,
+			RuntimeSeconds:   usage.RuntimeSeconds,
+			CostUsdTicks:     usage.CostUsdTicks,
+			CostComplete:     usage.CostComplete,
+		},
 	)
 	if err == nil {
 		return false, nil
@@ -2224,6 +2232,9 @@ func (r *Runtime) accountProjectTaskUsage(
 		return false, err
 	}
 
+	tokens := usage.TotalTokens()
+	costMicrounits := usage.CostMicrounits()
+	runtimeSeconds := usage.RuntimeSeconds
 	reason := "project token/runtime/cost budget exceeded after task " + util.UUIDToString(task.ID)
 	_, _ = r.pool.Exec(ctx, `
 		UPDATE autonomous_project_plan_node
@@ -2252,6 +2263,7 @@ func (r *Runtime) accountProjectTaskUsage(
 	contextJSON, _ := json.Marshal(map[string]any{
 		"node_key": nodeKey,
 		"task_id": util.UUIDToString(task.ID),
+		"usage_category": category,
 		"tokens": tokens,
 		"runtime_seconds": runtimeSeconds,
 		"cost_microunits": costMicrounits,

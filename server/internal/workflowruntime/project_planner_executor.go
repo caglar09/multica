@@ -78,6 +78,13 @@ func (e *MikaProjectPlanExecutor) ExecuteProjectPlan(
 	if err != nil {
 		return projectorchestration.RuntimeExecution{}, err
 	}
+	category := controlPlaneUsageCategory(projectorchestration.UsageProjectPlanning, userPrompt)
+	if _, usageErr := accountRuntimeTaskUsage(
+		ctx, e.pool, projectorchestration.NewStore(e.pool),
+		input.WorkspaceID, input.ProjectID, sent.Task.ID, category, 0, false,
+	); usageErr != nil && !errors.Is(usageErr, projectorchestration.ErrBudgetExceeded) {
+		return projectorchestration.RuntimeExecution{}, fmt.Errorf("account project planner usage: %w", usageErr)
+	}
 
 	model := ""
 	if carrier.Model.Valid {

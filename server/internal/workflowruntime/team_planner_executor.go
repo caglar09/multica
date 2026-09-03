@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/teamprovision"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -102,6 +103,13 @@ func (e *MikaTeamPlanExecutor) ExecuteTeamPlan(
 	output, err := e.waitForPlannerTask(ctx, sent.Task.ID)
 	if err != nil {
 		return teamprovision.RuntimePlanExecution{}, err
+	}
+	category := controlPlaneUsageCategory(projectorchestration.UsageTeamPlanning, userPrompt)
+	if _, usageErr := accountRuntimeTaskUsage(
+		ctx, e.pool, projectorchestration.NewStore(e.pool),
+		input.Project.WorkspaceID, input.Project.ID, sent.Task.ID, category, 0, false,
+	); usageErr != nil && !errors.Is(usageErr, projectorchestration.ErrBudgetExceeded) {
+		return teamprovision.RuntimePlanExecution{}, fmt.Errorf("account team planner usage: %w", usageErr)
 	}
 
 	model := ""

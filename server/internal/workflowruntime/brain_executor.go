@@ -68,6 +68,12 @@ func (e *BrainRuntimeExecutor) Execute(ctx context.Context, cfg projectorchestra
 	if err != nil { return BrainRuntimeResult{}, fmt.Errorf("enqueue brain learning task: %w", err) }
 	out, err := e.wait(ctx, sent.Task.ID)
 	if err != nil { return BrainRuntimeResult{}, err }
+	if _, usageErr := accountRuntimeTaskUsage(
+		ctx, e.pool, projectorchestration.NewStore(e.pool),
+		cfg.WorkspaceID, cfg.ProjectID, sent.Task.ID, projectorchestration.UsageBrainLearning, 0, false,
+	); usageErr != nil && !errors.Is(usageErr, projectorchestration.ErrBudgetExceeded) {
+		return BrainRuntimeResult{}, fmt.Errorf("account brain learning usage: %w", usageErr)
+	}
 	model := ""
 	if carrier.Model.Valid { model = strings.TrimSpace(carrier.Model.String) }
 	return BrainRuntimeResult{Output: out, Provider: strings.TrimSpace(runtime.Provider), Model: model}, nil

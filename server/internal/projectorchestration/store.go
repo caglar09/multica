@@ -490,12 +490,24 @@ func seedBrain(ctx context.Context, tx pgx.Tx, workspaceID, projectID, planID pg
 }
 
 func upsertBudget(ctx context.Context, tx pgx.Tx, workspaceID, projectID pgtype.UUID, budget BudgetPolicy) error {
+	// Team/project planning can consume provider quota before the durable plan
+	// (and therefore the budget row) exists. Seed first creation from already
+	// attributed usage so the budget and the report describe the same project
+	// cost from bootstrap onward. Existing budget counters are never reset on a
+	// replan.
 	_, err := tx.Exec(ctx, `
 		INSERT INTO autonomous_project_budget (
 			project_id, workspace_id, token_limit, runtime_seconds_limit,
-			cost_microunits_limit, max_parallel_nodes, max_total_attempts
+			cost_microunits_limit, max_parallel_nodes, max_total_attempts,
+			tokens_used, runtime_seconds_used, cost_microunits_used
 		)
-		VALUES ($1, $2, NULLIF($3, 0), NULLIF($4, 0), NULLIF($5, 0), $6, $7)
+		SELECT
+			$1, $2, NULLIF($3, 0), NULLIF($4, 0), NULLIF($5, 0), $6, $7,
+			COALESCE(SUM(tokens), 0)::bigint,
+			COALESCE(SUM(runtime_seconds), 0)::bigint,
+			COALESCE(SUM(cost_microunits), 0)::bigint
+		FROM autonomous_project_usage_accounting
+		WHERE workspace_id = $2 AND project_id = $1
 		ON CONFLICT (project_id) DO UPDATE
 		SET token_limit = EXCLUDED.token_limit,
 		    runtime_seconds_limit = EXCLUDED.runtime_seconds_limit,
