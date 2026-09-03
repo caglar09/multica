@@ -1171,6 +1171,7 @@ func (r *Runtime) reconcileProjectBlockedNodes(
 	if err != nil {
 		return err
 	}
+blockedNodeLoop:
 	for _, node := range blocked {
 		resolved := false
 		switch node.Category {
@@ -1247,7 +1248,23 @@ func (r *Runtime) reconcileProjectBlockedNodes(
 				} else if loadErr != nil {
 					return loadErr
 				} else {
-					resolved = issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) != issuestatus.Blocked
+					effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+					if effective == issuestatus.Done {
+						// Done is terminal evidence, not an "unblocked" retry
+						// request. The old path resumed the node and immediately
+						// overwrote Done with Todo, which resurrected completed
+						// reviewer work and left the durable workflow Blocked.
+						if err := r.projectStore.CompleteNodeByIssue(ctx, issue.WorkspaceID, issue.ID); err != nil {
+							return err
+						}
+						slog.Info("project conductor completed blocked node from terminal issue",
+							"project_id", util.UUIDToString(projectID),
+							"node", node.Key,
+							"issue_id", node.MaterializedIssueID,
+						)
+						continue blockedNodeLoop
+					}
+					resolved = effective != issuestatus.Blocked
 					if resolved && projectNodeUsesIssueWorkflow(node.Kind) {
 						// A task-level retry may already be executing while the
 						// Project OS node still carries the old technical block.

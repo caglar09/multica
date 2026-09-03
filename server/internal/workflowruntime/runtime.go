@@ -263,10 +263,12 @@ func definition() workflow.Definition {
 			{From: issuestatus.InProgress, Event: "workflow.started", To: issuestatus.InProgress},
 			{From: issuestatus.InProgress, Event: "implementation.completed", To: issuestatus.InReview},
 			{From: issuestatus.InProgress, Event: "implementation.failed", To: issuestatus.Blocked},
+			{From: issuestatus.InProgress, Event: "issue.completed", To: issuestatus.Done},
 			{From: issuestatus.InReview, Event: "review.completed", To: issuestatus.Done},
 			{From: issuestatus.InReview, Event: "review.changes_requested", To: issuestatus.InProgress},
 			{From: issuestatus.InReview, Event: "review.exhausted", To: issuestatus.Blocked},
 			{From: issuestatus.InReview, Event: "review.failed", To: issuestatus.Blocked},
+			{From: issuestatus.InReview, Event: "issue.completed", To: issuestatus.Done},
 			// A human/system task retry is a recovery signal for a run that was
 			// durably blocked by the failed execution. We wait for the retry to
 			// complete before leaving Blocked, so the transition cannot enqueue a
@@ -274,6 +276,15 @@ func definition() workflow.Definition {
 			// retry.
 			{From: issuestatus.Blocked, Event: "implementation.retry_completed", To: issuestatus.InReview},
 			{From: issuestatus.Blocked, Event: "review.retry_completed", To: issuestatus.Done},
+			// Project OS can resume a blocked materialized issue by moving it back
+			// to In Progress. This transition is the missing handoff that lets the
+			// issue workflow leave its durable Blocked state and enqueue a fresh
+			// implementation task instead of remaining deadlocked.
+			{From: issuestatus.Blocked, Event: "issue.retry_requested", To: issuestatus.InProgress},
+			// An explicit terminal issue status is authoritative even if the
+			// workflow was previously blocked. This is also crash-reconcilable
+			// from the durable issue row.
+			{From: issuestatus.Blocked, Event: "issue.completed", To: issuestatus.Done},
 		},
 	}
 }
@@ -650,6 +661,39 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 		if paused {
 			return nil
 		}
+	}
+	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+	if effective == issuestatus.Done {
+		// Issue status is durable user/agent intent. If the process died after
+		// the issue row committed but before issue:updated was published, repair
+		// both the issue workflow and Project OS node from that row.
+		if run.State != issuestatus.Done {
+			result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                fmt.Sprintf("reconcile-issue-completed:%s:%d", run.IssueID, issue.Revision),
+				Type:              "issue.completed",
+				WorkspaceID:       run.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           run.IssueID,
+				AccountableUserID: run.AccountableUserID,
+				Payload:           map[string]any{"status": issue.Status},
+			})
+			if handleErr != nil {
+				return handleErr
+			}
+			if result.Applied {
+				slog.Info("reconciled terminal issue into autonomous workflow",
+					"run_id", run.ID,
+					"issue_id", run.IssueID,
+					"from", run.State,
+				)
+			}
+		}
+		if r.projectStore != nil {
+			if err := r.projectStore.CompleteNodeByIssue(ctx, issue.WorkspaceID, issue.ID); err != nil {
+				return fmt.Errorf("complete reconciled project node from terminal issue: %w", err)
+			}
+		}
+		return nil
 	}
 	// Do not infer review rejection from the current issue row alone. Project OS
 	// and other server-owned projections can also write issue status. The
@@ -1147,9 +1191,38 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		}
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
-	if effective == issuestatus.Done && r.projectStore != nil {
-		if err := r.projectStore.CompleteNodeByIssue(ctx, issue.WorkspaceID, issue.ID); err != nil {
-			return fmt.Errorf("complete autonomous project node from issue: %w", err)
+	if effective == issuestatus.Done {
+		run, exists, findErr := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, snapshot.ID)
+		if findErr != nil {
+			return findErr
+		}
+		if exists && run.State != issuestatus.Done {
+			result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                issueEventID("issue-completed", snapshot),
+				Type:              "issue.completed",
+				WorkspaceID:       event.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           snapshot.ID,
+				ActorType:         event.ActorType,
+				ActorID:           event.ActorID,
+				AccountableUserID: accountableFromEvent(event),
+				Payload:           map[string]any{"status": issue.Status, "previous_status": prevStatus},
+			})
+			if handleErr != nil {
+				return handleErr
+			}
+			if result.Applied {
+				slog.Info("terminal issue status completed autonomous workflow",
+					"run_id", run.ID,
+					"issue_id", snapshot.ID,
+					"from", run.State,
+				)
+			}
+		}
+		if r.projectStore != nil {
+			if err := r.projectStore.CompleteNodeByIssue(ctx, issue.WorkspaceID, issue.ID); err != nil {
+				return fmt.Errorf("complete autonomous project node from issue: %w", err)
+			}
 		}
 		return nil
 	}
@@ -1165,6 +1238,35 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		return err
 	}
 	if exists {
+		if run.State == issuestatus.Blocked {
+			// A Blocked workflow and a now-In-Progress issue is an explicit
+			// resume signal. Project OS reaches this point after it claims a
+			// resumed node; a member/agent can also request the retry directly.
+			// Without this transition the Project OS node can be running while
+			// the issue workflow remains permanently Blocked.
+			result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                issueEventID("issue-retry-requested", snapshot),
+				Type:              "issue.retry_requested",
+				WorkspaceID:       event.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           snapshot.ID,
+				ActorType:         event.ActorType,
+				ActorID:           event.ActorID,
+				AccountableUserID: accountableFromEvent(event),
+				Payload:           map[string]any{"status": issue.Status, "previous_status": prevStatus},
+			})
+			if handleErr != nil {
+				return handleErr
+			}
+			if result.Applied {
+				slog.Info("resumed blocked autonomous workflow from issue status",
+					"run_id", run.ID,
+					"issue_id", snapshot.ID,
+					"actor_type", event.ActorType,
+				)
+			}
+			return nil
+		}
 		if run.State != issuestatus.InReview {
 			return nil
 		}

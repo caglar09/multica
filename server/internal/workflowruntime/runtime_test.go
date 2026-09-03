@@ -25,14 +25,18 @@ func TestSoftwareDevelopmentWorkflowDefinition(t *testing.T) {
 
 	wantTransitions := map[string]string{
 		"in_progress/workflow.started":           "in_progress",
-		"in_progress/implementation.completed":   "in_review",
-		"in_progress/implementation.failed":      "blocked",
+		"in_progress/implementation.completed":    "in_review",
+		"in_progress/implementation.failed":       "blocked",
+		"in_progress/issue.completed":             "done",
 		"in_review/review.completed":              "done",
 		"in_review/review.changes_requested":      "in_progress",
 		"in_review/review.exhausted":              "blocked",
 		"in_review/review.failed":                 "blocked",
-		"blocked/implementation.retry_completed":   "in_review",
-		"blocked/review.retry_completed":           "done",
+		"in_review/issue.completed":               "done",
+		"blocked/implementation.retry_completed":  "in_review",
+		"blocked/review.retry_completed":          "done",
+		"blocked/issue.retry_requested":           "in_progress",
+		"blocked/issue.completed":                 "done",
 	}
 	for _, tr := range def.Transitions {
 		key := tr.From + "/" + tr.Event

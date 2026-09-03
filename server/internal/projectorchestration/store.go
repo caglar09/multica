@@ -1199,7 +1199,7 @@ func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pg
 		SET status = 'completed', completed_at = COALESCE(completed_at, now()), updated_at = now()
 		WHERE workspace_id = $1
 		  AND materialized_issue_id = $2
-		  AND status IN ('running', 'verification')
+		  AND status NOT IN ('completed', 'cancelled')
 	`, workspaceID, issueID)
 	if err != nil {
 		return err
