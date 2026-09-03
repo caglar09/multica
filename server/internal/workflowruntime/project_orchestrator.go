@@ -17,6 +17,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/teamprovision"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/workflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -2280,6 +2281,37 @@ func (r *Runtime) accountProjectTaskUsage(
 		)
 		VALUES ($1, $2, 'budget_exceeded', 'high', $3, $4)
 	`, issue.WorkspaceID, issue.ProjectID, "Project usage budget exceeded: "+nodeKey, contextJSON)
+
+	if r.store != nil && r.engine != nil {
+		run, exists, findErr := r.store.FindRun(
+			ctx, softwareDevelopmentWorkflow, util.UUIDToString(issue.WorkspaceID), util.UUIDToString(issue.ID),
+		)
+		if findErr != nil {
+			return true, findErr
+		}
+		if exists {
+			failureEvent := ""
+			switch run.State {
+			case issuestatus.InProgress:
+				failureEvent = "implementation.failed"
+			case issuestatus.InReview:
+				failureEvent = "review.failed"
+			}
+			if failureEvent != "" {
+				if _, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+					ID:                "budget-exceeded:" + util.UUIDToString(task.ID),
+					Type:              failureEvent,
+					WorkspaceID:       util.UUIDToString(issue.WorkspaceID),
+					ProjectID:         util.UUIDToString(issue.ProjectID),
+					IssueID:           util.UUIDToString(issue.ID),
+					AccountableUserID: util.UUIDToString(task.AccountableUserID),
+					Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "budget_exceeded": true},
+				}); handleErr != nil && !errors.Is(handleErr, workflow.ErrRevisionConflict) {
+					return true, handleErr
+				}
+			}
+		}
+	}
 	_, _ = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked)
 	return true, nil
 }

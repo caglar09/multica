@@ -225,14 +225,17 @@ func definition() workflow.Definition {
 		InitialState: issuestatus.InProgress,
 		States: map[string]workflow.State{
 			issuestatus.InProgress: {
-				OnEnter: []workflow.Action{{
-					Type: "trigger_agent",
-					Params: map[string]string{
-						"selector":   "owner",
-						"when_state": issuestatus.InProgress,
-						"instructions": "Implement or revise the issue against its acceptance criteria and the structured handoff. Do not change issue status, route work, mention another agent, or encode workflow decisions in prose. Your FINAL response must be exactly one JSON object with keys: summary (string), decisions (string[]), artifacts ({type,ref,description}[]), changed_files (string[]), commit_sha (string), diff (string), tests ({name,status,evidence}[] where status is passed|failed|skipped|not_run), findings ({id,severity,category,description,evidence,blocking}[]), risks (string[]), blockers (string[]). No markdown fence or surrounding prose.",
+				OnEnter: []workflow.Action{
+					{Type: "set_issue_status", Params: map[string]string{"status": issuestatus.InProgress, "when_state": issuestatus.InProgress}},
+					{
+						Type: "trigger_agent",
+						Params: map[string]string{
+							"selector":   "owner",
+							"when_state": issuestatus.InProgress,
+							"instructions": "Implement or revise the issue against its acceptance criteria and the structured handoff. Do not change issue status, route work, mention another agent, or encode workflow decisions in prose. Your FINAL response must be exactly one JSON object with keys: summary (string), decisions (string[]), artifacts ({type,ref,description}[]), changed_files (string[]), commit_sha (string), diff (string), tests ({name,status,evidence}[] where status is passed|failed|skipped|not_run), findings ({id,severity,category,description,evidence,blocking}[]), risks (string[]), blockers (string[]). No markdown fence or surrounding prose.",
+						},
 					},
-				}},
+				},
 			},
 			issuestatus.InReview: {
 				OnEnter: []workflow.Action{
@@ -1461,6 +1464,30 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		}
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+
+	// While a durable run is In Review, issue status is a projection only; it
+	// must never be interpreted as reviewer intent. The only review decision
+	// channel is the persisted structured verdict produced on task completion.
+	// Server-owned transitions update the workflow run first, so their later
+	// status projection observes the new run state and is not reverted here.
+	guardRun, guardExists, guardErr := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, snapshot.ID)
+	if guardErr != nil {
+		return guardErr
+	}
+	if guardExists && guardRun.State == issuestatus.InReview && effective != issuestatus.InReview {
+		if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.InReview); err != nil {
+			return fmt.Errorf("restore review status after non-verdict mutation: %w", err)
+		}
+		slog.Info("ignored issue status mutation while awaiting structured review verdict",
+			"run_id", guardRun.ID,
+			"issue_id", snapshot.ID,
+			"requested_status", issue.Status,
+			"actor_type", event.ActorType,
+			"actor_id", event.ActorID,
+		)
+		return nil
+	}
+
 	if effective == issuestatus.Done {
 		run, exists, findErr := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, snapshot.ID)
 		if findErr != nil {
@@ -1537,53 +1564,11 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 			}
 			return nil
 		}
-		if run.State != issuestatus.InReview {
-			return nil
-		}
-		if prevStatus == "" {
-			return nil
-		}
-		prevEffective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, prevStatus)
-		if prevEffective != issuestatus.InReview {
-			return nil
-		}
-		if isSystemStatusProjection(event) {
-			// Project OS board projection and workflow actions use the server-owned
-			// status path (ActorType=system). They are not reviewer intent. Reassert
-			// In Review immediately so a later reviewer completion cannot be
-			// misclassified as "changes requested".
-			if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.InReview); err != nil {
-				return fmt.Errorf("restore review status after system projection: %w", err)
-			}
-			slog.Info("ignored system-owned in_review -> in_progress projection",
-				"run_id", run.ID,
-				"issue_id", snapshot.ID,
-			)
-			return nil
-		}
-
-		eventType := "review.changes_requested"
-		if run.ReviewCycles >= r.config.MaxReviewCycles {
-			eventType = "review.exhausted"
-		}
-		if eventType == "review.changes_requested" {
-			run, err = r.refreshRunTeam(ctx, run, issue, accountableFromEvent(event))
-			if err != nil {
-				return fmt.Errorf("refresh team before review retry: %w", err)
-			}
-		}
-		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
-			ID:                issueEventID("review-change", snapshot),
-			Type:              eventType,
-			WorkspaceID:       event.WorkspaceID,
-			ProjectID:         util.UUIDToString(issue.ProjectID),
-			IssueID:           snapshot.ID,
-			ActorType:         event.ActorType,
-			ActorID:           event.ActorID,
-			AccountableUserID: accountableFromEvent(event),
-			Payload:           map[string]any{"status": issue.Status, "previous_status": prevStatus},
-		})
-		return err
+		// No status-based review inference remains. InProgress reached through a
+		// structured changes_requested verdict has already changed run.State before
+		// the status projection event arrives; any other InReview mutation was
+		// restored by the guard above.
+		return nil
 	}
 
 	ownerID, reviewerID, err := r.resolveTeam(ctx, issue, pgtype.UUID{})

@@ -42,6 +42,14 @@ func TestImplementationHandoffContract(t *testing.T) {
 	}
 }
 
+func TestWorkflowDefinitionProjectsInProgressStatus(t *testing.T) {
+	def := definition()
+	actions := def.States["in_progress"].OnEnter
+	if len(actions) < 2 || actions[0].Type != "set_issue_status" || actions[0].Params["status"] != "in_progress" {
+		t.Fatalf("in_progress must project backend-owned status before dispatch: %#v", actions)
+	}
+}
+
 func TestWorkflowDefinitionUsesStructuredVerdictContract(t *testing.T) {
 	def := definition()
 	if def.Version < 2 {
