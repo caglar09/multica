@@ -111,9 +111,9 @@ func (s *Store) ClaimBrainLearning(ctx context.Context, lease time.Duration) (Br
 	_, err = tx.Exec(ctx, `
 		UPDATE autonomous_project_brain_learning_job
 		SET status='running', attempts=attempts+1, lease_token=$2,
-		    lease_expires_at=now()+$3::interval, updated_at=now()
+		    lease_expires_at=now()+make_interval(secs => $3), updated_at=now()
 		WHERE id=$1
-	`, j.ID, token, lease.String())
+	`, j.ID, token, int(lease.Seconds()))
 	if err != nil { return BrainLearningJob{}, false, err }
 	if err := tx.Commit(ctx); err != nil { return BrainLearningJob{}, false, err }
 	j.Attempts++
