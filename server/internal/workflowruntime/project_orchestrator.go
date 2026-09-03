@@ -841,6 +841,63 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		return err
 	}
 
+	// Repair the other half of the durable state projection: a node can commit
+	// completed/cancelled and the process can die before its issue status write.
+	// Completed nodes are excluded from ListPlanNodes, so normal scheduling will
+	// never revisit that gap. Repair it here from the authoritative latest plan.
+	terminalRows, err := r.pool.Query(ctx, `
+		SELECT n.materialized_issue_id, n.status, i.status
+		FROM autonomous_project_plan_node n
+		JOIN issue i ON i.id = n.materialized_issue_id
+		WHERE n.plan_id = $1
+		  AND n.materialized_issue_id IS NOT NULL
+		  AND n.status IN ('completed','cancelled')
+	`, latestPlanID)
+	if err != nil {
+		return fmt.Errorf("query terminal project issue projections: %w", err)
+	}
+	type terminalProjection struct {
+		issueID   pgtype.UUID
+		nodeState string
+		issueState string
+	}
+	terminal := make([]terminalProjection, 0, 16)
+	for terminalRows.Next() {
+		var item terminalProjection
+		if err := terminalRows.Scan(&item.issueID, &item.nodeState, &item.issueState); err != nil {
+			terminalRows.Close()
+			return err
+		}
+		terminal = append(terminal, item)
+	}
+	if err := terminalRows.Err(); err != nil {
+		terminalRows.Close()
+		return err
+	}
+	terminalRows.Close()
+	for _, item := range terminal {
+		effective := issuestatus.Effective(ctx, r.taskSvc.Queries, workspaceID, item.issueState)
+		switch item.nodeState {
+		case "completed":
+			if effective == issuestatus.Done || effective == issuestatus.Cancelled {
+				continue
+			}
+			if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, item.issueID, issuestatus.Done); err != nil {
+				return fmt.Errorf("repair completed project issue %s: %w", util.UUIDToString(item.issueID), err)
+			}
+		case "cancelled":
+			if effective == issuestatus.Cancelled {
+				continue
+			}
+			if err := r.taskSvc.CancelTasksForIssue(ctx, item.issueID); err != nil {
+				return fmt.Errorf("cancel tasks for cancelled project node issue %s: %w", util.UUIDToString(item.issueID), err)
+			}
+			if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, item.issueID, issuestatus.Cancelled); err != nil {
+				return fmt.Errorf("repair cancelled project issue %s: %w", util.UUIDToString(item.issueID), err)
+			}
+		}
+	}
+
 	// Escalations attached to a node that is already terminal are stale even
 	// when they predate this repair code. Close them before evaluating plan
 	// history so an old technical failure cannot keep a recovered project in
@@ -880,10 +937,11 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		WHERE e.node_id = n.id
 		  AND e.workspace_id = $1
 		  AND e.project_id = $2
-		  AND p.status = 'superseded'
+		  AND p.id <> $3
+		  AND p.status IN ('superseded','completed')
 		  AND e.status IN ('open','acknowledged')
-	`, workspaceID, projectID, latestRevision); err != nil {
-		return fmt.Errorf("resolve superseded project escalations: %w", err)
+	`, workspaceID, projectID, latestPlanID, latestRevision); err != nil {
+		return fmt.Errorf("resolve historical project escalations: %w", err)
 	}
 
 	rows, err := r.pool.Query(ctx, `
@@ -893,7 +951,7 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		JOIN issue i ON i.id = n.materialized_issue_id
 		WHERE p.workspace_id = $1
 		  AND p.project_id = $2
-		  AND p.status = 'superseded'
+		  AND p.status IN ('superseded','completed')
 		  AND p.id <> $3
 		  AND NOT EXISTS (
 		      SELECT 1
@@ -959,7 +1017,6 @@ func (r *Runtime) reconcileAllSupersededProjectIssues(ctx context.Context) error
 	rows, err := r.pool.Query(ctx, `
 		SELECT DISTINCT workspace_id, project_id
 		FROM autonomous_project_plan
-		WHERE status = 'superseded'
 		ORDER BY project_id
 		LIMIT 200
 	`)
