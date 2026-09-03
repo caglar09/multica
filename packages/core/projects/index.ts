@@ -29,4 +29,5 @@ export {
   useConfirmAutonomousTeam,
   useRetryAutonomousAction,
   useResolveAutonomousEscalation,
+  useUpdateAutonomousBrain,
 } from "./autonomous";
