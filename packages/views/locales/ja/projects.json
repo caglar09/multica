@@ -70,6 +70,7 @@
     "prop_start_date": "開始日",
     "prop_due_date": "期限",
     "prop_directory": "プロジェクトフォルダ",
+    "project_folder_pending": "最初のローカルタスクが開始すると、プロジェクトフォルダが表示されます。",
     "no_start_date": "開始日なし",
     "no_due_date": "期限なし",
     "description_placeholder": "説明を追加...",
