@@ -358,6 +358,7 @@ export type {
   AutonomousProjectPlanSnapshot,
   AutonomousQualityGate,
   AutonomousEscalation,
+  AutonomousDiagnostic,
   AutonomousBudget,
   AutonomousBrainRuntimeMode,
   AutonomousBrainLearningMode,
