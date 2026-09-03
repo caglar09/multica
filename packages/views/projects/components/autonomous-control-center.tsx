@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import type {
   AutonomousActivityItem,
   AutonomousDecision,
+  AutonomousDiagnostic,
   AutonomousProjectSnapshot,
   AutonomousRoleRuntimeAssignment,
   UpdateAutonomousBrainConfig,
@@ -734,6 +735,107 @@ function WorkflowCard({
   );
 }
 
+function DiagnosticCard({
+  diagnostic,
+  canControl,
+  pending,
+  onRepair,
+  onResume,
+  onReplan,
+  onRetryAction,
+}: {
+  diagnostic: AutonomousDiagnostic;
+  canControl: boolean;
+  pending: boolean;
+  onRepair: () => void;
+  onResume: () => void;
+  onReplan: () => void;
+  onRetryAction: (actionId: string) => void;
+}) {
+  const variant =
+    diagnostic.severity === "error"
+      ? "destructive"
+      : diagnostic.severity === "warning"
+        ? "secondary"
+        : "outline";
+
+  const action = diagnostic.resume_action;
+  const actionable =
+    canControl &&
+    diagnostic.can_resume &&
+    ((action === "retry_action" && Boolean(diagnostic.action_id)) ||
+      action === "restart_workflow" ||
+      action === "resume_project" ||
+      action === "replan");
+
+  const actionLabel =
+    action === "retry_action"
+      ? "Retry action"
+      : action === "resume_project"
+        ? "Resume project"
+        : action === "replan"
+          ? "Replan"
+          : action === "restart_workflow"
+            ? "Repair & continue"
+            : "";
+
+  const runAction = () => {
+    switch (action) {
+      case "retry_action":
+        if (diagnostic.action_id) onRetryAction(diagnostic.action_id);
+        break;
+      case "resume_project":
+        onResume();
+        break;
+      case "replan":
+        onReplan();
+        break;
+      case "restart_workflow":
+        onRepair();
+        break;
+    }
+  };
+
+  return (
+    <div className="rounded-lg border bg-surface p-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={variant}>{diagnostic.severity}</Badge>
+            <span className="font-medium">{diagnostic.title}</span>
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {diagnostic.code}
+            </span>
+          </div>
+          <p className="mt-1 text-body text-muted-foreground">
+            {diagnostic.detail}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2 text-caption text-muted-foreground">
+            {diagnostic.node_key ? (
+              <span className="font-mono">node: {diagnostic.node_key}</span>
+            ) : null}
+            {diagnostic.issue_title ? <span>· {diagnostic.issue_title}</span> : null}
+            <span>· {formatRelative(diagnostic.updated_at)}</span>
+          </div>
+        </div>
+        {actionable && actionLabel ? (
+          <Button
+            variant={diagnostic.severity === "error" ? "default" : "outline"}
+            size="sm"
+            disabled={pending}
+            onClick={runAction}
+          >
+            <RotateCcw className={cn(pending && "animate-spin")} />
+            {actionLabel}
+          </Button>
+        ) : action === "resolve_escalation" ? (
+          <Badge variant="outline">Resolve approval below</Badge>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function ActivityRow({
   item,
   onOpenIssue,
@@ -1173,9 +1275,26 @@ export function AutonomousControlCenter({
   const handleRestartWorkflow = () => {
     restartWorkflow.mutate(projectId, {
       onSuccess: () =>
-        toast.success("Workflow restarted and durable task state reconciled"),
-      onError: () => toast.error("Could not restart autonomous workflow"),
+        toast.success("Autonomous state repaired; eligible work is continuing"),
+      onError: () => toast.error("Could not repair and continue autonomous work"),
     });
+  };
+
+  const handleResumeProject = () => {
+    resume.mutate(projectId, {
+      onSuccess: () => toast.success("Autonomous project resumed"),
+      onError: () => toast.error("Could not resume autonomous project"),
+    });
+  };
+
+  const handleRetryDiagnosticAction = (actionId: string) => {
+    retryAction.mutate(
+      { projectId, actionId },
+      {
+        onSuccess: () => toast.success("Workflow action queued for retry"),
+        onError: () => toast.error("Could not retry workflow action"),
+      },
+    );
   };
 
   const handleConfirmTeam = (
@@ -1234,10 +1353,10 @@ export function AutonomousControlCenter({
                   size="sm"
                   onClick={handleRestartWorkflow}
                   disabled={controlMutationPending}
-                  title="Replay durable issue/task state and recover expired workflow actions without creating a new project plan"
+                  title="Repair stale plan ownership, replay durable workflow/task state, recompute readiness, and resume eligible work without creating a new plan"
                 >
                   <RotateCcw className={cn(restartWorkflow.isPending && "animate-spin")} />
-                  {restartWorkflow.isPending ? "Restarting…" : "Restart workflow"}
+                  {restartWorkflow.isPending ? "Repairing…" : "Repair & continue"}
                 </Button>
                 <Button
                   variant="outline"
@@ -1285,6 +1404,46 @@ export function AutonomousControlCenter({
           </div>
         ) : null}
 
+        {(data.diagnostics?.length ?? 0) > 0 ? (
+          <Card className="mb-4">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <AlertTriangle className="size-4" />
+                Why work is waiting
+              </CardTitle>
+              <CardDescription>
+                Deterministic diagnostics from the current plan, workflow, task,
+                dependency, retry and escalation state. Repairable states can be
+                continued directly from here.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {data.diagnostics.map((diagnostic) => (
+                <DiagnosticCard
+                  key={[
+                    diagnostic.code,
+                    diagnostic.node_key ?? "",
+                    diagnostic.issue_id ?? "",
+                    diagnostic.action_id ?? "",
+                    diagnostic.updated_at,
+                  ].join(":")}
+                  diagnostic={diagnostic}
+                  canControl={canControl}
+                  pending={
+                    controlMutationPending ||
+                    retryAction.isPending ||
+                    resolveEscalation.isPending
+                  }
+                  onRepair={handleRestartWorkflow}
+                  onResume={handleResumeProject}
+                  onReplan={handleReplan}
+                  onRetryAction={handleRetryDiagnosticAction}
+                />
+              ))}
+            </CardContent>
+          </Card>
+        ) : null}
+
         <Tabs defaultValue="overview" className="min-h-0">
           <TabsList variant="line" className="mb-4 max-w-full overflow-x-auto">
             <TabsTrigger value="overview">
@@ -1328,9 +1487,14 @@ export function AutonomousControlCenter({
                 icon={<Workflow className="size-4" />}
               />
               <MetricCard
-                title="Failed actions"
-                value={data.health.failed_actions}
-                description="Durable orchestration actions"
+                title="Waiting / attention"
+                value={data.health.waiting}
+                description={
+                  String(data.health.resumable) +
+                  " resumable · " +
+                  String(data.health.failed_actions) +
+                  " failed actions"
+                }
                 icon={<AlertTriangle className="size-4" />}
               />
               <MetricCard
@@ -1661,6 +1825,12 @@ export function AutonomousControlCenter({
                                 <div>
                                   {node.attempt}/{node.max_attempts}
                                 </div>
+                                {(node.issue_status || node.workflow_state) ? (
+                                  <div className="mt-0.5 text-muted-foreground">
+                                    issue {node.issue_status ?? "—"} · workflow{" "}
+                                    {node.workflow_state ?? "—"}
+                                  </div>
+                                ) : null}
                               </div>
                               <div>
                                 <span className="text-muted-foreground">
@@ -1673,6 +1843,19 @@ export function AutonomousControlCenter({
                                 </div>
                               </div>
                             </div>
+                            {node.blocked_reason ? (
+                              <div className="mt-3 rounded-md border border-destructive/20 bg-destructive/5 p-2.5 text-caption">
+                                <div className="font-medium">
+                                  Why blocked
+                                  {node.blocked_category
+                                    ? " · " + node.blocked_category
+                                    : ""}
+                                </div>
+                                <div className="mt-0.5 text-muted-foreground">
+                                  {node.blocked_reason}
+                                </div>
+                              </div>
+                            ) : null}
                             {node.acceptance_criteria.length > 0 ? (
                               <div className="mt-3">
                                 <div className="text-caption font-medium text-muted-foreground">
