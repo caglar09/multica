@@ -1892,10 +1892,18 @@ func (r *Runtime) accountProjectTaskUsage(
 		    blocked_category = 'budget',
 		    blocked_reason = $4,
 		    updated_at = now()
-		WHERE workspace_id = $1
-		  AND project_id = $2
-		  AND materialized_issue_id = $3
-		  AND status NOT IN ('completed', 'cancelled')
+		WHERE id = (
+			SELECT n.id
+			FROM autonomous_project_plan_node n
+			JOIN autonomous_project_plan p ON p.id = n.plan_id
+			WHERE n.workspace_id = $1
+			  AND n.project_id = $2
+			  AND n.materialized_issue_id = $3
+			  AND n.status NOT IN ('completed', 'cancelled')
+			  AND p.status IN ('active', 'blocked')
+			ORDER BY p.revision DESC, n.updated_at DESC
+			LIMIT 1
+		)
 	`, issue.WorkspaceID, issue.ProjectID, issue.ID, reason)
 	_, _ = r.pool.Exec(ctx, `
 		UPDATE autonomous_project_plan
@@ -1923,11 +1931,13 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 	var nodeID, planID pgtype.UUID
 	var kind string
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, plan_id, kind
-		FROM autonomous_project_plan_node
-		WHERE workspace_id = $1
-		  AND materialized_issue_id = $2
-		ORDER BY updated_at DESC
+		SELECT n.id, n.plan_id, n.kind
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.workspace_id = $1
+		  AND n.materialized_issue_id = $2
+		  AND p.status IN ('active', 'blocked')
+		ORDER BY p.revision DESC, n.updated_at DESC
 		LIMIT 1
 	`, issue.WorkspaceID, issue.ID).Scan(&nodeID, &planID, &kind)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -2240,7 +2250,16 @@ func (r *Runtime) syncBlockedProjectNode(
 			    blocked_category = 'technical_failure',
 			    blocked_reason = 'issue workflow blocked before project retry',
 			    updated_at = now()
-			WHERE workspace_id = $1 AND materialized_issue_id = $2
+			WHERE id = (
+				SELECT n.id
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				WHERE n.workspace_id = $1
+				  AND n.materialized_issue_id = $2
+				  AND p.status IN ('active', 'blocked')
+				ORDER BY p.revision DESC, n.updated_at DESC
+				LIMIT 1
+			)
 		`, issue.WorkspaceID, issue.ID)
 	}
 	if nodeKey == "" {
