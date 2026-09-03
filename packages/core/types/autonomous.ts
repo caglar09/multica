@@ -161,6 +161,8 @@ export interface AutonomousProjectHealth {
   active_workflows: number;
   blocked: number;
   failed_actions: number;
+  waiting: number;
+  resumable: number;
 }
 
 export type AutonomousBrainRuntimeMode = "inherit_mika" | "custom";
@@ -205,6 +207,10 @@ export interface AutonomousProjectPlanNode {
   materialized_issue_id: string | null;
   attempt: number;
   max_attempts: number;
+  blocked_category: string | null;
+  blocked_reason: string | null;
+  issue_status: string | null;
+  workflow_state: string | null;
   acceptance_criteria: string[];
   updated_at: string;
 }
@@ -260,6 +266,27 @@ export interface AutonomousEscalation {
   resolved_at: string | null;
 }
 
+export interface AutonomousDiagnostic {
+  code: string;
+  severity: "info" | "warning" | "error" | string;
+  title: string;
+  detail: string;
+  node_key?: string;
+  issue_id?: string;
+  issue_title?: string;
+  action_id?: string;
+  resume_action?:
+    | "restart_workflow"
+    | "resume_project"
+    | "replan"
+    | "retry_action"
+    | "resolve_escalation"
+    | string;
+  can_resume: boolean;
+  metadata?: Record<string, unknown>;
+  updated_at: string;
+}
+
 export interface AutonomousBudget {
   token_limit: number | null;
   runtime_seconds_limit: number | null;
@@ -288,6 +315,7 @@ export interface AutonomousProjectSnapshot {
   plan: AutonomousProjectPlanSnapshot | null;
   quality_gates: AutonomousQualityGate[];
   escalations: AutonomousEscalation[];
+  diagnostics: AutonomousDiagnostic[];
   budget: AutonomousBudget | null;
   brain: AutonomousBrainConfig | null;
 }
