@@ -80,7 +80,7 @@ func (e *BrainRuntimeExecutor) ensureCarrier(ctx context.Context, cfg projectorc
 	defer tx.Rollback(ctx)
 	q := e.taskSvc.Queries.WithTx(tx)
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-		"autonomous-project-brain:"+util.UUIDToString(cfg.ProjectID)); err != nil { return db.Agent{}, db.AgentRuntime{}, err }
+		"autonomous-project-brain:"+util.UUIDToString(cfg.WorkspaceID)); err != nil { return db.Agent{}, db.AgentRuntime{}, err }
 
 	mika, err := q.GetAgentBySystemKey(ctx, db.GetAgentBySystemKeyParams{
 		WorkspaceID: cfg.WorkspaceID,
