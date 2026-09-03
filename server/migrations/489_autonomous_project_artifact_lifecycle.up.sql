@@ -23,5 +23,5 @@ SET status = 'invalid',
         FROM autonomous_project_plan_node n
         WHERE n.id = a.node_id
     ), 1)
-WHERE a.created_at < now()
-  AND NOT (a.content ? 'contract');
+WHERE COALESCE(a.content #>> '{contract,status}', '') = 'invalid'
+   OR COALESCE((a.content #>> '{contract,valid}')::boolean, TRUE) = FALSE;

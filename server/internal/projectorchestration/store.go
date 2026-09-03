@@ -903,7 +903,8 @@ func (s *Store) SetNodeBlocked(
 		return errors.New("project orchestration store is not configured")
 	}
 	switch category {
-	case "dependency", "approval", "external_dependency", "technical_failure", "budget", "manual":
+	case "dependency", "approval", "external_dependency", "technical_failure", "budget", "manual",
+		"no_eligible_agent", "merge_conflict", "stale_base", "quality_policy":
 	default:
 		return fmt.Errorf("unsupported project node block category %q", category)
 	}
@@ -1410,6 +1411,16 @@ func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pg
 			  AND n.materialized_issue_id = $2
 			  AND n.status NOT IN ('completed', 'cancelled')
 			  AND p.status IN ('active', 'blocked')
+			  AND NOT EXISTS (
+			      SELECT 1
+			      FROM autonomous_project_quality_gate_run q
+			      WHERE q.workspace_id = n.workspace_id
+			        AND q.project_id = n.project_id
+			        AND q.node_id = n.id
+			        AND q.required = TRUE
+			        AND q.evidence ->> 'policy_requirement' = 'true'
+			        AND q.status <> 'passed'
+			  )
 			ORDER BY p.revision DESC, n.updated_at DESC
 			LIMIT 1
 		)
@@ -1676,6 +1687,16 @@ func (s *Store) CompleteExternalNode(
 			  AND n.node_key = $3
 			  AND n.status = 'running'
 			  AND p.status IN ('active','blocked')
+			  AND NOT EXISTS (
+			      SELECT 1
+			      FROM autonomous_project_quality_gate_run q
+			      WHERE q.workspace_id = n.workspace_id
+			        AND q.project_id = n.project_id
+			        AND q.node_id = n.id
+			        AND q.required = TRUE
+			        AND q.evidence ->> 'policy_requirement' = 'true'
+			        AND q.status <> 'passed'
+			  )
 			ORDER BY p.revision DESC
 			LIMIT 1
 		)

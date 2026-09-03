@@ -1399,6 +1399,9 @@ func (r *Runtime) startReadyProjectNode(
 	if err := r.enforceProjectNodePolicy(ctx, workspaceID, projectID, node); err != nil {
 		return err
 	}
+	if err := r.ensureNodeQualityPolicy(ctx, workspaceID, projectID, node); err != nil {
+		return fmt.Errorf("seed node quality policy: %w", err)
+	}
 	switch node.Kind {
 	case projectorchestration.NodeDeploy:
 		if r.deploymentAdapter == nil {
@@ -2413,9 +2416,10 @@ func (r *Runtime) accountProjectTaskUsage(
 
 func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) (bool, error) {
 	var nodeID, planID pgtype.UUID
-	var kind string
+	var kind, nodeKey string
+	var specRevision int64
 	err := r.pool.QueryRow(ctx, `
-		SELECT n.id, n.plan_id, n.kind
+		SELECT n.id, n.plan_id, n.node_key, n.kind, n.spec_revision
 		FROM autonomous_project_plan_node n
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		WHERE n.workspace_id = $1
@@ -2423,7 +2427,7 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 		  AND p.status IN ('active', 'blocked')
 		ORDER BY p.revision DESC, n.updated_at DESC
 		LIMIT 1
-	`, issue.WorkspaceID, issue.ID).Scan(&nodeID, &planID, &kind)
+	`, issue.WorkspaceID, issue.ID).Scan(&nodeID, &planID, &nodeKey, &kind, &specRevision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -2437,38 +2441,116 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			taskResult = map[string]any{"raw": string(task.Result)}
 		}
 	}
+	artifactType := projectArtifactType(projectorchestration.NodeKind(kind))
+	var reviewerTask bool
+	_ = r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM autonomous_workflow_run
+			WHERE workspace_id=$1 AND project_id=$2 AND issue_id=$3
+			  AND reviewer_agent_id=$4
+		)
+	`, issue.WorkspaceID, issue.ProjectID, issue.ID, task.AgentID).Scan(&reviewerTask)
+	if reviewerTask {
+		artifactType = "review"
+	}
+
+	valid := len(task.Result) > 0
+	validationError := ""
+	if !valid {
+		validationError = "task result is empty"
+	} else if reviewerTask {
+		if _, parseErr := parseReviewVerdict(task.Result); parseErr != nil {
+			valid = false
+			validationError = parseErr.Error()
+		}
+	} else if projectNodeUsesIssueWorkflow(projectorchestration.NodeKind(kind)) {
+		if _, parseErr := parseImplementationHandoff(task.Result); parseErr != nil {
+			valid = false
+			validationError = parseErr.Error()
+		}
+	}
+
 	artifactPayload := map[string]any{
 		"task_id": util.UUIDToString(task.ID),
 		"agent_id": util.UUIDToString(task.AgentID),
 		"issue_id": util.UUIDToString(issue.ID),
+		"spec_revision": specRevision,
 		"result": taskResult,
 	}
 	content, _ := json.Marshal(artifactPayload)
-	artifactType := projectArtifactType(projectorchestration.NodeKind(kind))
-	if _, err := r.pool.Exec(ctx, `
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var artifactID pgtype.UUID
+	status := "active"
+	if !valid {
+		status = "invalid"
+	}
+	err = tx.QueryRow(ctx, `
 		INSERT INTO autonomous_project_artifact (
 			workspace_id, project_id, plan_id, node_id, artifact_type,
-			name, content, producer_agent_id
+			name, content, producer_agent_id, status, valid, validation_error,
+			artifact_revision
 		)
-		SELECT $1, $2, $3, $4, $5, $6, $7, $8
+		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''),$12
 		WHERE NOT EXISTS (
-			SELECT 1
-			FROM autonomous_project_artifact
-			WHERE workspace_id = $1
-			  AND project_id = $2
-			  AND node_id = $4
-			  AND content ->> 'task_id' = $9
+			SELECT 1 FROM autonomous_project_artifact
+			WHERE workspace_id=$1 AND project_id=$2 AND node_id=$4
+			  AND content ->> 'task_id' = $13
 		)
+		RETURNING id
 	`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, artifactType,
-		"Task result: "+issue.Title, content, task.AgentID, util.UUIDToString(task.ID)); err != nil {
+		"Task result: "+issue.Title, content, task.AgentID, status, valid,
+		validationError, specRevision, util.UUIDToString(task.ID)).Scan(&artifactID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, tx.Commit(ctx)
+	}
+	if err != nil {
 		return false, fmt.Errorf("record project task artifact: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_artifact
+		SET status='superseded', superseded_by=$5
+		WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
+		  AND artifact_type=$4 AND id<>$5 AND status='active'
+	`, issue.WorkspaceID, issue.ProjectID, nodeID, artifactType, artifactID); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+
+	if !valid {
+		if !projectNodeUsesIssueWorkflow(projectorchestration.NodeKind(kind)) {
+			if r.projectStore != nil {
+				_ = r.projectStore.SetNodeBlocked(ctx, issue.WorkspaceID, issue.ProjectID, nodeKey, "quality_policy", validationError)
+			}
+			_, _ = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked)
+			contextJSON, _ := json.Marshal(map[string]any{
+				"node_id": util.UUIDToString(nodeID), "issue_id": util.UUIDToString(issue.ID),
+				"artifact_type": artifactType, "error": validationError,
+			})
+			_, _ = r.pool.Exec(ctx, `
+				INSERT INTO autonomous_project_escalation (
+					workspace_id, project_id, plan_id, node_id, category, severity, summary, context
+				) VALUES ($1,$2,$3,$4,'contract_violation','high',$5,$6)
+			`, issue.WorkspaceID, issue.ProjectID, planID, nodeID,
+				"Artifact contract validation failed: "+issue.Title, contextJSON)
+			return true, nil
+		}
+		// Issue-workflow structured contracts are handled by the workflow
+		// completion path; keep the invalid artifact as durable evidence.
+		return false, nil
 	}
 
 	if brainType := projectBrainEntryType(projectorchestration.NodeKind(kind)); brainType != "" {
 		brainContent, _ := json.Marshal(map[string]any{
-			"artifact_type": artifactType,
-			"task_id": util.UUIDToString(task.ID),
-			"issue_id": util.UUIDToString(issue.ID),
+			"artifact_type": artifactType, "artifact_id": util.UUIDToString(artifactID),
+			"task_id": util.UUIDToString(task.ID), "issue_id": util.UUIDToString(issue.ID),
 			"result": taskResult,
 		})
 		if _, err := r.pool.Exec(ctx, `
@@ -2477,113 +2559,20 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 				subject, content, source_type, source_id, confidence,
 				created_by_type, created_by_id
 			)
-			SELECT $1, $2, $3, $4, $5, $6, $7,
-			       'artifact', $8, 0.9, 'agent', $9
+			SELECT $1,$2,$3,$4,$5,$6,$7,'artifact',$8,0.9,'agent',$9
 			WHERE NOT EXISTS (
-				SELECT 1
-				FROM autonomous_project_brain_entry
-				WHERE workspace_id = $1
-				  AND project_id = $2
-				  AND source_type = 'artifact'
-				  AND source_id = $8
-				  AND entry_type = $5
+				SELECT 1 FROM autonomous_project_brain_entry
+				WHERE workspace_id=$1 AND project_id=$2
+				  AND source_type='artifact' AND source_id=$8 AND entry_type=$5
 			)
 		`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, brainType,
-			issue.Title, brainContent, util.UUIDToString(task.ID), task.AgentID); err != nil {
+			issue.Title, brainContent, util.UUIDToString(artifactID), task.AgentID); err != nil {
 			return false, fmt.Errorf("record project brain artifact knowledge: %w", err)
 		}
 	}
 
-	gateType := projectQualityGateType(projectorchestration.NodeKind(kind))
-	if gateType == "" {
-		return false, nil
-	}
-
-	gateStatus := "passed"
-	gateError := ""
-	gateEvidence := map[string]any{
-		"task_id": util.UUIDToString(task.ID),
-		"artifact_type": artifactType,
-		"mode": "semantic_task_completion",
-	}
-	if r.qualityGateRunner != nil {
-		result, runErr := r.qualityGateRunner.Run(ctx, projectorchestration.QualityGateRequest{
-			WorkspaceID: issue.WorkspaceID,
-			ProjectID: issue.ProjectID,
-			PlanID: planID,
-			NodeID: nodeID,
-			IssueID: issue.ID,
-			GateType: gateType,
-			Artifact: artifactPayload,
-		})
-		gateEvidence = map[string]any{
-			"task_id": util.UUIDToString(task.ID),
-			"artifact_type": artifactType,
-			"mode": "deterministic_runner",
-			"runner_evidence": result.Evidence,
-		}
-		if runErr != nil {
-			gateStatus = "failed"
-			gateError = runErr.Error()
-		} else if !result.Passed {
-			gateStatus = "failed"
-			gateError = strings.TrimSpace(result.Error)
-			if gateError == "" {
-				gateError = "deterministic quality gate failed"
-			}
-		}
-	}
-	evidenceJSON, _ := json.Marshal(gateEvidence)
-	if _, err := r.pool.Exec(ctx, `
-		INSERT INTO autonomous_project_quality_gate_run (
-			workspace_id, project_id, plan_id, node_id, gate_type,
-			status, required, evidence, attempt, last_error, started_at, completed_at
-		)
-		SELECT $1, $2, $3, $4, $5, $6, TRUE, $7, 1, NULLIF($8, ''), now(), now()
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM autonomous_project_quality_gate_run
-			WHERE workspace_id = $1
-			  AND project_id = $2
-			  AND node_id = $4
-			  AND gate_type = $5
-			  AND evidence ->> 'task_id' = $9
-		)
-	`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, gateType, gateStatus,
-		evidenceJSON, gateError, util.UUIDToString(task.ID)); err != nil {
-		return false, fmt.Errorf("record project quality evidence: %w", err)
-	}
-	if gateStatus == "passed" {
-		return false, nil
-	}
-
-	if r.projectStore == nil {
-		return true, errors.New(gateError)
-	}
-	disposition, nodeKey, projectID, failErr := r.projectStore.FailNodeByIssue(
-		ctx, issue.WorkspaceID, issue.ID, "quality gate "+gateType+" failed: "+gateError,
-	)
-	if failErr != nil {
-		return true, failErr
-	}
-	if disposition == projectorchestration.FailureBlocked {
-		_, _ = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked)
-		contextJSON, _ := json.Marshal(map[string]any{
-			"node_key": nodeKey,
-			"issue_id": util.UUIDToString(issue.ID),
-			"gate_type": gateType,
-			"error": gateError,
-		})
-		_, _ = r.pool.Exec(ctx, `
-			INSERT INTO autonomous_project_escalation (
-				workspace_id, project_id, category, severity, summary, context
-			)
-			VALUES ($1, $2, 'technical_failure', 'high', $3, $4)
-		`, issue.WorkspaceID, projectID, "Deterministic quality gate exhausted retry budget: "+nodeKey, contextJSON)
-	}
-	return true, nil
+	return r.runTaskQualityIfRequired(ctx, task, issue, artifactType, artifactPayload)
 }
-
 func projectArtifactType(kind projectorchestration.NodeKind) string {
 	switch kind {
 	case projectorchestration.NodeProduct:
