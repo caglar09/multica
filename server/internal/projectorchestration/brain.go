@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 type BrainConfig struct {
@@ -106,7 +107,7 @@ func (s *Store) ClaimBrainLearning(ctx context.Context, lease time.Duration) (Br
 	if errors.Is(err, pgx.ErrNoRows) { return BrainLearningJob{}, false, nil }
 	if err != nil { return BrainLearningJob{}, false, err }
 	j.Evidence = append(json.RawMessage(nil), raw...)
-	token := pgtype.UUID{Bytes: util.NewUUID(), Valid: true}
+	token := dbid.NewV7()
 	_, err = tx.Exec(ctx, `
 		UPDATE autonomous_project_brain_learning_job
 		SET status='running', attempts=attempts+1, lease_token=$2,
