@@ -3,6 +3,7 @@ package workflowruntime
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -59,6 +60,19 @@ func TestIssueEventIDIncludesRevisionAndStatus(t *testing.T) {
 	want := "workflow-start:issue-1:42:in_progress"
 	if got != want {
 		t.Fatalf("issueEventID = %q, want %q", got, want)
+	}
+}
+
+func TestBlockedFailureRecoveryLookbackIncludesCausalFailure(t *testing.T) {
+	blockedAt := time.Date(2026, 9, 3, 17, 13, 41, 866686000, time.UTC)
+	failedAt := time.Date(2026, 9, 3, 17, 13, 41, 850356000, time.UTC) // 16.33ms before blocked write
+
+	since := blockedAt.Add(-blockedFailureRecoveryLookback)
+	if failedAt.Before(since) {
+		t.Fatalf("causal failure %s fell before recovery floor %s", failedAt, since)
+	}
+	if stale := blockedAt.Add(-2 * time.Minute); !stale.Before(since) {
+		t.Fatalf("stale failure %s unexpectedly falls inside recovery lookback starting %s", stale, since)
 	}
 }
 
