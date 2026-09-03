@@ -155,6 +155,66 @@ func normalizeBrainKey(v string) string {
 	return strings.Trim(b.String(), ".")
 }
 
+
+type RecalledMemory struct {
+	CanonicalKey string
+	Type         string
+	Subject      string
+	Content      string
+	Confidence   float64
+	Importance   float64
+}
+
+func (s *Store) RecallMemories(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	query string,
+	limit int,
+	maxChars int,
+) ([]RecalledMemory, error) {
+	if s == nil || s.pool == nil || !workspaceID.Valid || !projectID.Valid {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 50 { limit = 12 }
+	if maxChars <= 0 || maxChars > 64000 { maxChars = 12000 }
+	query = strings.TrimSpace(query)
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT COALESCE(canonical_key,''), entry_type, subject, content::text,
+		       COALESCE(confidence,0), importance
+		FROM autonomous_project_brain_entry
+		WHERE workspace_id=$1 AND project_id=$2
+		  AND status='active' AND superseded_by IS NULL
+		ORDER BY
+		  CASE WHEN $3 <> '' AND (
+		    lower(subject) LIKE '%' || lower($3) || '%' OR
+		    lower(content::text) LIKE '%' || lower($3) || '%'
+		  ) THEN 0 ELSE 1 END,
+		  importance DESC,
+		  confirmation_count DESC,
+		  confidence DESC NULLS LAST,
+		  COALESCE(last_confirmed_at, created_at) DESC
+		LIMIT $4
+	`, workspaceID, projectID, query, limit)
+	if err != nil { return nil, err }
+	defer rows.Close()
+
+	out := make([]RecalledMemory, 0, limit)
+	used := 0
+	for rows.Next() {
+		var m RecalledMemory
+		if err := rows.Scan(&m.CanonicalKey,&m.Type,&m.Subject,&m.Content,&m.Confidence,&m.Importance); err != nil {
+			return nil, err
+		}
+		remaining := maxChars - used
+		if remaining <= 0 { break }
+		if len(m.Content) > remaining { m.Content = m.Content[:remaining] }
+		used += len(m.Content)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) RetainMemory(ctx context.Context, workspaceID, projectID pgtype.UUID, candidate MemoryCandidate, sourceType, sourceID string) error {
 	if s == nil || s.pool == nil { return errors.New("project brain store is not configured") }
 	key := normalizeBrainKey(candidate.CanonicalKey)
