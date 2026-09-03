@@ -74,7 +74,7 @@ import {
 import { useT } from "../../i18n";
 import { useProjectStatusLabels, useProjectPriorityLabels } from "./labels";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
-import { isDesktopShell, openLocalDirectory } from "../../platform/local-directory";
+import { openLocalDirectory } from "../../platform/local-directory";
 import { useLocalDaemonStatus } from "../../platform/use-local-daemon-status";
 
 // ---------------------------------------------------------------------------
@@ -152,14 +152,22 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const localProjectDirectory = useMemo(() => {
-    if (!project || !localDaemon.daemonId) return undefined;
-    return project.working_directories?.find(
-      (directory) => directory.daemon_id === localDaemon.daemonId,
-    );
+    const directories = project?.working_directories ?? [];
+    if (directories.length === 0) return undefined;
+    if (localDaemon.daemonId) {
+      const onThisMachine = directories.find(
+        (directory) => directory.daemon_id === localDaemon.daemonId,
+      );
+      if (onThisMachine) return onThisMachine;
+    }
+    // Browser/self-host mode may not have resolved the local daemon yet. The
+    // backend returns newest-per-daemon order, so keep the folder visible
+    // immediately and let the loopback daemon validate/open it on click.
+    return directories[0];
   }, [project, localDaemon.daemonId]);
 
   const handleOpenProjectDirectory = useCallback(async () => {
-    if (!localProjectDirectory || !isDesktopShell()) return;
+    if (!localProjectDirectory) return;
     const result = await openLocalDirectory(localProjectDirectory.path);
     if (!result.ok) {
       toast.error(
@@ -452,29 +460,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           <PropRow label={t(($) => $.detail.prop_due_date)}>
             <ProjectDueDatePicker dueDate={project.due_date} onUpdate={handleUpdateField} />
           </PropRow>
-          {localProjectDirectory && isDesktopShell() && (
-            <PropRow label={t(($) => $.detail.prop_directory)}>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      onClick={() => void handleOpenProjectDirectory()}
-                      className="flex min-w-0 items-center gap-1.5 text-left text-caption hover:text-foreground transition-colors"
-                    />
-                  }
-                >
-                  <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 truncate font-mono" title={localProjectDirectory.path}>
-                    {localProjectDirectory.path}
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top" align="start" className="max-w-md break-all">
-                  {t(($) => $.resources.local_open_tooltip)}
-                </TooltipContent>
-              </Tooltip>
-            </PropRow>
-          )}
         </div>}
       </div>
 
@@ -529,6 +514,38 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             {t(($) => $.detail.description_hint)}
           </p>
         </div>}
+      </div>
+
+      {/* Project folder */}
+      <div>
+        <div className="mb-2 flex items-center gap-1 rounded-md px-2 py-1 text-caption font-medium">
+          {t(($) => $.detail.prop_directory)}
+        </div>
+        {localProjectDirectory ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  onClick={() => void handleOpenProjectDirectory()}
+                  className="group flex w-full items-start gap-2 rounded-md border bg-muted/15 px-2.5 py-2 text-left transition-colors hover:bg-accent/60"
+                />
+              }
+            >
+              <FolderOpen className="mt-0.5 size-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
+              <span className="min-w-0 break-all font-mono text-[11px] leading-4 text-muted-foreground group-hover:text-foreground">
+                {localProjectDirectory.path}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" align="start">
+              {t(($) => $.resources.local_open_tooltip)}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <div className="px-2 text-caption text-muted-foreground">
+            {t(($) => $.detail.project_folder_pending)}
+          </div>
+        )}
       </div>
 
       {/* Resources */}
