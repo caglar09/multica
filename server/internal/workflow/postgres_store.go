@@ -260,7 +260,24 @@ func (s *PostgresStore) ListActiveRuns(ctx context.Context, limit int) ([]Run, e
 	if limit <= 0 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, "SELECT "+runColumns+" FROM autonomous_workflow_run WHERE state IN ('in_progress', 'in_review', 'blocked') ORDER BY updated_at ASC LIMIT $1", limit)
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+runColumns+`
+		FROM autonomous_workflow_run wr
+		WHERE wr.state IN ('in_progress', 'in_review')
+		   OR (
+			wr.state = 'blocked'
+			AND EXISTS (
+				SELECT 1
+				FROM agent_task_queue t
+				WHERE t.issue_id = wr.issue_id
+				  AND (t.retry_of_task_id IS NOT NULL OR t.rerun_of_task_id IS NOT NULL)
+				  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'completed')
+				  AND COALESCE(t.completed_at, t.created_at) > wr.updated_at
+			)
+		   )
+		ORDER BY wr.updated_at ASC
+		LIMIT $1
+	`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list active workflow runs: %w", err)
 	}
