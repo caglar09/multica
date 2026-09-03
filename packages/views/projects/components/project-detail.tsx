@@ -613,7 +613,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             </Button>
           </div>
 
-          <div className="min-h-0 flex-1">
+          <div className="flex h-full min-h-0 flex-1 flex-col">
             {contentView === "issues" ? (
               <IssueSurface
                 scope={issueScope}
