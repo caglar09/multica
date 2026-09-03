@@ -536,10 +536,12 @@ func (r *Runtime) processRequestedReplans(ctx context.Context) error {
 	for _, item := range requests {
 		revision := item.requestedAt.UTC().Format(time.RFC3339Nano)
 		planCtx, cancel := context.WithTimeout(ctx, autonomousPlanningTimeout)
+		// "Replan team" is intentionally scoped to staffing only. Replacing the
+		// Project OS plan here superseded the active DAG, created fresh unbound
+		// nodes and caused the scheduler to materialize duplicate Todo issues.
+		// Project-plan replanning must be an explicit, separate operation with
+		// state/issue carry-forward semantics.
 		_, _, replanErr := r.team.ReconcileProject(planCtx, item.workspaceID, item.projectID, revision)
-		if replanErr == nil && r.projectPlanner != nil && r.projectStore != nil {
-			replanErr = r.planProjectRevision(planCtx, item.workspaceID, item.projectID, "replan:"+revision)
-		}
 		cancel()
 		if replanErr != nil {
 			message := replanErr.Error()
