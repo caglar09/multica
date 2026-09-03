@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   deleteProject: vi.fn(),
   getShareableUrl: vi.fn((path: string) => `https://app.example${path}`),
   push: vi.fn(),
+  replace: vi.fn(),
   recordVisit: vi.fn(),
   toastSuccess: vi.fn(),
 }));
@@ -234,6 +235,10 @@ vi.mock("../../issues/surface/issue-surface", () => ({
   IssueSurface: () => <div data-testid="project-issue-surface" />,
 }));
 
+vi.mock("./autonomous-control-center", () => ({
+  AutonomousControlCenter: () => <div data-testid="autonomous-control-center" />,
+}));
+
 vi.mock("../../layout/breadcrumb-header", () => ({
   BreadcrumbHeader: ({ actions }: { actions: React.ReactNode }) => (
     <header>{actions}</header>
@@ -275,14 +280,14 @@ const PROJECT: Project = {
   resource_count: 0,
 };
 
-function renderProjectDetail() {
+function renderProjectDetail(search = "", hash = "") {
   const adapter: NavigationAdapter = {
     push: mocks.push,
-    replace: vi.fn(),
+    replace: mocks.replace,
     back: vi.fn(),
     pathname: "/test-workspace/projects/project-1",
-    searchParams: new URLSearchParams(),
-    hash: "",
+    searchParams: new URLSearchParams(search),
+    hash,
     getShareableUrl: mocks.getShareableUrl,
   };
 
@@ -299,8 +304,40 @@ beforeEach(() => {
   mocks.deleteProject.mockReset();
   mocks.getShareableUrl.mockClear();
   mocks.push.mockReset();
+  mocks.replace.mockReset();
   mocks.recordVisit.mockReset();
   mocks.toastSuccess.mockReset();
+});
+
+describe("ProjectDetail content tabs", () => {
+  it("restores the Autonomous tab from the URL", () => {
+    renderProjectDetail("tab=autonomous");
+
+    expect(screen.getByTestId("autonomous-control-center")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-issue-surface")).not.toBeInTheDocument();
+  });
+
+  it("stores the Autonomous tab in the URL while preserving existing location state", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("filter=open", "#workflow");
+
+    await user.click(screen.getByRole("button", { name: "Autonomous" }));
+
+    expect(mocks.replace).toHaveBeenCalledWith(
+      "/test-workspace/projects/project-1?filter=open&tab=autonomous#workflow",
+    );
+  });
+
+  it("removes the tab parameter when returning to Issues", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("filter=open&tab=autonomous", "#workflow");
+
+    await user.click(screen.getByRole("button", { name: "Issues" }));
+
+    expect(mocks.replace).toHaveBeenCalledWith(
+      "/test-workspace/projects/project-1?filter=open#workflow",
+    );
+  });
 });
 
 describe("ProjectDetail issue surface layout", () => {
