@@ -1704,7 +1704,7 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 			project_id, workspace_id, paused, paused_at, paused_by, updated_at
 		)
 		VALUES ($1, $2, $3, CASE WHEN $3 THEN now() ELSE NULL END,
-		        CASE WHEN $3 THEN $4 ELSE NULL END, now())
+		        CASE WHEN $3 THEN $4::uuid ELSE NULL::uuid END, now())
 		ON CONFLICT (project_id) DO UPDATE
 		SET workspace_id = EXCLUDED.workspace_id,
 		    paused = EXCLUDED.paused,
