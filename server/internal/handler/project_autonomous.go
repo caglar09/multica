@@ -1654,7 +1654,8 @@ func (h *Handler) UpdateProjectAutonomousBrainConfig(w http.ResponseWriter, r *h
 		)
 		VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),$9,$10,now())
 		ON CONFLICT (project_id) DO UPDATE
-		SET enabled=EXCLUDED.enabled,
+		SET workspace_id=EXCLUDED.workspace_id,
+		    enabled=EXCLUDED.enabled,
 		    runtime_mode=EXCLUDED.runtime_mode,
 		    runtime_id=EXCLUDED.runtime_id,
 		    model=EXCLUDED.model,
@@ -1663,7 +1664,6 @@ func (h *Handler) UpdateProjectAutonomousBrainConfig(w http.ResponseWriter, r *h
 		    learning_mode=EXCLUDED.learning_mode,
 		    updated_by=EXCLUDED.updated_by,
 		    updated_at=now()
-		WHERE autonomous_project_brain_config.workspace_id=EXCLUDED.workspace_id
 	`, projectID, workspaceID, req.Enabled, req.RuntimeMode, runtimeID,
 		strings.TrimSpace(req.Model), strings.TrimSpace(req.ThinkingLevel),
 		strings.TrimSpace(req.ServiceTier), req.LearningMode, userUUID)
@@ -1706,11 +1706,11 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 		VALUES ($1, $2, $3, CASE WHEN $3 THEN now() ELSE NULL END,
 		        CASE WHEN $3 THEN $4 ELSE NULL END, now())
 		ON CONFLICT (project_id) DO UPDATE
-		SET paused = EXCLUDED.paused,
+		SET workspace_id = EXCLUDED.workspace_id,
+		    paused = EXCLUDED.paused,
 		    paused_at = CASE WHEN EXCLUDED.paused THEN now() ELSE NULL END,
 		    paused_by = CASE WHEN EXCLUDED.paused THEN EXCLUDED.paused_by ELSE NULL END,
 		    updated_at = now()
-		WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
 	`, projectID, workspaceID, paused, userUUID)
 	if err != nil {
 		slog.Error("autonomous project control update failed",
@@ -1723,12 +1723,12 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		slog.Error("autonomous project control ownership mismatch",
+		slog.Error("autonomous project control update affected no rows",
 			"workspace_id", uuidToString(workspaceID),
 			"project_id", uuidToString(projectID),
 			"paused", paused,
 		)
-		writeError(w, http.StatusConflict, "autonomous project control belongs to a different workspace; repair project ownership before continuing")
+		writeError(w, http.StatusConflict, "autonomous project control changed concurrently; refresh and try again")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"paused": paused})
@@ -1968,12 +1968,12 @@ func (h *Handler) ReplanProjectAutonomous(w http.ResponseWriter, r *http.Request
 		)
 		VALUES ($1, $2, now(), $3, NULL, NULL, now())
 		ON CONFLICT (project_id) DO UPDATE
-		SET replan_requested_at = now(),
+		SET workspace_id = EXCLUDED.workspace_id,
+		    replan_requested_at = now(),
 		    replan_requested_by = EXCLUDED.replan_requested_by,
 		    replan_completed_at = NULL,
 		    last_error = NULL,
 		    updated_at = now()
-		WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
 	`, projectID, workspaceID, userUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to request autonomous team replan")
