@@ -651,8 +651,6 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 			return nil
 		}
 	}
-	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
-
 	// Do not infer review rejection from the current issue row alone. Project OS
 	// and other server-owned projections can also write issue status. The
 	// realtime issue event carries actor provenance, and a terminal reviewer task
