@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -114,6 +115,116 @@ type activeRepoCheckoutTask struct {
 	AgentID     string
 	AgentName   string
 	WorkDir     string
+}
+
+const defaultLocalUIOriginPrefix = "http://localhost:"
+const defaultLocalUIIPOriginPrefix = "http://127.0.0.1:"
+
+// allowLocalUIOrigin deliberately grants browser access only to loopback-hosted
+// Multica UIs. Remote web pages must never be able to ask the local daemon to
+// reveal filesystem locations. Requests without Origin are CLI/native callers
+// and continue to work as before.
+func allowLocalUIOrigin(w http.ResponseWriter, r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	allowed := strings.HasPrefix(origin, defaultLocalUIOriginPrefix) ||
+		strings.HasPrefix(origin, defaultLocalUIIPOriginPrefix)
+	if !allowed {
+		return false
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Vary", "Origin")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	return true
+}
+
+type openManagedDirectoryRequest struct {
+	Path string `json:"path"`
+}
+
+// openManagedDirectory resolves and reveals a daemon-owned task directory in
+// the host OS file manager. The requested directory MUST live below
+// WorkspacesRoot after symlink resolution; browser callers cannot use this
+// endpoint to open arbitrary files or user directories.
+func (d *Daemon) openManagedDirectory(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("path is required")
+	}
+	root, err := filepath.Abs(d.cfg.WorkspacesRoot)
+	if err != nil {
+		return fmt.Errorf("resolve workspaces root: %w", err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve workspaces root symlinks: %w", err)
+	}
+	candidate, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve path: %w", err)
+	}
+	candidate, err = filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return fmt.Errorf("resolve path symlinks: %w", err)
+	}
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return errors.New("path is outside daemon managed workspaces")
+	}
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("path is not a directory")
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", candidate)
+	case "windows":
+		cmd = exec.Command("explorer.exe", candidate)
+	default:
+		cmd = exec.Command("xdg-open", candidate)
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
+func (d *Daemon) openManagedDirectoryHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !allowLocalUIOrigin(w, r) {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req openManagedDirectoryRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if err := d.openManagedDirectory(req.Path); err != nil {
+			d.logger.Warn("open managed directory rejected", "error", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -381,6 +492,7 @@ func (d *Daemon) shutdownHandler() http.HandlerFunc {
 func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt time.Time) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", d.healthHandler(startedAt))
+	mux.HandleFunc("/open-directory", d.openManagedDirectoryHandler())
 	mux.HandleFunc("/shutdown", d.shutdownHandler())
 	mux.HandleFunc("/repo/checkout", d.repoCheckoutHandler())
 
