@@ -231,7 +231,7 @@ vi.mock("./project-due-date-picker", () => ({
 }));
 
 vi.mock("../../issues/surface/issue-surface", () => ({
-  IssueSurface: () => null,
+  IssueSurface: () => <div data-testid="project-issue-surface" />,
 }));
 
 vi.mock("../../layout/breadcrumb-header", () => ({
@@ -301,6 +301,17 @@ beforeEach(() => {
   mocks.push.mockReset();
   mocks.recordVisit.mockReset();
   mocks.toastSuccess.mockReset();
+});
+
+describe("ProjectDetail issue surface layout", () => {
+  it("provides a full-height flex column for the project issue surface", () => {
+    renderProjectDetail();
+
+    const surface = screen.getByTestId("project-issue-surface");
+    const layout = surface.parentElement;
+
+    expect(layout).toHaveClass("flex", "h-full", "min-h-0", "flex-1", "flex-col");
+  });
 });
 
 describe("ProjectDetail sharing", () => {
