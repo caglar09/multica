@@ -1719,7 +1719,12 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 			"paused", paused,
 			"error", err,
 		)
-		writeError(w, http.StatusInternalServerError, "failed to update autonomous project control")
+		writeErrorCode(
+			w,
+			http.StatusInternalServerError,
+			"autonomous_control_persist_failed",
+			"autonomous project pause state could not be persisted",
+		)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -2011,10 +2016,34 @@ func (h *Handler) RestartProjectAutonomousWorkflow(w http.ResponseWriter, r *htt
 			"project_id", uuidToString(projectID),
 			"error", err,
 		)
-		writeError(w, http.StatusInternalServerError, "failed to restart autonomous project workflow")
+		code, message := autonomousRepairFailureCode(err)
+		writeErrorCode(w, http.StatusInternalServerError, code, message)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"restarted": true})
+}
+
+func autonomousRepairFailureCode(err error) (string, string) {
+	if err == nil {
+		return "autonomous_repair_failed", "autonomous project repair failed"
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "repair autonomous project ownership before restart"):
+		return "autonomous_repair_ownership_failed", "repair could not reconcile stale project-plan ownership"
+	case strings.Contains(message, "release expired autonomous workflow action leases"):
+		return "autonomous_repair_action_lease_failed", "repair could not release an expired workflow action"
+	case strings.Contains(message, "query project workflows for restart"):
+		return "autonomous_repair_workflow_state_failed", "repair could not read the project's workflow state"
+	case strings.Contains(message, "query unstarted project workflows for restart"):
+		return "autonomous_repair_unstarted_state_failed", "repair could not inspect project issues that have no workflow run"
+	case strings.Contains(message, "refresh project readiness after restart"):
+		return "autonomous_repair_readiness_failed", "repair could not recompute project dependency readiness"
+	case strings.Contains(message, "resume project scheduling after restart"):
+		return "autonomous_repair_scheduling_failed", "repair could not resume the project scheduler"
+	default:
+		return "autonomous_repair_failed", "autonomous project repair failed"
+	}
 }
 
 func (h *Handler) RetryProjectAutonomousAction(w http.ResponseWriter, r *http.Request) {
