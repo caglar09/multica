@@ -841,6 +841,28 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		return err
 	}
 
+	// Escalations attached to a node that is already terminal are stale even
+	// when they predate this repair code. Close them before evaluating plan
+	// history so an old technical failure cannot keep a recovered project in
+	// Attention forever.
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_project_escalation e
+		SET status = 'resolved',
+		    resolution = jsonb_build_object(
+		        'decision', 'auto_resolved',
+		        'reason', 'node_terminal'
+		    ),
+		    resolved_at = now()
+		FROM autonomous_project_plan_node n
+		WHERE e.node_id = n.id
+		  AND e.workspace_id = $1
+		  AND e.project_id = $2
+		  AND n.status IN ('completed','cancelled')
+		  AND e.status IN ('open','acknowledged')
+	`, workspaceID, projectID); err != nil {
+		return fmt.Errorf("resolve terminal-node project escalations: %w", err)
+	}
+
 	// Escalations attached to superseded nodes are historical evidence, not
 	// current operator work. Resolve them durably so recovered projects do not
 	// stay in Attention because of a failure from an obsolete revision.
