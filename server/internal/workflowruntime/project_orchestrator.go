@@ -1104,65 +1104,97 @@ func (r *Runtime) processProjectScheduling(ctx context.Context) error {
 	rows.Close()
 
 	for _, project := range projects {
-		// Evaluate unblock conditions before projecting node state back to the
-		// board. Otherwise a human/condition resolver moving a technical block
-		// out of Blocked would be overwritten before the conductor could see it.
-		if err := r.reconcileProjectBlockedNodes(ctx, project.workspaceID, project.projectID); err != nil {
-			slog.Warn("project conductor blocked-node reconciliation failed",
-				"project_id", util.UUIDToString(project.projectID), "error", err)
+		if err := r.processProjectSchedulingForProject(ctx, project.workspaceID, project.projectID); err != nil {
+			slog.Warn("project conductor scheduling pass failed",
+				"project_id", util.UUIDToString(project.projectID),
+				"error", err,
+			)
 		}
+	}
+	return nil
+}
 
-		// Board projection is intentionally eager: every issue-backed DAG node
-		// becomes visible as soon as the plan exists. Execution is a separate
-		// claim below, so pending dependencies stay parked in Backlog.
-		planned, err := r.projectStore.ListPlanNodes(ctx, project.workspaceID, project.projectID, 200)
-		if err != nil {
-			slog.Warn("project conductor plan projection failed",
-				"project_id", util.UUIDToString(project.projectID), "error", err)
+func (r *Runtime) processProjectSchedulingForProject(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) error {
+	if r.projectStore == nil || r.issueSvc == nil || r.team == nil {
+		return nil
+	}
+	paused, err := r.isProjectPaused(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("check project pause state: %w", err)
+	}
+	if paused {
+		return nil
+	}
+	var schedulable bool
+	if err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND status IN ('active','blocked')
+		)
+	`, workspaceID, projectID).Scan(&schedulable); err != nil {
+		return fmt.Errorf("check schedulable project plan: %w", err)
+	}
+	if !schedulable {
+		return nil
+	}
+
+	// Evaluate unblock conditions before projecting node state back to the
+	// board. Otherwise a human/condition resolver moving a technical block
+	// out of Blocked would be overwritten before the conductor could see it.
+	if err := r.reconcileProjectBlockedNodes(ctx, workspaceID, projectID); err != nil {
+		slog.Warn("project conductor blocked-node reconciliation failed",
+			"project_id", util.UUIDToString(projectID), "error", err)
+	}
+
+	// Board projection is intentionally eager: every issue-backed DAG node
+	// becomes visible as soon as the plan exists. Execution is a separate
+	// claim below, so pending dependencies stay parked in Backlog.
+	planned, err := r.projectStore.ListPlanNodes(ctx, workspaceID, projectID, 200)
+	if err != nil {
+		return fmt.Errorf("list project plan nodes: %w", err)
+	}
+	materialized := false
+	for _, node := range planned {
+		if node.Kind == projectorchestration.NodeDeploy || node.Kind == projectorchestration.NodeObserve {
 			continue
 		}
-		materialized := false
-		for _, node := range planned {
-			if node.Kind == projectorchestration.NodeDeploy || node.Kind == projectorchestration.NodeObserve {
+		if node.MaterializedIssueID == "" {
+			if err := r.ensureProjectNodeIssue(ctx, workspaceID, projectID, node); err != nil {
+				if escalationErr := r.openProjectEscalation(ctx, workspaceID, projectID, node.ReadyNode, err); escalationErr != nil {
+					slog.Warn("project conductor materialization escalation failed",
+						"project_id", util.UUIDToString(projectID), "node", node.Key, "error", escalationErr)
+				}
 				continue
 			}
-			if node.MaterializedIssueID == "" {
-				if err := r.ensureProjectNodeIssue(ctx, project.workspaceID, project.projectID, node); err != nil {
-					if escalationErr := r.openProjectEscalation(ctx, project.workspaceID, project.projectID, node.ReadyNode, err); escalationErr != nil {
-						slog.Warn("project conductor materialization escalation failed",
-							"project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", escalationErr)
-					}
-					continue
-				}
-				materialized = true
-				continue
-			}
-			if err := r.syncProjectNodeBoardState(ctx, project.workspaceID, node); err != nil {
-				slog.Warn("project conductor board projection failed",
-					"project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", err)
-			}
-		}
-		// Give newly materialized plan issues one reconciliation interval as a
-		// stable board projection before dispatching them. This also avoids a
-		// create/backlog -> in_progress transition racing the issue-created
-		// event on slow clients.
-		if materialized {
+			materialized = true
 			continue
 		}
+		if err := r.syncProjectNodeBoardState(ctx, workspaceID, node); err != nil {
+			slog.Warn("project conductor board projection failed",
+				"project_id", util.UUIDToString(projectID), "node", node.Key, "error", err)
+		}
+	}
+	if materialized {
+		return nil
+	}
 
-		ready, err := r.projectStore.ListReadyNodes(ctx, project.workspaceID, project.projectID, 20)
-		if err != nil {
-			slog.Warn("project scheduler readiness failed", "project_id", util.UUIDToString(project.projectID), "error", err)
-			continue
-		}
-		for _, node := range ready {
-			if err := r.startReadyProjectNode(ctx, project.workspaceID, project.projectID, node); err != nil {
-				if escalationErr := r.openProjectEscalation(ctx, project.workspaceID, project.projectID, node, err); escalationErr != nil {
-					slog.Warn("project scheduler escalation failed", "project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", escalationErr)
-				}
-				if blockErr := r.blockProjectNodeForSchedulingCause(ctx, project.workspaceID, project.projectID, node, err); blockErr != nil {
-					slog.Warn("project scheduler block projection failed", "project_id", util.UUIDToString(project.projectID), "node", node.Key, "error", blockErr)
-				}
+	ready, err := r.projectStore.ListReadyNodes(ctx, workspaceID, projectID, 20)
+	if err != nil {
+		return fmt.Errorf("list project ready nodes: %w", err)
+	}
+	for _, node := range ready {
+		if err := r.startReadyProjectNode(ctx, workspaceID, projectID, node); err != nil {
+			if escalationErr := r.openProjectEscalation(ctx, workspaceID, projectID, node, err); escalationErr != nil {
+				slog.Warn("project scheduler escalation failed", "project_id", util.UUIDToString(projectID), "node", node.Key, "error", escalationErr)
+			}
+			if blockErr := r.blockProjectNodeForSchedulingCause(ctx, workspaceID, projectID, node, err); blockErr != nil {
+				slog.Warn("project scheduler block projection failed", "project_id", util.UUIDToString(projectID), "node", node.Key, "error", blockErr)
 			}
 		}
 	}
