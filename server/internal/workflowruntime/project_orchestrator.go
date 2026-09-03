@@ -512,7 +512,14 @@ func (r *Runtime) processDiscoveredProjectWork(ctx context.Context) error {
 			FROM autonomous_project_plan p
 			WHERE p.workspace_id = i.workspace_id
 			  AND p.project_id = i.project_id
-			  AND p.status IN ('active', 'blocked')
+			  AND p.status IN ('active', 'blocked', 'completed')
+			  AND NOT EXISTS (
+			      SELECT 1
+			      FROM autonomous_project_plan newer
+			      WHERE newer.workspace_id = p.workspace_id
+			        AND newer.project_id = p.project_id
+			        AND newer.revision > p.revision
+			  )
 		  )
 		  AND NOT EXISTS (
 			SELECT 1
@@ -599,12 +606,23 @@ func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issu
 	if err != nil {
 		return err
 	}
-	if !exists || (stored.Status != "active" && stored.Status != "blocked") {
-		return errors.New("active autonomous project plan unavailable")
+	if !exists {
+		return errors.New("autonomous project plan unavailable")
 	}
 	planID, err := util.ParseUUID(stored.ID)
 	if err != nil {
 		return err
+	}
+	if stored.Status == "completed" {
+		if err := r.projectStore.ResumeCompletedPlanForDiscoveredWork(
+			ctx, issue.WorkspaceID, issue.ProjectID, planID,
+		); err != nil {
+			return fmt.Errorf("resume completed project for discovered work: %w", err)
+		}
+		stored.Status = "active"
+	}
+	if stored.Status != "active" && stored.Status != "blocked" {
+		return errors.New("active autonomous project plan unavailable")
 	}
 
 	issueKey := strings.ReplaceAll(util.UUIDToString(issue.ID), "-", "")
