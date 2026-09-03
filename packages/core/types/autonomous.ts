@@ -275,11 +275,13 @@ export interface AutonomousDiagnostic {
   issue_id?: string;
   issue_title?: string;
   action_id?: string;
+  task_id?: string;
   resume_action?:
     | "restart_workflow"
     | "resume_project"
     | "replan"
     | "retry_action"
+    | "rerun_issue"
     | "resolve_escalation"
     | string;
   can_resume: boolean;
