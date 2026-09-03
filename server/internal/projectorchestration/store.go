@@ -581,9 +581,18 @@ func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
 			                  WHERE a.plan_id = e.plan_id
 			                    AND a.node_id = dep.id
 			                    AND a.artifact_type = e.required_artifact_type
-			                    AND COALESCE(a.content #>> '{contract,status}', '') = 'active'
-			                    AND COALESCE((a.content #>> '{contract,valid}')::boolean, FALSE)
-			                    AND COALESCE((a.content #>> '{contract,spec_revision}')::bigint, 0) = dep.spec_revision
+			                    AND a.status = 'active'
+			                    AND a.valid = TRUE
+			                    AND a.artifact_revision = dep.spec_revision
+			                    AND a.id = (
+			                        SELECT latest.id
+			                        FROM autonomous_project_artifact latest
+			                        WHERE latest.plan_id = e.plan_id
+			                          AND latest.node_id = dep.id
+			                          AND latest.artifact_type = e.required_artifact_type
+			                        ORDER BY latest.created_at DESC, latest.id DESC
+			                        LIMIT 1
+			                    )
 			              )
 			          )
 			      )
@@ -1027,9 +1036,18 @@ func (s *Store) ResumeBlockedNode(
 			                  WHERE a.plan_id = e.plan_id
 			                    AND a.node_id = dep.id
 			                    AND a.artifact_type = e.required_artifact_type
-			                    AND COALESCE(a.content #>> '{contract,status}', '') = 'active'
-			                    AND COALESCE((a.content #>> '{contract,valid}')::boolean, FALSE)
-			                    AND COALESCE((a.content #>> '{contract,spec_revision}')::bigint, 0) = dep.spec_revision
+			                    AND a.status = 'active'
+			                    AND a.valid = TRUE
+			                    AND a.artifact_revision = dep.spec_revision
+			                    AND a.id = (
+			                        SELECT latest.id
+			                        FROM autonomous_project_artifact latest
+			                        WHERE latest.plan_id = e.plan_id
+			                          AND latest.node_id = dep.id
+			                          AND latest.artifact_type = e.required_artifact_type
+			                        ORDER BY latest.created_at DESC, latest.id DESC
+			                        LIMIT 1
+			                    )
 			              )
 			          )
 			      )
@@ -1153,9 +1171,18 @@ func (s *Store) ResumeNodeForWorkflowRetry(
 			                  WHERE a.plan_id = e.plan_id
 			                    AND a.node_id = dep.id
 			                    AND a.artifact_type = e.required_artifact_type
-			                    AND COALESCE(a.content #>> '{contract,status}', '') = 'active'
-			                    AND COALESCE((a.content #>> '{contract,valid}')::boolean, FALSE)
-			                    AND COALESCE((a.content #>> '{contract,spec_revision}')::bigint, 0) = dep.spec_revision
+			                    AND a.status = 'active'
+			                    AND a.valid = TRUE
+			                    AND a.artifact_revision = dep.spec_revision
+			                    AND a.id = (
+			                        SELECT latest.id
+			                        FROM autonomous_project_artifact latest
+			                        WHERE latest.plan_id = e.plan_id
+			                          AND latest.node_id = dep.id
+			                          AND latest.artifact_type = e.required_artifact_type
+			                        ORDER BY latest.created_at DESC, latest.id DESC
+			                        LIMIT 1
+			                    )
 			              )
 			          )
 			      )
