@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   BarChart3,
   Bot,
   CheckCircle2,
+  ChevronRight,
   Clock3,
   Coins,
   Gauge,
@@ -29,6 +30,13 @@ import {
   CardTitle,
 } from "@multica/ui/components/ui/card";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
 
 function formatDuration(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -108,6 +116,204 @@ function stageLabel(stage: string): string {
   }
 }
 
+type ExecutionGroupBy = "task" | "agent" | "runtime" | "status" | "stage" | "none";
+
+type ExecutionGroup = {
+  key: string;
+  label: string;
+  tasks: ProjectReportTask[];
+};
+
+const EXECUTION_GROUP_OPTIONS: Array<{ value: ExecutionGroupBy; label: string }> = [
+  { value: "task", label: "Task / issue" },
+  { value: "agent", label: "Agent" },
+  { value: "runtime", label: "CLI / runtime" },
+  { value: "status", label: "Status" },
+  { value: "stage", label: "Stage" },
+  { value: "none", label: "Ungrouped" },
+];
+
+function compactList(values: string[]): string {
+  const unique = Array.from(new Set(values.filter(Boolean)));
+  if (unique.length === 0) return "—";
+  if (unique.length <= 2) return unique.join(", ");
+  return `${unique.slice(0, 2).join(", ")} +${unique.length - 2}`;
+}
+
+function executionGroupIdentity(task: ProjectReportTask, groupBy: ExecutionGroupBy) {
+  switch (groupBy) {
+    case "task":
+      return task.issue_id
+        ? { key: `issue:${task.issue_id}`, label: task.issue_title ?? task.issue_id }
+        : { key: `task:${task.id}`, label: task.issue_title ?? "Project control-plane task" };
+    case "agent":
+      return { key: `agent:${task.agent_id}`, label: task.agent_name };
+    case "runtime": {
+      const runtimeLabel = [task.runtime_provider, task.runtime_name, task.runtime_mode]
+        .filter(Boolean)
+        .join(" · ") || "No runtime";
+      return {
+        key: `runtime:${task.runtime_id ?? runtimeLabel}`,
+        label: runtimeLabel,
+      };
+    }
+    case "status":
+      return { key: `status:${task.status}`, label: task.status };
+    case "stage":
+      return { key: `stage:${task.stage}`, label: stageLabel(task.stage) };
+    default:
+      return { key: `task:${task.id}`, label: task.issue_title ?? task.id };
+  }
+}
+
+function groupExecutionTasks(tasks: ProjectReportTask[], groupBy: ExecutionGroupBy): ExecutionGroup[] {
+  if (groupBy === "none") return [];
+  const groups = new Map<string, ExecutionGroup>();
+  for (const task of tasks) {
+    const identity = executionGroupIdentity(task, groupBy);
+    const existing = groups.get(identity.key);
+    if (existing) {
+      existing.tasks.push(task);
+    } else {
+      groups.set(identity.key, { ...identity, tasks: [task] });
+    }
+  }
+  return Array.from(groups.values()).sort((a, b) => {
+    const aTime = Math.max(...a.tasks.map((task) => new Date(task.completed_at ?? task.started_at ?? task.created_at).getTime()));
+    const bTime = Math.max(...b.tasks.map((task) => new Date(task.completed_at ?? task.started_at ?? task.created_at).getTime()));
+    return bTime - aTime;
+  });
+}
+
+function groupRejectCount(tasks: ProjectReportTask[]): number {
+  const perIssue = new Map<string, number>();
+  for (const task of tasks) {
+    const key = task.issue_id ?? task.id;
+    perIssue.set(key, Math.max(perIssue.get(key) ?? 0, task.review_rejects));
+  }
+  return Array.from(perIssue.values()).reduce((sum, value) => sum + value, 0);
+}
+
+function averageNullable(values: Array<number | null>): number | null {
+  const present = values.filter((value): value is number => value != null);
+  if (present.length === 0) return null;
+  return present.reduce((sum, value) => sum + value, 0) / present.length;
+}
+
+function latestExecutionTime(tasks: ProjectReportTask[]): string | null {
+  let latest: string | null = null;
+  let latestMs = -Infinity;
+  for (const task of tasks) {
+    const value = task.completed_at ?? task.started_at ?? task.created_at;
+    const ms = new Date(value).getTime();
+    if (Number.isFinite(ms) && ms > latestMs) {
+      latestMs = ms;
+      latest = value;
+    }
+  }
+  return latest;
+}
+
+function ExecutionTaskRow({ task, nested = false }: { task: ProjectReportTask; nested?: boolean }) {
+  return (
+    <tr className={`align-top hover:bg-muted/20 ${nested ? "bg-muted/10" : ""}`}>
+      <td className={`max-w-72 py-3 pr-4 ${nested ? "pl-10" : "pl-4"}`}>
+        <p className="truncate font-medium" title={task.issue_title ?? task.id}>
+          {task.issue_title ?? "Project control-plane task"}
+        </p>
+        <p className="mt-1 font-mono text-[11px] text-muted-foreground">{task.id.slice(0, 12)}</p>
+      </td>
+      <td className="px-4 py-3"><TaskStatusDetail task={task} /></td>
+      <td className="px-4 py-3">{task.agent_name}</td>
+      <td className="max-w-56 px-4 py-3">
+        <p className="font-medium">{task.runtime_provider ?? "—"}</p>
+        <p className="mt-1 truncate text-xs text-muted-foreground" title={task.runtime_name ?? undefined}>
+          {task.runtime_name ?? "No runtime"}{task.runtime_mode ? ` · ${task.runtime_mode}` : ""}
+        </p>
+      </td>
+      <td className="max-w-48 px-4 py-3">
+        <p className="truncate text-xs" title={task.models || undefined}>{task.models || "—"}</p>
+      </td>
+      <td className="px-4 py-3 tabular-nums">{formatDuration(task.queue_seconds)}</td>
+      <td className="px-4 py-3 tabular-nums">{formatDuration(task.runtime_seconds)}</td>
+      <td className="px-4 py-3 tabular-nums">
+        <p className="font-medium">{formatTokens(task.total_tokens)}</p>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          {formatTokens(task.input_tokens)} in · {formatTokens(task.output_tokens)} out
+        </p>
+      </td>
+      <td className="px-4 py-3 tabular-nums">
+        {task.cost_usd_ticks > 0 ? formatCostTicks(task.cost_usd_ticks) : "—"}
+        {!task.cost_complete && task.total_tokens > 0 && (
+          <p className="mt-1 text-[11px] text-muted-foreground">partial / unpriced</p>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
+        {formatTime(task.completed_at)}
+      </td>
+    </tr>
+  );
+}
+
+function ExecutionGroupRow({
+  group,
+  expanded,
+  onToggle,
+}: {
+  group: ExecutionGroup;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const tasks = group.tasks;
+  const completed = tasks.filter((task) => task.status === "completed").length;
+  const failed = tasks.filter((task) => task.status === "failed").length;
+  const cancelled = tasks.filter((task) => task.status === "cancelled").length;
+  const active = tasks.length - completed - failed - cancelled;
+  const totalTokens = tasks.reduce((sum, task) => sum + task.total_tokens, 0);
+  const totalRuntime = tasks.reduce((sum, task) => sum + (task.runtime_seconds ?? 0), 0);
+  const averageQueue = averageNullable(tasks.map((task) => task.queue_seconds));
+  const totalCost = tasks.reduce((sum, task) => sum + task.cost_usd_ticks, 0);
+  const costComplete = tasks.every((task) => task.total_tokens === 0 || task.cost_complete);
+  const rejects = groupRejectCount(tasks);
+
+  return (
+    <tr className="border-t bg-muted/20 align-top hover:bg-muted/30">
+      <td className="max-w-72 px-4 py-3">
+        <button type="button" onClick={onToggle} className="flex w-full items-start gap-2 text-left">
+          <ChevronRight className={`mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-90" : ""}`} />
+          <span className="min-w-0">
+            <span className="block truncate font-medium" title={group.label}>{group.label}</span>
+            <span className="mt-1 block text-[11px] text-muted-foreground">
+              {tasks.length} execution{tasks.length === 1 ? "" : "s"}{rejects > 0 ? ` · ${rejects} review reject${rejects === 1 ? "" : "s"}` : ""}
+            </span>
+          </span>
+        </button>
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex flex-wrap gap-1">
+          {failed > 0 && <Badge variant="destructive">{failed} failed</Badge>}
+          {completed > 0 && <Badge variant="default">{completed} completed</Badge>}
+          {active > 0 && <Badge variant="secondary">{active} active</Badge>}
+          {cancelled > 0 && <Badge variant="outline">{cancelled} cancelled</Badge>}
+        </div>
+      </td>
+      <td className="max-w-48 px-4 py-3 text-xs">{compactList(tasks.map((task) => task.agent_name))}</td>
+      <td className="max-w-56 px-4 py-3 text-xs">
+        {compactList(tasks.map((task) => [task.runtime_provider, task.runtime_name].filter(Boolean).join(" · ") || "No runtime"))}
+      </td>
+      <td className="max-w-48 px-4 py-3 text-xs">{compactList(tasks.flatMap((task) => task.models ? task.models.split(", ") : []))}</td>
+      <td className="px-4 py-3 tabular-nums">{formatDuration(averageQueue)}</td>
+      <td className="px-4 py-3 tabular-nums">{formatDuration(totalRuntime)}</td>
+      <td className="px-4 py-3 tabular-nums font-medium">{formatTokens(totalTokens)}</td>
+      <td className="px-4 py-3 tabular-nums">
+        {totalCost > 0 ? formatCostTicks(totalCost) : "—"}
+        {!costComplete && totalTokens > 0 && <p className="mt-1 text-[11px] text-muted-foreground">partial / unpriced</p>}
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">{formatTime(latestExecutionTime(tasks))}</td>
+    </tr>
+  );
+}
+
 function MetricCard({
   label,
   value,
@@ -160,6 +366,11 @@ export function ProjectReport({ projectId }: { projectId: string }) {
   const wsId = useWorkspaceId();
   const { data, isLoading, isError } = useQuery(projectReportOptions(wsId, projectId));
 
+  const [executionGroupBy, setExecutionGroupBy] = useState<ExecutionGroupBy>("task");
+  const [expandedExecutionGroups, setExpandedExecutionGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
+
   const costCoverage = data?.summary.usage_rows
     ? data.summary.costed_usage_rows / data.summary.usage_rows
     : 0;
@@ -170,6 +381,24 @@ export function ProjectReport({ projectId }: { projectId: string }) {
     () => Math.max(1, ...(data?.daily.map((item) => item.total_tokens) ?? [])),
     [data?.daily],
   );
+  const groupedExecutions = useMemo(
+    () => groupExecutionTasks(data?.tasks ?? [], executionGroupBy),
+    [data?.tasks, executionGroupBy],
+  );
+
+  const toggleExecutionGroup = (key: string) => {
+    setExpandedExecutionGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const changeExecutionGroup = (next: ExecutionGroupBy) => {
+    setExecutionGroupBy(next);
+    setExpandedExecutionGroups(new Set());
+  };
 
   if (isLoading) {
     return (
@@ -407,18 +636,50 @@ export function ProjectReport({ projectId }: { projectId: string }) {
 
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <Terminal className="size-4 text-muted-foreground" /> Execution log
-            </CardTitle>
-            <CardDescription>
-              Per-task durable execution telemetry. Review rejects are counted from workflow `review.changes_requested` events.
-            </CardDescription>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <Terminal className="size-4 text-muted-foreground" /> Execution log
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  Durable execution telemetry. Group rows aggregate executions without hiding the underlying attempts.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Group by</span>
+                <Select
+                  items={EXECUTION_GROUP_OPTIONS}
+                  value={executionGroupBy}
+                  onValueChange={(next) => {
+                    if (next) changeExecutionGroup(next as ExecutionGroupBy);
+                  }}
+                >
+                  <SelectTrigger size="sm" className="min-w-36">
+                    <SelectValue>
+                      {EXECUTION_GROUP_OPTIONS.find((item) => item.value === executionGroupBy)?.label}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    {EXECUTION_GROUP_OPTIONS.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>{data.tasks.length} execution records</span>
+              {executionGroupBy !== "none" && <span>{groupedExecutions.length} groups</span>}
+              <span>Review rejects come from workflow <code>review.changes_requested</code> events.</span>
+            </div>
           </CardHeader>
           <CardContent className="overflow-x-auto p-0">
             <table className="w-full min-w-[1320px] text-sm">
               <thead className="border-y bg-muted/30 text-left text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-4 py-2 font-medium">Issue / task</th>
+                  <th className="px-4 py-2 font-medium">{executionGroupBy === "none" ? "Issue / task" : "Group"}</th>
                   <th className="px-4 py-2 font-medium">Status</th>
                   <th className="px-4 py-2 font-medium">Agent</th>
                   <th className="px-4 py-2 font-medium">CLI / runtime</th>
@@ -431,44 +692,25 @@ export function ProjectReport({ projectId }: { projectId: string }) {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {data.tasks.map((task) => (
-                  <tr key={task.id} className="align-top hover:bg-muted/20">
-                    <td className="max-w-72 px-4 py-3">
-                      <p className="truncate font-medium" title={task.issue_title ?? task.id}>
-                        {task.issue_title ?? "Project control-plane task"}
-                      </p>
-                      <p className="mt-1 font-mono text-[11px] text-muted-foreground">{task.id.slice(0, 12)}</p>
-                    </td>
-                    <td className="px-4 py-3"><TaskStatusDetail task={task} /></td>
-                    <td className="px-4 py-3">{task.agent_name}</td>
-                    <td className="max-w-56 px-4 py-3">
-                      <p className="font-medium">{task.runtime_provider ?? "—"}</p>
-                      <p className="mt-1 truncate text-xs text-muted-foreground" title={task.runtime_name ?? undefined}>
-                        {task.runtime_name ?? "No runtime"}{task.runtime_mode ? ` · ${task.runtime_mode}` : ""}
-                      </p>
-                    </td>
-                    <td className="max-w-48 px-4 py-3">
-                      <p className="truncate text-xs" title={task.models || undefined}>{task.models || "—"}</p>
-                    </td>
-                    <td className="px-4 py-3 tabular-nums">{formatDuration(task.queue_seconds)}</td>
-                    <td className="px-4 py-3 tabular-nums">{formatDuration(task.runtime_seconds)}</td>
-                    <td className="px-4 py-3 tabular-nums">
-                      <p className="font-medium">{formatTokens(task.total_tokens)}</p>
-                      <p className="mt-1 text-[11px] text-muted-foreground">
-                        {formatTokens(task.input_tokens)} in · {formatTokens(task.output_tokens)} out
-                      </p>
-                    </td>
-                    <td className="px-4 py-3 tabular-nums">
-                      {task.cost_usd_ticks > 0 ? formatCostTicks(task.cost_usd_ticks) : "—"}
-                      {!task.cost_complete && task.total_tokens > 0 && (
-                        <p className="mt-1 text-[11px] text-muted-foreground">partial / unpriced</p>
-                      )}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
-                      {formatTime(task.completed_at)}
-                    </td>
-                  </tr>
-                ))}
+                {executionGroupBy === "none" ? (
+                  data.tasks.map((task) => <ExecutionTaskRow key={task.id} task={task} />)
+                ) : (
+                  groupedExecutions.map((group) => {
+                    const expanded = expandedExecutionGroups.has(group.key);
+                    return (
+                      <Fragment key={group.key}>
+                        <ExecutionGroupRow
+                          group={group}
+                          expanded={expanded}
+                          onToggle={() => toggleExecutionGroup(group.key)}
+                        />
+                        {expanded && group.tasks.map((task) => (
+                          <ExecutionTaskRow key={task.id} task={task} nested />
+                        ))}
+                      </Fragment>
+                    );
+                  })
+                )}
                 {data.tasks.length === 0 && (
                   <tr>
                     <td colSpan={10} className="px-4 py-10 text-center text-muted-foreground">
