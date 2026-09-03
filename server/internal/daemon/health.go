@@ -138,6 +138,9 @@ func allowLocalUIOrigin(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	if strings.EqualFold(r.Header.Get("Access-Control-Request-Private-Network"), "true") {
+		w.Header().Set("Access-Control-Allow-Private-Network", "true")
+	}
 	return true
 }
 
