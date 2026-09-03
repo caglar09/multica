@@ -901,17 +901,35 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 				continue
 			}
 			if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, item.issueID, issuestatus.Done); err != nil {
-				return fmt.Errorf("repair completed project issue %s: %w", util.UUIDToString(item.issueID), err)
+				slog.Warn("autonomous repair could not project completed node to issue",
+					"workspace_id", util.UUIDToString(workspaceID),
+					"project_id", util.UUIDToString(projectID),
+					"issue_id", util.UUIDToString(item.issueID),
+					"error", err,
+				)
+				continue
 			}
 		case "cancelled":
 			if effective == issuestatus.Cancelled {
 				continue
 			}
 			if err := r.taskSvc.CancelTasksForIssue(ctx, item.issueID); err != nil {
-				return fmt.Errorf("cancel tasks for cancelled project node issue %s: %w", util.UUIDToString(item.issueID), err)
+				slog.Warn("autonomous repair could not cancel tasks for terminal node",
+					"workspace_id", util.UUIDToString(workspaceID),
+					"project_id", util.UUIDToString(projectID),
+					"issue_id", util.UUIDToString(item.issueID),
+					"error", err,
+				)
+				continue
 			}
 			if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, item.issueID, issuestatus.Cancelled); err != nil {
-				return fmt.Errorf("repair cancelled project issue %s: %w", util.UUIDToString(item.issueID), err)
+				slog.Warn("autonomous repair could not project cancelled node to issue",
+					"workspace_id", util.UUIDToString(workspaceID),
+					"project_id", util.UUIDToString(projectID),
+					"issue_id", util.UUIDToString(item.issueID),
+					"error", err,
+				)
+				continue
 			}
 		}
 	}
@@ -1011,10 +1029,24 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		// Supersession is an explicit orchestration lifecycle cleanup. Stop any
 		// still-running side effects before projecting the issue to Cancelled.
 		if err := r.taskSvc.CancelTasksForIssue(ctx, item.id); err != nil {
-			return fmt.Errorf("cancel tasks for superseded issue %s: %w", util.UUIDToString(item.id), err)
+			slog.Warn("autonomous repair could not cancel tasks for superseded issue",
+				"workspace_id", util.UUIDToString(workspaceID),
+				"project_id", util.UUIDToString(projectID),
+				"issue_id", util.UUIDToString(item.id),
+				"node_key", item.nodeKey,
+				"error", err,
+			)
+			continue
 		}
 		if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, item.id, issuestatus.Cancelled); err != nil {
-			return fmt.Errorf("cancel superseded issue %s: %w", util.UUIDToString(item.id), err)
+			slog.Warn("autonomous repair could not retire superseded issue",
+				"workspace_id", util.UUIDToString(workspaceID),
+				"project_id", util.UUIDToString(projectID),
+				"issue_id", util.UUIDToString(item.id),
+				"node_key", item.nodeKey,
+				"error", err,
+			)
+			continue
 		}
 		slog.Info("retired stale autonomous issue after replan",
 			"workspace_id", util.UUIDToString(workspaceID),
