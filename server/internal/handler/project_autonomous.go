@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"errors"
@@ -144,6 +145,23 @@ type AutonomousProjectHealthResponse struct {
 	ActiveWorkflows int    `json:"active_workflows"`
 	Blocked         int    `json:"blocked"`
 	FailedActions   int64  `json:"failed_actions"`
+	Waiting         int    `json:"waiting"`
+	Resumable       int    `json:"resumable"`
+}
+
+type AutonomousDiagnosticResponse struct {
+	Code         string         `json:"code"`
+	Severity     string         `json:"severity"`
+	Title        string         `json:"title"`
+	Detail       string         `json:"detail"`
+	NodeKey      *string        `json:"node_key,omitempty"`
+	IssueID      *string        `json:"issue_id,omitempty"`
+	IssueTitle   *string        `json:"issue_title,omitempty"`
+	ActionID     *string        `json:"action_id,omitempty"`
+	ResumeAction string         `json:"resume_action,omitempty"`
+	CanResume    bool           `json:"can_resume"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	UpdatedAt    string         `json:"updated_at"`
 }
 
 type AutonomousBrainResponse struct {
@@ -176,6 +194,7 @@ type AutonomousProjectResponse struct {
 	Plan         *AutonomousProjectPlanResponse      `json:"plan"`
 	QualityGates []AutonomousQualityGateResponse     `json:"quality_gates"`
 	Escalations  []AutonomousEscalationResponse      `json:"escalations"`
+	Diagnostics  []AutonomousDiagnosticResponse       `json:"diagnostics"`
 	Budget       *AutonomousBudgetResponse            `json:"budget"`
 	Brain        *AutonomousBrainResponse             `json:"brain"`
 }
@@ -194,6 +213,10 @@ type AutonomousProjectPlanNodeResponse struct {
 	MaterializedIssueID *string         `json:"materialized_issue_id"`
 	Attempt             int             `json:"attempt"`
 	MaxAttempts         int             `json:"max_attempts"`
+	BlockedCategory     *string         `json:"blocked_category"`
+	BlockedReason       *string         `json:"blocked_reason"`
+	IssueStatus         *string         `json:"issue_status"`
+	WorkflowState       *string         `json:"workflow_state"`
 	AcceptanceCriteria  json.RawMessage `json:"acceptance_criteria"`
 	UpdatedAt           string          `json:"updated_at"`
 }
@@ -309,6 +332,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		Decisions: []AutonomousDecisionResponse{},
 		QualityGates: []AutonomousQualityGateResponse{},
 		Escalations: []AutonomousEscalationResponse{},
+		Diagnostics: []AutonomousDiagnosticResponse{},
 		Health: AutonomousProjectHealthResponse{Status: "idle"},
 	}
 
@@ -629,12 +653,19 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		projectPlan.Edges = []AutonomousProjectPlanEdgeResponse{}
 
 		nodeRows, queryErr := h.DB.Query(r.Context(), `
-			SELECT id, node_key, kind, title, status, priority, risk_level,
-			       required_role_family, assigned_role, assigned_agent_id,
-			       materialized_issue_id, attempt, max_attempts, acceptance_criteria, updated_at
-			FROM autonomous_project_plan_node
-			WHERE plan_id = $1
-			ORDER BY priority DESC, created_at ASC
+			SELECT n.id, n.node_key, n.kind, n.title, n.status, n.priority, n.risk_level,
+			       n.required_role_family, n.assigned_role, n.assigned_agent_id,
+			       n.materialized_issue_id, n.attempt, n.max_attempts,
+			       n.blocked_category, n.blocked_reason, i.status, wr.state,
+			       n.acceptance_criteria, n.updated_at
+			FROM autonomous_project_plan_node n
+			LEFT JOIN issue i ON i.id = n.materialized_issue_id
+			LEFT JOIN autonomous_workflow_run wr
+			  ON wr.issue_id = n.materialized_issue_id
+			 AND wr.workspace_id = n.workspace_id
+			 AND wr.project_id = n.project_id
+			WHERE n.plan_id = $1
+			ORDER BY n.priority DESC, n.created_at ASC
 		`, projectPlanID)
 		if queryErr != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load autonomous project plan nodes")
@@ -643,12 +674,13 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		for nodeRows.Next() {
 			var node AutonomousProjectPlanNodeResponse
 			var nodeID, agentID, issueID pgtype.UUID
-			var family, assignedRole pgtype.Text
+			var family, assignedRole, blockedCategory, blockedReason, issueStatus, workflowState pgtype.Text
 			var criteria []byte
 			var updatedAt time.Time
 			if err := nodeRows.Scan(
 				&nodeID, &node.Key, &node.Kind, &node.Title, &node.Status, &node.Priority, &node.Risk,
 				&family, &assignedRole, &agentID, &issueID, &node.Attempt, &node.MaxAttempts,
+				&blockedCategory, &blockedReason, &issueStatus, &workflowState,
 				&criteria, &updatedAt,
 			); err != nil {
 				nodeRows.Close()
@@ -660,6 +692,10 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 			node.AssignedRole = nullableTextString(assignedRole)
 			node.AssignedAgentID = nullableUUIDString(agentID)
 			node.MaterializedIssueID = nullableUUIDString(issueID)
+			node.BlockedCategory = nullableTextString(blockedCategory)
+			node.BlockedReason = nullableTextString(blockedReason)
+			node.IssueStatus = nullableTextString(issueStatus)
+			node.WorkflowState = nullableTextString(workflowState)
 			node.AcceptanceCriteria = append(json.RawMessage(nil), criteria...)
 			node.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
 			projectPlan.Nodes = append(projectPlan.Nodes, node)
@@ -871,10 +907,29 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	}
 	actionRows.Close()
 
+	diagnostics, diagErr := h.loadAutonomousDiagnostics(
+		r.Context(), workspaceID, projectID, resp.Plan, resp.Workflows,
+		resp.Actions, resp.Escalations, resp.Control.Paused,
+	)
+	if diagErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to diagnose autonomous project state")
+		return
+	}
+	resp.Diagnostics = diagnostics
+	for _, diagnostic := range diagnostics {
+		resp.Health.Waiting++
+		if diagnostic.CanResume {
+			resp.Health.Resumable++
+		}
+		if diagnostic.Severity == "warning" || diagnostic.Severity == "error" {
+			resp.Health.Status = "attention"
+		}
+	}
+
 	switch {
 	case resp.Control.Paused:
 		resp.Health.Status = "paused"
-	case resp.Health.Blocked > 0 || totalFailed > 0:
+	case resp.Health.Status == "attention" || resp.Health.Blocked > 0 || totalFailed > 0:
 		resp.Health.Status = "attention"
 	case resp.Health.ActiveWorkflows > 0:
 		resp.Health.Status = "running"
@@ -1078,6 +1133,360 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) loadAutonomousDiagnostics(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	plan *AutonomousProjectPlanResponse,
+	workflows []AutonomousWorkflowResponse,
+	actions []AutonomousActionResponse,
+	escalations []AutonomousEscalationResponse,
+	paused bool,
+) ([]AutonomousDiagnosticResponse, error) {
+	out := make([]AutonomousDiagnosticResponse, 0, 16)
+	now := time.Now().UTC()
+	add := func(item AutonomousDiagnosticResponse) {
+		if item.UpdatedAt == "" {
+			item.UpdatedAt = now.Format(time.RFC3339Nano)
+		}
+		out = append(out, item)
+	}
+
+	if paused {
+		add(AutonomousDiagnosticResponse{
+			Code: "project_paused", Severity: "info",
+			Title: "Autonomous project is paused",
+			Detail: "Scheduling is intentionally stopped. Resume the project to continue from durable state.",
+			CanResume: true, ResumeAction: "resume_project",
+		})
+	}
+
+	workflowByIssue := make(map[string]AutonomousWorkflowResponse, len(workflows))
+	for _, run := range workflows {
+		workflowByIssue[run.IssueID] = run
+	}
+	nodeByKey := map[string]AutonomousProjectPlanNodeResponse{}
+	blockers := map[string][]string{}
+	if plan != nil {
+		for _, node := range plan.Nodes {
+			nodeByKey[node.Key] = node
+		}
+		for _, edge := range plan.Edges {
+			if edge.Type != "hard" && edge.Type != "artifact" {
+				continue
+			}
+			dep, ok := nodeByKey[edge.From]
+			if !ok || dep.Status == "completed" || dep.Status == "cancelled" {
+				continue
+			}
+			blockers[edge.To] = append(blockers[edge.To], edge.From+" ("+dep.Status+")")
+		}
+	}
+
+	type taskState struct {
+		Status        string
+		FailureReason string
+		Error         string
+		FireAt        *time.Time
+		At            time.Time
+	}
+	tasksByIssue := map[string]taskState{}
+	if plan != nil {
+		rows, err := h.DB.Query(ctx, `
+			SELECT DISTINCT ON (t.issue_id)
+			       t.issue_id, t.status, COALESCE(t.failure_reason, ''),
+			       COALESCE(t.error, ''), t.fire_at,
+			       COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at)
+			FROM agent_task_queue t
+			JOIN autonomous_project_plan_node n ON n.materialized_issue_id = t.issue_id
+			WHERE n.plan_id = $1
+			ORDER BY t.issue_id, t.created_at DESC
+		`, utilParseUUIDOrZero(plan.ID))
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var issueID pgtype.UUID
+			var state taskState
+			var fireAt pgtype.Timestamptz
+			if err := rows.Scan(&issueID, &state.Status, &state.FailureReason, &state.Error, &fireAt, &state.At); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if fireAt.Valid {
+				v := fireAt.Time.UTC()
+				state.FireAt = &v
+			}
+			tasksByIssue[uuidToString(issueID)] = state
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+
+	if plan != nil {
+		for _, node := range plan.Nodes {
+			nodeKey := node.Key
+			title := node.Title
+			issueID := node.MaterializedIssueID
+			updatedAt, _ := time.Parse(time.RFC3339Nano, node.UpdatedAt)
+			age := now.Sub(updatedAt)
+			if updatedAt.IsZero() {
+				age = 0
+			}
+			var latest taskState
+			if issueID != nil {
+				latest = tasksByIssue[*issueID]
+			}
+
+			// A scheduled retry is a healthy wait, but it must be visible.
+			if latest.Status == "deferred" && latest.FireAt != nil {
+				detail := "Automatic retry is deferred until " + latest.FireAt.Format(time.RFC3339)
+				canResume := latest.FireAt.Before(now)
+				action := ""
+				if canResume {
+					detail += ". The retry deadline has passed; repair and continue can wake reconciliation immediately."
+					action = "restart_workflow"
+				}
+				add(AutonomousDiagnosticResponse{
+					Code: "retry_scheduled", Severity: "info", Title: title,
+					Detail: detail, NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
+					CanResume: canResume, ResumeAction: action,
+					Metadata: map[string]any{"fire_at": latest.FireAt.Format(time.RFC3339Nano), "failure_reason": latest.FailureReason},
+					UpdatedAt: latest.At.UTC().Format(time.RFC3339Nano),
+				})
+				continue
+			}
+
+			switch node.Status {
+			case "pending":
+				if deps := blockers[node.Key]; len(deps) > 0 {
+					add(AutonomousDiagnosticResponse{
+						Code: "dependency_wait", Severity: "info", Title: title,
+						Detail: "Waiting for: " + strings.Join(deps, ", "),
+						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
+						Metadata: map[string]any{"blockers": deps}, UpdatedAt: node.UpdatedAt,
+					})
+				} else if age > 30*time.Second && plan.Status != "completed" {
+					add(AutonomousDiagnosticResponse{
+						Code: "scheduler_stall", Severity: "warning", Title: title,
+						Detail: "Node is pending with no unresolved hard dependency, but it was not promoted to ready.",
+						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
+						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
+					})
+				}
+			case "ready":
+				if !paused && age > 30*time.Second {
+					add(AutonomousDiagnosticResponse{
+						Code: "scheduler_stall", Severity: "warning", Title: title,
+						Detail: "Node is ready and eligible but has not been dispatched by the project conductor.",
+						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
+						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
+					})
+				}
+			case "blocked":
+				code := "node_blocked"
+				detail := "Project node is blocked."
+				if node.BlockedReason != nil && *node.BlockedReason != "" {
+					detail = *node.BlockedReason
+				}
+				action := "restart_workflow"
+				canResume := true
+				if node.BlockedCategory != nil {
+					switch *node.BlockedCategory {
+					case "approval":
+						code, action, canResume = "approval_wait", "resolve_escalation", false
+					case "dependency":
+						code, action, canResume = "dependency_wait", "", false
+					case "budget":
+						code, action, canResume = "budget_exhausted", "replan", true
+					case "external_dependency":
+						code, action, canResume = "external_dependency", "restart_workflow", true
+					case "technical_failure":
+						code = "technical_failure"
+					}
+				}
+				if latest.FailureReason == "agent_error.provider_quota_limit" {
+					code = "provider_quota_wait"
+					if latest.Error != "" {
+						detail = latest.Error
+					}
+				}
+				add(AutonomousDiagnosticResponse{
+					Code: code, Severity: "warning", Title: title, Detail: detail,
+					NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
+					CanResume: canResume, ResumeAction: action,
+					Metadata: map[string]any{"failure_reason": latest.FailureReason},
+					UpdatedAt: node.UpdatedAt,
+				})
+			case "running", "verification":
+				if issueID == nil {
+					if age > time.Minute {
+						add(AutonomousDiagnosticResponse{
+							Code: "state_mismatch", Severity: "error", Title: title,
+							Detail: "Node is active but has no materialized issue.",
+							NodeKey: &nodeKey, IssueTitle: &title,
+							CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
+						})
+					}
+					continue
+				}
+				run, hasRun := workflowByIssue[*issueID]
+				if hasRun && run.State == "blocked" {
+					add(AutonomousDiagnosticResponse{
+						Code: "workflow_blocked", Severity: "warning", Title: title,
+						Detail: "Issue workflow is blocked and requires recovery before Project OS can advance.",
+						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
+						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: run.UpdatedAt,
+					})
+				} else if age > 2*time.Minute &&
+					(latest.Status == "" || latest.Status == "failed" || latest.Status == "completed" || latest.Status == "cancelled") {
+					add(AutonomousDiagnosticResponse{
+						Code: "workflow_stall", Severity: "warning", Title: title,
+						Detail: "Node is active but there is no runnable agent task making progress.",
+						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
+						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
+					})
+				}
+			case "completed":
+				if node.IssueStatus != nil && *node.IssueStatus != "done" && *node.IssueStatus != "cancelled" {
+					add(AutonomousDiagnosticResponse{
+						Code: "state_mismatch", Severity: "warning", Title: title,
+						Detail: "Project node is completed but its issue is still " + *node.IssueStatus + ".",
+						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
+						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
+					})
+				}
+			}
+		}
+	}
+
+	for _, action := range actions {
+		if action.Status != "failed" {
+			continue
+		}
+		actionID := action.ID
+		detail := action.ActionType + " failed"
+		if action.LastError != nil && *action.LastError != "" {
+			detail += ": " + *action.LastError
+		}
+		add(AutonomousDiagnosticResponse{
+			Code: "workflow_action_failed", Severity: "error",
+			Title: "Workflow action failed", Detail: detail,
+			ActionID: &actionID, CanResume: true, ResumeAction: "retry_action",
+			UpdatedAt: action.UpdatedAt,
+		})
+	}
+
+	for _, escalation := range escalations {
+		if escalation.Status != "open" && escalation.Status != "acknowledged" {
+			continue
+		}
+		// Approval is intentionally human-owned. Other open escalations are also
+		// surfaced even when the node-level diagnostic already exists because
+		// this row is the operator's durable evidence/audit handle.
+		code := "open_escalation"
+		action := "restart_workflow"
+		canResume := escalation.Category != "approval_required"
+		if escalation.Category == "approval_required" {
+			code = "approval_wait"
+			action = "resolve_escalation"
+		}
+		add(AutonomousDiagnosticResponse{
+			Code: code, Severity: "warning",
+			Title: escalation.Summary,
+			Detail: "Open escalation: " + escalation.Category,
+			CanResume: canResume, ResumeAction: action,
+			UpdatedAt: escalation.OpenedAt,
+		})
+	}
+
+	// Detect the exact replan ownership leak that leaves an issue in Backlog
+	// although no current plan can ever schedule it. The runtime repair should
+	// normally retire these within one reconciliation pass; if it cannot, the
+	// Control Center still explains the orphan instead of silently looking idle.
+	if plan != nil {
+		planID, err := parseUUIDForAutonomousDiagnostic(plan.ID)
+		if err == nil {
+			rows, err := h.DB.Query(ctx, `
+				SELECT DISTINCT i.id, i.title, i.status, n.node_key, p.revision, i.updated_at
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				JOIN issue i ON i.id = n.materialized_issue_id
+				WHERE p.workspace_id = $1
+				  AND p.project_id = $2
+				  AND p.status = 'superseded'
+				  AND NOT EXISTS (
+				      SELECT 1 FROM autonomous_project_plan_node current_node
+				      WHERE current_node.plan_id = $3
+				        AND current_node.materialized_issue_id = i.id
+				  )
+				  AND i.status NOT IN ('done','cancelled')
+				ORDER BY i.updated_at DESC
+			`, workspaceID, projectID, planID)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var issueID pgtype.UUID
+				var issueTitle, issueStatus, nodeKey string
+				var revision int64
+				var updatedAt time.Time
+				if err := rows.Scan(&issueID, &issueTitle, &issueStatus, &nodeKey, &revision, &updatedAt); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				issueIDString := uuidToString(issueID)
+				nodeKeyCopy := nodeKey
+				titleCopy := issueTitle
+				add(AutonomousDiagnosticResponse{
+					Code: "stale_after_replan", Severity: "error", Title: issueTitle,
+					Detail: fmt.Sprintf("Issue is %s but is owned only by superseded plan revision %d; the current plan cannot schedule it.", issueStatus, revision),
+					NodeKey: &nodeKeyCopy, IssueID: &issueIDString, IssueTitle: &titleCopy,
+					CanResume: true, ResumeAction: "restart_workflow",
+					Metadata: map[string]any{"superseded_revision": revision, "issue_status": issueStatus},
+					UpdatedAt: updatedAt.UTC().Format(time.RFC3339Nano),
+				})
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rows.Close()
+		}
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		rank := func(severity string) int {
+			switch severity {
+			case "error": return 0
+			case "warning": return 1
+			default: return 2
+			}
+		}
+		if rank(out[i].Severity) != rank(out[j].Severity) {
+			return rank(out[i].Severity) < rank(out[j].Severity)
+		}
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	return out, nil
+}
+
+func utilParseUUIDOrZero(value string) pgtype.UUID {
+	id, err := parseUUIDForAutonomousDiagnostic(value)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return id
+}
+
+func parseUUIDForAutonomousDiagnostic(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	err := id.Scan(value)
+	return id, err
 }
 
 func (h *Handler) requireAutonomousControlAdmin(
