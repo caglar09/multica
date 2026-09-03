@@ -349,3 +349,124 @@ func TestFailTaskProviderNetworkBudget(t *testing.T) {
 		})
 	}
 }
+
+
+func TestProviderQuotaResetDelay(t *testing.T) {
+	delay, ok := providerQuotaResetDelay("Individual quota reached. Resets in 52m8s.")
+	if !ok {
+		t.Fatal("resettable quota was not recognized")
+	}
+	want := 52*time.Minute + 8*time.Second + providerQuotaResetSafetyBuffer
+	if delay != want {
+		t.Fatalf("quota reset delay = %s, want %s", delay, want)
+	}
+
+	if _, ok := providerQuotaResetDelay("Individual quota reached. Please upgrade your subscription."); ok {
+		t.Fatal("quota without a reset window must remain terminal")
+	}
+	if _, ok := providerQuotaResetDelay("Resets in 999h."); ok {
+		t.Fatal("unbounded quota reset window must not schedule an unattended retry")
+	}
+}
+
+func TestFailTaskResettableQuotaCreatesDeferredRetry(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	_, _, agentID, issueID := seedAttributionFixture(t, pool)
+
+	var runtimeID string
+	if err := pool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read agent runtime: %v", err)
+	}
+
+	var parentID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts)
+		VALUES ($1, $2, $3, 'running', 0, 1, 2)
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&parentID); err != nil {
+		t.Fatalf("insert parent task: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE parent_task_id = $1 OR id = $1`, parentID)
+	})
+
+	bus := events.New()
+	var failedEvent events.Event
+	bus.Subscribe("task:failed", func(e events.Event) { failedEvent = e })
+	svc := NewTaskService(q, pool, nil, bus)
+
+	before := time.Now()
+	errText := "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 52m8s."
+	if _, err := svc.FailTask(ctx, parentID, errText, "", "", "", "agent_error.provider_quota_limit", false, "", ""); err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+
+	var childStatus string
+	var fireAt pgtype.Timestamptz
+	var retryOf pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		SELECT status, fire_at, retry_of_task_id
+		FROM agent_task_queue
+		WHERE parent_task_id = $1
+	`, parentID).Scan(&childStatus, &fireAt, &retryOf); err != nil {
+		t.Fatalf("read quota retry child: %v", err)
+	}
+	if childStatus != "deferred" || !fireAt.Valid {
+		t.Fatalf("quota retry child = status:%q fire_at_valid:%v, want deferred with fire_at", childStatus, fireAt.Valid)
+	}
+	if !retryOf.Valid || retryOf != parentID {
+		t.Fatalf("retry_of_task_id = %s, want %s", util.UUIDToString(retryOf), util.UUIDToString(parentID))
+	}
+	minFireAt := before.Add(52*time.Minute + 8*time.Second)
+	maxFireAt := before.Add(52*time.Minute + 20*time.Second)
+	if fireAt.Time.Before(minFireAt) || fireAt.Time.After(maxFireAt) {
+		t.Fatalf("quota retry fire_at = %s, want between %s and %s", fireAt.Time, minFireAt, maxFireAt)
+	}
+
+	payload, ok := failedEvent.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("task:failed payload type = %T", failedEvent.Payload)
+	}
+	if payload["retry_pending"] != true {
+		t.Fatalf("retry_pending = %v, want true", payload["retry_pending"])
+	}
+}
+
+func TestFailTaskQuotaWithoutResetRemainsTerminal(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	_, _, agentID, issueID := seedAttributionFixture(t, pool)
+
+	var runtimeID string
+	if err := pool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read agent runtime: %v", err)
+	}
+
+	var parentID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts)
+		VALUES ($1, $2, $3, 'running', 0, 1, 2)
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&parentID); err != nil {
+		t.Fatalf("insert parent task: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE parent_task_id = $1 OR id = $1`, parentID)
+	})
+
+	svc := NewTaskService(q, pool, nil, events.New())
+	if _, err := svc.FailTask(ctx, parentID, "Individual quota reached. Please upgrade your subscription.", "", "", "", "agent_error.provider_quota_limit", false, "", ""); err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE parent_task_id = $1`, parentID).Scan(&count); err != nil {
+		t.Fatalf("count quota retry children: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("quota without reset created %d retry children, want 0", count)
+	}
+}
