@@ -2977,6 +2977,12 @@ func (q *Queries) CreateQuickCreateTask(ctx context.Context, arg CreateQuickCrea
 }
 
 const createRetryTask = `-- name: CreateRetryTask :one
+WITH retry_parent AS MATERIALIZED (
+    SELECT *
+    FROM agent_task_queue
+    WHERE id = $1
+    FOR UPDATE
+)
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,
     status, priority, trigger_comment_id, coalesced_comment_ids, trigger_summary, context,
@@ -3012,9 +3018,13 @@ SELECT
     p.channel_context_revision,
     -- Named new_task_id, not id: $1 above is the PARENT task's id.
     COALESCE($6::uuid, gen_random_uuid())
-FROM agent_task_queue p
-WHERE p.id = $1
-  AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
+FROM retry_parent p
+WHERE lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM agent_task_queue child
+      WHERE child.retry_of_task_id = p.id
+  )
 ON CONFLICT (issue_id, agent_id) WHERE status IN ('queued', 'dispatched')
        OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
 DO NOTHING
