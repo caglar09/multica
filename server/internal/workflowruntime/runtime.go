@@ -130,6 +130,7 @@ type Runtime struct {
 	team           *teamprovision.Provisioner
 	projectStore   *projectorchestration.Store
 	projectPlanner      *projectorchestration.Planner
+	brainExecutor       *BrainRuntimeExecutor
 	repositoryAnalyzer  projectorchestration.RepositoryAnalyzer
 	qualityGateRunner    projectorchestration.QualityGateRunner
 	deploymentAdapter   projectorchestration.DeploymentAdapter
@@ -176,6 +177,7 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		team: teamprovision.New(pool, taskSvc.Queries, planner),
 		projectStore: projectorchestration.NewStore(pool),
 		projectPlanner:     projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
+		brainExecutor:      NewBrainRuntimeExecutor(pool, taskSvc),
 		repositoryAnalyzer: projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
 		qualityGateRunner:   projectorchestration.NewWebhookQualityGateRunner(cfg.AdapterConfig),
 		deploymentAdapter:  projectorchestration.NewWebhookDeploymentAdapter(cfg.AdapterConfig),
@@ -200,6 +202,7 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 	})
 	go worker.Run(ctx)
 	go r.runReconciler(ctx)
+	go r.runBrainWorker(ctx)
 
 	slog.Info("autonomous workflow enabled",
 		"workflow", softwareDevelopmentWorkflow,
@@ -1159,6 +1162,9 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 	}
 	if err := r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeCompleted); err != nil {
 		return fmt.Errorf("record autonomous agent completion: %w", err)
+	}
+	if err := r.enqueueBrainLearning(ctx, task, issue); err != nil {
+		slog.Warn("project brain learning enqueue failed", "task_id", util.UUIDToString(task.ID), "error", err)
 	}
 	if handled, usageErr := r.accountProjectTaskUsage(ctx, task, issue); usageErr != nil {
 		return fmt.Errorf("account autonomous project task usage: %w", usageErr)
