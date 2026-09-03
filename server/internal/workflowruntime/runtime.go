@@ -832,6 +832,19 @@ func (r *Runtime) onProjectDeleted(event events.Event) {
 			)
 		}
 	}
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE agent
+		SET archived_at = COALESCE(archived_at, now()), updated_at = now()
+		WHERE workspace_id = $1
+		  AND kind = 'system'
+		  AND system_key = $2
+	`, workspaceID, "autonomous_project_brain:"+projectIDValue); err != nil {
+		slog.Warn("project brain carrier archive failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
 	var continuationTaskID pgtype.UUID
 	if err := r.pool.QueryRow(ctx, `
 		SELECT continuation_task_id
