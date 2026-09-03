@@ -665,7 +665,14 @@ func (r *Runtime) RestartProjectWorkflow(
 			continue
 		}
 		if err := r.reconcileRun(ctx, run); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
-			return fmt.Errorf("restart autonomous workflow run %s: %w", run.ID, err)
+			slog.Warn("autonomous project repair skipped one workflow run",
+				"workspace_id", workspaceIDString,
+				"project_id", util.UUIDToString(projectID),
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"error", err,
+			)
+			continue
 		}
 	}
 
@@ -726,7 +733,13 @@ func (r *Runtime) RestartProjectWorkflow(
 			},
 		}
 		if err := r.handleIssueEvent(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
-			return fmt.Errorf("restart unstarted autonomous workflow: %w", err)
+			slog.Warn("autonomous project repair skipped one unstarted workflow",
+				"workspace_id", workspaceIDString,
+				"project_id", util.UUIDToString(projectID),
+				"issue_id", util.UUIDToString(item.id),
+				"error", err,
+			)
+			continue
 		}
 	}
 
