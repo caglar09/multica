@@ -19,7 +19,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { toast } from "sonner";
-import { clientErrorMessage } from "@multica/core/api";
+import { clientErrorMessage, errorCode } from "@multica/core/api";
 
 import type {
   AutonomousActivityItem,
@@ -121,6 +121,29 @@ function statusDotClass(status: string): string {
       return "bg-sky-500";
     default:
       return "bg-muted-foreground/60";
+  }
+}
+
+function autonomousControlErrorMessage(error: unknown, fallback: string): string {
+  switch (errorCode(error)) {
+    case "autonomous_control_persist_failed":
+      return "Pause/resume could not be persisted. Check the autonomous control migration and database logs.";
+    case "autonomous_repair_ownership_failed":
+      return "Repair stopped while reconciling stale plan ownership.";
+    case "autonomous_repair_action_lease_failed":
+      return "Repair could not release an expired workflow action lease.";
+    case "autonomous_repair_workflow_state_failed":
+      return "Repair could not read the project's workflow state.";
+    case "autonomous_repair_unstarted_state_failed":
+      return "Repair could not inspect issues that have no workflow run.";
+    case "autonomous_repair_readiness_failed":
+      return "Repair could not recompute dependency readiness.";
+    case "autonomous_repair_scheduling_failed":
+      return "Repair could not resume the project scheduler.";
+    case "autonomous_repair_failed":
+      return "Autonomous repair failed before the project could continue.";
+    default:
+      return clientErrorMessage(error) ?? fallback;
   }
 }
 
@@ -1275,7 +1298,7 @@ export function AutonomousControlCenter({
         ),
       onError: (error) =>
         toast.error(
-          clientErrorMessage(error) ?? "Could not update autonomous project state",
+          autonomousControlErrorMessage(error, "Could not update autonomous project state"),
         ),
     });
   };
@@ -1294,7 +1317,7 @@ export function AutonomousControlCenter({
         toast.success("Autonomous state repaired; eligible work is continuing"),
       onError: (error) =>
         toast.error(
-          clientErrorMessage(error) ?? "Could not repair and continue autonomous work",
+          autonomousControlErrorMessage(error, "Could not repair and continue autonomous work"),
         ),
     });
   };
@@ -1304,7 +1327,7 @@ export function AutonomousControlCenter({
       onSuccess: () => toast.success("Autonomous project resumed"),
       onError: (error) =>
         toast.error(
-          clientErrorMessage(error) ?? "Could not resume autonomous project",
+          autonomousControlErrorMessage(error, "Could not resume autonomous project"),
         ),
     });
   };
