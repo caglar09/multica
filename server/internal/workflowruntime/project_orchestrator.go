@@ -338,12 +338,17 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 		  AND superseded_by IS NULL
 		  AND status = 'active'
 		  AND source_type <> 'bootstrap'
-		ORDER BY created_at ASC
-		LIMIT 200
+		ORDER BY importance DESC,
+		         confirmation_count DESC,
+		         confidence DESC NULLS LAST,
+		         COALESCE(last_confirmed_at, created_at) DESC
+		LIMIT 80
 	`, workspaceID, projectID)
 	if brainErr != nil {
 		return "", nil, nil, requested, brainErr
 	}
+	const brainPlanningContextChars = 32000
+	brainContextChars := 0
 	for brainRows.Next() {
 		var entryType, subject string
 		var contentJSON []byte
@@ -351,10 +356,19 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 			brainRows.Close()
 			return "", nil, nil, requested, err
 		}
+		remaining := brainPlanningContextChars - brainContextChars
+		if remaining <= 0 {
+			break
+		}
+		content := string(contentJSON)
+		if len(content) > remaining {
+			content = content[:remaining]
+		}
+		brainContextChars += len(content)
 		contextItems = append(contextItems, projectorchestration.PlanningContextItem{
 			Type: entryType,
 			Title: subject,
-			Content: string(contentJSON),
+			Content: content,
 		})
 	}
 	if err := brainRows.Err(); err != nil {
