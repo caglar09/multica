@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -85,6 +87,53 @@ func TestCreateRetryTaskFireAtControlsDeferral(t *testing.T) {
 				t.Errorf("channel_context_revision = %+v, want 7", child.ChannelContextRevision)
 			}
 		})
+	}
+}
+
+func TestCreateRetryTaskIsIdempotentPerParent(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	_, _, agentID, issueID := seedAttributionFixture(t, pool)
+
+	var runtimeID string
+	if err := pool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read agent runtime: %v", err)
+	}
+
+	var parentID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts,
+			failure_reason
+		)
+		VALUES ($1, $2, $3, 'failed', 0, 1, 2, 'agent_error.provider_quota_limit')
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&parentID); err != nil {
+		t.Fatalf("insert parent task: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE retry_of_task_id = $1 OR id = $1`, parentID)
+	})
+
+	fireAt := pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true}
+	first, err := q.CreateRetryTask(ctx, db.CreateRetryTaskParams{ID: parentID, FireAt: fireAt})
+	if err != nil {
+		t.Fatalf("first CreateRetryTask: %v", err)
+	}
+	if first.RetryOfTaskID != parentID {
+		t.Fatalf("first retry_of_task_id = %v, want parent %v", first.RetryOfTaskID, parentID)
+	}
+
+	if _, err := q.CreateRetryTask(ctx, db.CreateRetryTaskParams{ID: parentID, FireAt: fireAt}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("second CreateRetryTask error = %v, want pgx.ErrNoRows", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE agent_task_queue SET status='cancelled', completed_at=now() WHERE id=$1`, first.ID); err != nil {
+		t.Fatalf("cancel first retry: %v", err)
+	}
+	if _, err := q.CreateRetryTask(ctx, db.CreateRetryTaskParams{ID: parentID, FireAt: fireAt}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("retry after cancellation error = %v, want pgx.ErrNoRows", err)
 	}
 }
 
