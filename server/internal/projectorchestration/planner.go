@@ -293,7 +293,7 @@ Return exactly this JSON shape:
     }
   ],
   "edges": [
-    {"from": "node_key", "to": "node_key", "type": "hard|soft|artifact"}
+    {"from": "node_key", "to": "node_key", "type": "hard|soft|artifact", "required_artifact_type": "required for artifact edges; otherwise omit"}
   ]
 }
 
@@ -309,6 +309,7 @@ Planning rules:
 9. Do not invent a specialist family that is absent from the provisioned team unless the plan explicitly exposes the missing capability as a constraint.
 10. Keep the plan minimal: every node must contribute to the stated goal.
 11. Treat production deployment, destructive migrations, credentials and irreversible actions as approval-sensitive even under high autonomy.
+12. Every artifact edge MUST declare required_artifact_type. Allowed values: product_spec, architecture, api_contract, data_model, test_plan, implementation_handoff, review, security_review, qa_report, integration_report, release_manifest, deployment_record, incident_report, postmortem, generic. Predecessor completion alone never satisfies an artifact edge.
 `, util.UUIDToString(input.ProjectID), input.ProjectTitle, input.ProjectDescription, input.BootstrapBrief, string(contextJSON), string(resourcesJSON), string(teamJSON), current, string(policyJSON))
 }
 

@@ -25,6 +25,13 @@ var validDependencies = map[DependencyType]struct{}{
 	DependencyHard: {}, DependencySoft: {}, DependencyArtifact: {},
 }
 
+var validArtifactTypes = map[string]struct{}{
+	"product_spec": {}, "architecture": {}, "api_contract": {}, "data_model": {},
+	"test_plan": {}, "implementation_handoff": {}, "review": {}, "security_review": {},
+	"qa_report": {}, "integration_report": {}, "release_manifest": {},
+	"deployment_record": {}, "incident_report": {}, "postmortem": {}, "generic": {},
+}
+
 func DefaultPolicy() Policy {
 	return Policy{
 		Autonomy:        AutonomyDevelopment,
@@ -117,7 +124,15 @@ func ValidatePlan(plan Plan, maxNodes int) error {
 		if _, ok := validDependencies[edge.Type]; !ok {
 			return fmt.Errorf("%w: edge %s -> %s has invalid type %q", ErrInvalidPlan, edge.From, edge.To, edge.Type)
 		}
-		identity := edge.From + "\x00" + edge.To + "\x00" + string(edge.Type)
+		edge.RequiredArtifactType = strings.TrimSpace(edge.RequiredArtifactType)
+		if edge.Type == DependencyArtifact {
+			if _, ok := validArtifactTypes[edge.RequiredArtifactType]; !ok {
+				return fmt.Errorf("%w: artifact edge %s -> %s requires a supported required_artifact_type", ErrInvalidPlan, edge.From, edge.To)
+			}
+		} else if edge.RequiredArtifactType != "" {
+			return fmt.Errorf("%w: non-artifact edge %s -> %s cannot declare required_artifact_type", ErrInvalidPlan, edge.From, edge.To)
+		}
+		identity := edge.From + "\x00" + edge.To + "\x00" + string(edge.Type) + "\x00" + edge.RequiredArtifactType
 		if _, exists := seenEdges[identity]; exists {
 			return fmt.Errorf("%w: duplicate edge %s -> %s", ErrInvalidPlan, edge.From, edge.To)
 		}

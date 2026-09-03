@@ -199,10 +199,11 @@ func (s *Store) PersistPlan(
 	for _, edge := range plan.Edges {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO autonomous_project_plan_edge (
-				plan_id, workspace_id, project_id, from_node_key, to_node_key, dependency_type
+				plan_id, workspace_id, project_id, from_node_key, to_node_key,
+				dependency_type, required_artifact_type
 			)
-			VALUES ($1, $2, $3, $4, $5, $6)
-		`, planID, workspaceID, projectID, edge.From, edge.To, string(edge.Type)); err != nil {
+			VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''))
+		`, planID, workspaceID, projectID, edge.From, edge.To, string(edge.Type), edge.RequiredArtifactType); err != nil {
 			return StoredPlan{}, fmt.Errorf("insert project plan edge %s -> %s: %w", edge.From, edge.To, err)
 		}
 	}
@@ -380,11 +381,11 @@ func (s *Store) AppendPlanDelta(
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO autonomous_project_plan_edge (
 				plan_id, workspace_id, project_id,
-				from_node_key, to_node_key, dependency_type
+				from_node_key, to_node_key, dependency_type, required_artifact_type
 			)
-			VALUES ($1, $2, $3, $4, $5, $6)
+			VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''))
 			ON CONFLICT (plan_id, from_node_key, to_node_key, dependency_type) DO NOTHING
-		`, planID, workspaceID, projectID, edge.From, edge.To, string(edge.Type)); err != nil {
+		`, planID, workspaceID, projectID, edge.From, edge.To, string(edge.Type), edge.RequiredArtifactType); err != nil {
 			return fmt.Errorf("insert discovered project edge %s -> %s: %w", edge.From, edge.To, err)
 		}
 	}
@@ -567,8 +568,26 @@ func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
 			 AND dep.node_key = e.from_node_key
 			WHERE e.plan_id = n.plan_id
 			  AND e.to_node_key = n.node_key
-			  AND e.dependency_type IN ('hard', 'artifact')
-			  AND dep.status <> 'completed'
+			  AND (
+			      (e.dependency_type = 'hard' AND dep.status <> 'completed')
+			      OR (
+			          e.dependency_type = 'artifact'
+			          AND (
+			              dep.status <> 'completed'
+			              OR e.required_artifact_type IS NULL
+			              OR NOT EXISTS (
+			                  SELECT 1
+			                  FROM autonomous_project_artifact a
+			                  WHERE a.plan_id = e.plan_id
+			                    AND a.node_id = dep.id
+			                    AND a.artifact_type = e.required_artifact_type
+			                    AND COALESCE(a.content #>> '{contract,status}', '') = 'active'
+			                    AND COALESCE((a.content #>> '{contract,valid}')::boolean, FALSE)
+			                    AND COALESCE((a.content #>> '{contract,spec_revision}')::bigint, 0) = dep.spec_revision
+			              )
+			          )
+			      )
+			  )
 		  )
 	`, planID)
 	if err != nil {
@@ -995,8 +1014,26 @@ func (s *Store) ResumeBlockedNode(
 			 AND dep.node_key = e.from_node_key
 			WHERE e.plan_id = $1
 			  AND e.to_node_key = $2
-			  AND e.dependency_type IN ('hard', 'artifact')
-			  AND dep.status <> 'completed'
+			  AND (
+			      (e.dependency_type = 'hard' AND dep.status <> 'completed')
+			      OR (
+			          e.dependency_type = 'artifact'
+			          AND (
+			              dep.status <> 'completed'
+			              OR e.required_artifact_type IS NULL
+			              OR NOT EXISTS (
+			                  SELECT 1
+			                  FROM autonomous_project_artifact a
+			                  WHERE a.plan_id = e.plan_id
+			                    AND a.node_id = dep.id
+			                    AND a.artifact_type = e.required_artifact_type
+			                    AND COALESCE(a.content #>> '{contract,status}', '') = 'active'
+			                    AND COALESCE((a.content #>> '{contract,valid}')::boolean, FALSE)
+			                    AND COALESCE((a.content #>> '{contract,spec_revision}')::bigint, 0) = dep.spec_revision
+			              )
+			          )
+			      )
+			  )
 		)
 	`, planID, nodeKey).Scan(&depsSatisfied); err != nil {
 		return false, err
@@ -1103,8 +1140,26 @@ func (s *Store) ResumeNodeForWorkflowRetry(
 			 AND current.id = $1
 			WHERE e.plan_id = $2
 			  AND e.to_node_key = current.node_key
-			  AND e.dependency_type IN ('hard', 'artifact')
-			  AND dep.status <> 'completed'
+			  AND (
+			      (e.dependency_type = 'hard' AND dep.status <> 'completed')
+			      OR (
+			          e.dependency_type = 'artifact'
+			          AND (
+			              dep.status <> 'completed'
+			              OR e.required_artifact_type IS NULL
+			              OR NOT EXISTS (
+			                  SELECT 1
+			                  FROM autonomous_project_artifact a
+			                  WHERE a.plan_id = e.plan_id
+			                    AND a.node_id = dep.id
+			                    AND a.artifact_type = e.required_artifact_type
+			                    AND COALESCE(a.content #>> '{contract,status}', '') = 'active'
+			                    AND COALESCE((a.content #>> '{contract,valid}')::boolean, FALSE)
+			                    AND COALESCE((a.content #>> '{contract,spec_revision}')::bigint, 0) = dep.spec_revision
+			              )
+			          )
+			      )
+			  )
 		)
 	`, nodeID, planID).Scan(&depsSatisfied); err != nil {
 		return false, err
@@ -1471,7 +1526,7 @@ func (s *Store) loadSpecs(ctx context.Context, planID pgtype.UUID) ([]NodeSpec, 
 	rows.Close()
 
 	edgeRows, err := s.pool.Query(ctx, `
-		SELECT from_node_key, to_node_key, dependency_type
+		SELECT from_node_key, to_node_key, dependency_type, COALESCE(required_artifact_type, '')
 		FROM autonomous_project_plan_edge
 		WHERE plan_id = $1
 		ORDER BY created_at, from_node_key, to_node_key
@@ -1484,7 +1539,7 @@ func (s *Store) loadSpecs(ctx context.Context, planID pgtype.UUID) ([]NodeSpec, 
 	for edgeRows.Next() {
 		var edge EdgeSpec
 		var typ string
-		if err := edgeRows.Scan(&edge.From, &edge.To, &typ); err != nil {
+		if err := edgeRows.Scan(&edge.From, &edge.To, &typ, &edge.RequiredArtifactType); err != nil {
 			return nil, nil, err
 		}
 		edge.Type = DependencyType(typ)

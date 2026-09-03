@@ -106,9 +106,10 @@ type NodeSpec struct {
 }
 
 type EdgeSpec struct {
-	From string         `json:"from"`
-	To   string         `json:"to"`
-	Type DependencyType `json:"type"`
+	From                 string         `json:"from"`
+	To                   string         `json:"to"`
+	Type                 DependencyType `json:"type"`
+	RequiredArtifactType string         `json:"required_artifact_type,omitempty"`
 }
 
 type Plan struct {
