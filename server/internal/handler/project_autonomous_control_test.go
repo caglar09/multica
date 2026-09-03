@@ -58,10 +58,10 @@ func TestAutonomousRestartHandlerInvokesProjectScopedRecovery(t *testing.T) {
 	called := false
 	testHandler.AutonomousWorkflowRestart = func(ctx context.Context, workspaceID, projectID pgtype.UUID) error {
 		called = true
-		if workspaceID.String() != testWorkspaceID {
+		if uuidToString(workspaceID) != testWorkspaceID {
 			t.Fatalf("restart workspace = %s, want %s", workspaceID.String(), testWorkspaceID)
 		}
-		if projectID.String() != project.ID {
+		if uuidToString(projectID) != project.ID {
 			t.Fatalf("restart project = %s, want %s", projectID.String(), project.ID)
 		}
 		return nil
