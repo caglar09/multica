@@ -1,4 +1,4 @@
-import type { AutonomousRoleRuntimeAssignment } from "../types";
+import type { AutonomousRoleRuntimeAssignment, UpdateAutonomousBrainConfig } from "../types";
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useWorkspaceId } from "../hooks";
@@ -72,6 +72,27 @@ export function useRetryAutonomousAction() {
   });
 }
 
+
+
+export function useUpdateAutonomousBrain() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      config,
+    }: {
+      projectId: string;
+      config: UpdateAutonomousBrainConfig;
+    }) => api.updateProjectAutonomousBrain(projectId, config),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
+}
 
 export function useConfirmAutonomousTeam() {
   const qc = useQueryClient();
