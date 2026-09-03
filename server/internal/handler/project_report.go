@@ -31,6 +31,16 @@ type ProjectReportSummaryResponse struct {
 	AuthoritativeCostUsdTicks int64   `json:"authoritative_cost_usd_ticks"`
 	UsageRows                 int64   `json:"usage_rows"`
 	CostedUsageRows           int64   `json:"costed_usage_rows"`
+	UsageAccountedTasks       int64   `json:"usage_accounted_tasks"`
+	ExecutionPlaneTokens      int64   `json:"execution_plane_tokens"`
+	ExecutionPlaneRuntime     int64   `json:"execution_plane_runtime_seconds"`
+	ExecutionPlaneCostTicks   int64   `json:"execution_plane_cost_usd_ticks"`
+	ControlPlaneTokens        int64   `json:"control_plane_tokens"`
+	ControlPlaneRuntime       int64   `json:"control_plane_runtime_seconds"`
+	ControlPlaneCostTicks     int64   `json:"control_plane_cost_usd_ticks"`
+	BrainLearningTokens       int64   `json:"brain_learning_tokens"`
+	BrainContextTokens        int64   `json:"brain_context_tokens"`
+	BrainContextEstimated     bool    `json:"brain_context_estimated"`
 	ReviewRejects             int64   `json:"review_rejects"`
 	ReviewCycles              int64   `json:"review_cycles"`
 	ReviewedIssues            int64   `json:"reviewed_issues"`
@@ -50,6 +60,8 @@ type ProjectReportTaskResponse struct {
 	AgentID          string  `json:"agent_id"`
 	AgentName        string  `json:"agent_name"`
 	Stage            string  `json:"stage"`
+	Plane            string  `json:"plane"`
+	Category         string  `json:"category"`
 	Status           string  `json:"status"`
 	FailureReason    *string `json:"failure_reason"`
 	RuntimeID        *string `json:"runtime_id"`
@@ -104,6 +116,22 @@ type ProjectReportDayResponse struct {
 	TotalTokens         int64  `json:"total_tokens"`
 }
 
+type ProjectReportUsageBucketResponse struct {
+	Plane               string `json:"plane"`
+	Category            string `json:"category"`
+	TaskCount           int64  `json:"task_count"`
+	CostCompleteTasks   int64  `json:"cost_complete_tasks"`
+	InputTokens         int64  `json:"input_tokens"`
+	OutputTokens        int64  `json:"output_tokens"`
+	CacheReadTokens     int64  `json:"cache_read_tokens"`
+	CacheWriteTokens    int64  `json:"cache_write_tokens"`
+	TotalTokens         int64  `json:"total_tokens"`
+	RuntimeSeconds      int64  `json:"runtime_seconds"`
+	CostUsdTicks        int64  `json:"cost_usd_ticks"`
+	BrainContextTokens  int64  `json:"brain_context_tokens"`
+	BrainContextEstimated bool `json:"brain_context_estimated"`
+}
+
 type ProjectReportResponse struct {
 	GeneratedAt   string                         `json:"generated_at"`
 	TaskLimit     int                            `json:"task_limit"`
@@ -113,6 +141,7 @@ type ProjectReportResponse struct {
 	Agents        []ProjectReportAgentResponse   `json:"agents"`
 	Runtimes      []ProjectReportRuntimeResponse `json:"runtimes"`
 	Daily         []ProjectReportDayResponse     `json:"daily"`
+	Usage         []ProjectReportUsageBucketResponse `json:"usage"`
 }
 
 func projectReportInt64Ptr(value pgtype.Int8) *int64 {
@@ -146,6 +175,7 @@ func (h *Handler) GetProjectReport(w http.ResponseWriter, r *http.Request) {
 		Agents:      []ProjectReportAgentResponse{},
 		Runtimes:    []ProjectReportRuntimeResponse{},
 		Daily:       []ProjectReportDayResponse{},
+		Usage:       []ProjectReportUsageBucketResponse{},
 	}
 
 	const projectTasksCTE = `
@@ -226,6 +256,67 @@ func (h *Handler) GetProjectReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.Summary.TotalTokens = resp.Summary.InputTokens + resp.Summary.OutputTokens + resp.Summary.CacheReadTokens + resp.Summary.CacheWriteTokens
+
+	usageBucketRows, err := h.DB.Query(r.Context(), `
+		SELECT
+			plane,
+			category,
+			COUNT(*)::bigint,
+			COUNT(*) FILTER (WHERE cost_complete)::bigint,
+			COALESCE(SUM(input_tokens), 0)::bigint,
+			COALESCE(SUM(output_tokens), 0)::bigint,
+			COALESCE(SUM(cache_read_tokens), 0)::bigint,
+			COALESCE(SUM(cache_write_tokens), 0)::bigint,
+			COALESCE(SUM(tokens), 0)::bigint,
+			COALESCE(SUM(runtime_seconds), 0)::bigint,
+			COALESCE(SUM(cost_usd_ticks), 0)::bigint,
+			COALESCE(SUM(brain_context_tokens), 0)::bigint,
+			COALESCE(BOOL_OR(brain_context_estimated), FALSE)
+		FROM autonomous_project_usage_accounting
+		WHERE workspace_id = $1 AND project_id = $2
+		GROUP BY plane, category
+		ORDER BY plane, category
+	`, workspaceID, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load project report usage attribution")
+		return
+	}
+	for usageBucketRows.Next() {
+		var item ProjectReportUsageBucketResponse
+		if err := usageBucketRows.Scan(
+			&item.Plane, &item.Category, &item.TaskCount, &item.CostCompleteTasks,
+			&item.InputTokens, &item.OutputTokens, &item.CacheReadTokens, &item.CacheWriteTokens,
+			&item.TotalTokens, &item.RuntimeSeconds, &item.CostUsdTicks,
+			&item.BrainContextTokens, &item.BrainContextEstimated,
+		); err != nil {
+			usageBucketRows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to decode project report usage attribution")
+			return
+		}
+		resp.Summary.UsageAccountedTasks += item.TaskCount
+		resp.Summary.BrainContextTokens += item.BrainContextTokens
+		resp.Summary.BrainContextEstimated = resp.Summary.BrainContextEstimated || item.BrainContextEstimated
+		if item.Category == "brain_learning" {
+			resp.Summary.BrainLearningTokens += item.TotalTokens
+		}
+		switch item.Plane {
+		case "execution":
+			resp.Summary.ExecutionPlaneTokens += item.TotalTokens
+			resp.Summary.ExecutionPlaneRuntime += item.RuntimeSeconds
+			resp.Summary.ExecutionPlaneCostTicks += item.CostUsdTicks
+		case "control":
+			resp.Summary.ControlPlaneTokens += item.TotalTokens
+			resp.Summary.ControlPlaneRuntime += item.RuntimeSeconds
+			resp.Summary.ControlPlaneCostTicks += item.CostUsdTicks
+		}
+		resp.Usage = append(resp.Usage, item)
+	}
+	if err := usageBucketRows.Err(); err != nil {
+		usageBucketRows.Close()
+		writeError(w, http.StatusInternalServerError, "failed to load project report usage attribution")
+		return
+	}
+	usageBucketRows.Close()
 
 	if err := h.DB.QueryRow(r.Context(), `
 		WITH per_run AS (
@@ -314,6 +405,14 @@ func (h *Handler) GetProjectReport(w http.ResponseWriter, r *http.Request) {
 				WHEN wr.owner_agent_id = atq.agent_id THEN 'implementation'
 				ELSE 'project'
 			END AS stage,
+			COALESCE(apu.plane, CASE WHEN atq.issue_id IS NULL THEN 'control' ELSE 'execution' END) AS plane,
+			COALESCE(apu.category,
+				CASE
+					WHEN atq.issue_id IS NULL THEN 'unattributed_control'
+					WHEN wr.reviewer_agent_id = atq.agent_id THEN 'review'
+					ELSE 'execution'
+				END
+			) AS category,
 			atq.status, atq.failure_reason, atq.runtime_id,
 			COALESCE(NULLIF(rt.custom_name, ''), NULLIF(rt.name, '')) AS runtime_name,
 			rt.provider, rt.runtime_mode,
@@ -340,6 +439,8 @@ func (h *Handler) GetProjectReport(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN usage_by_task u ON u.task_id = atq.id
 		LEFT JOIN workflow_roles wr ON wr.issue_id = atq.issue_id
 		LEFT JOIN review_rejects rr ON rr.issue_id = atq.issue_id
+		LEFT JOIN autonomous_project_usage_accounting apu
+		  ON apu.task_id = atq.id AND apu.workspace_id = $1 AND apu.project_id = $2
 		ORDER BY COALESCE(atq.completed_at, atq.started_at, atq.created_at) DESC
 		LIMIT $3
 	`, workspaceID, projectID, projectReportTaskLimit)
@@ -357,7 +458,7 @@ func (h *Handler) GetProjectReport(w http.ResponseWriter, r *http.Request) {
 		var usageRows, costRows int64
 		if err := taskRows.Scan(
 			&taskID, &issueID, &issueTitle, &agentID, &item.AgentName,
-			&item.Stage, &item.Status, &failureReason, &runtimeID,
+			&item.Stage, &item.Plane, &item.Category, &item.Status, &failureReason, &runtimeID,
 			&runtimeName, &runtimeProvider, &runtimeMode,
 			&item.Models, &createdAt, &startedAt, &completedAt,
 			&queueSeconds, &runtimeSeconds,

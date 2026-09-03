@@ -17,6 +17,16 @@ export interface ProjectReportSummary {
   authoritative_cost_usd_ticks: number;
   usage_rows: number;
   costed_usage_rows: number;
+  usage_accounted_tasks: number;
+  execution_plane_tokens: number;
+  execution_plane_runtime_seconds: number;
+  execution_plane_cost_usd_ticks: number;
+  control_plane_tokens: number;
+  control_plane_runtime_seconds: number;
+  control_plane_cost_usd_ticks: number;
+  brain_learning_tokens: number;
+  brain_context_tokens: number;
+  brain_context_estimated: boolean;
   review_rejects: number;
   review_cycles: number;
   reviewed_issues: number;
@@ -36,6 +46,8 @@ export interface ProjectReportTask {
   agent_id: string;
   agent_name: string;
   stage: "implementation" | "review" | "control_plane" | "project" | string;
+  plane: "execution" | "control" | string;
+  category: string;
   status: string;
   failure_reason: string | null;
   runtime_id: string | null;
@@ -90,6 +102,22 @@ export interface ProjectReportDay {
   total_tokens: number;
 }
 
+export interface ProjectReportUsageBucket {
+  plane: "execution" | "control" | string;
+  category: string;
+  task_count: number;
+  cost_complete_tasks: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  runtime_seconds: number;
+  cost_usd_ticks: number;
+  brain_context_tokens: number;
+  brain_context_estimated: boolean;
+}
+
 export interface ProjectReportSnapshot {
   generated_at: string;
   task_limit: number;
@@ -99,4 +127,5 @@ export interface ProjectReportSnapshot {
   agents: ProjectReportAgent[];
   runtimes: ProjectReportRuntime[];
   daily: ProjectReportDay[];
+  usage: ProjectReportUsageBucket[];
 }

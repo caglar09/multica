@@ -116,7 +116,7 @@ function stageLabel(stage: string): string {
   }
 }
 
-type ExecutionGroupBy = "task" | "agent" | "runtime" | "status" | "stage" | "none";
+type ExecutionGroupBy = "task" | "agent" | "runtime" | "status" | "stage" | "plane" | "category" | "none";
 
 type ExecutionGroup = {
   key: string;
@@ -130,6 +130,8 @@ const EXECUTION_GROUP_OPTIONS: Array<{ value: ExecutionGroupBy; label: string }>
   { value: "runtime", label: "CLI / runtime" },
   { value: "status", label: "Status" },
   { value: "stage", label: "Stage" },
+  { value: "plane", label: "Execution / control plane" },
+  { value: "category", label: "Usage category" },
   { value: "none", label: "Ungrouped" },
 ];
 
@@ -161,6 +163,10 @@ function executionGroupIdentity(task: ProjectReportTask, groupBy: ExecutionGroup
       return { key: `status:${task.status}`, label: task.status };
     case "stage":
       return { key: `stage:${task.stage}`, label: stageLabel(task.stage) };
+    case "plane":
+      return { key: `plane:${task.plane}`, label: task.plane === "control" ? "Control plane" : "Execution plane" };
+    case "category":
+      return { key: `category:${task.category}`, label: task.category.replaceAll("_", " ") };
     default:
       return { key: `task:${task.id}`, label: task.issue_title ?? task.id };
   }
@@ -349,6 +355,7 @@ function TaskStatusDetail({ task }: { task: ProjectReportTask }) {
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge variant={statusVariant(task.status)}>{task.status}</Badge>
         <Badge variant="outline">{stageLabel(task.stage)}</Badge>
+        <Badge variant="outline">{task.category.replaceAll("_", " ")}</Badge>
         {task.review_rejects > 0 && (
           <Badge variant="destructive">{task.review_rejects} reject</Badge>
         )}
@@ -474,6 +481,24 @@ export function ProjectReport({ projectId }: { projectId: string }) {
             icon={<Coins className="size-4" />}
           />
           <MetricCard
+            label="Execution plane"
+            value={formatTokens(summary.execution_plane_tokens)}
+            detail={`${formatDuration(summary.execution_plane_runtime_seconds)} runtime · ${summary.execution_plane_cost_usd_ticks ? formatCostTicks(summary.execution_plane_cost_usd_ticks) : "—"} cost`}
+            icon={<Terminal className="size-4" />}
+          />
+          <MetricCard
+            label="Control plane"
+            value={formatTokens(summary.control_plane_tokens)}
+            detail={`${formatDuration(summary.control_plane_runtime_seconds)} runtime · ${summary.control_plane_cost_usd_ticks ? formatCostTicks(summary.control_plane_cost_usd_ticks) : "—"} cost`}
+            icon={<Bot className="size-4" />}
+          />
+          <MetricCard
+            label="Brain usage"
+            value={formatTokens(summary.brain_learning_tokens)}
+            detail={`${formatTokens(summary.brain_context_tokens)} context tokens injected${summary.brain_context_estimated ? " (estimated segment)" : ""}`}
+            icon={<Gauge className="size-4" />}
+          />
+          <MetricCard
             label="Review rejects"
             value={summary.review_rejects.toLocaleString()}
             detail={`${summary.review_cycles} review cycles across ${summary.reviewed_issues} issues`}
@@ -590,6 +615,59 @@ export function ProjectReport({ projectId }: { projectId: string }) {
 
         <Card>
           <CardHeader className="pb-3">
+            <CardTitle className="text-sm">Usage attribution</CardTitle>
+            <CardDescription>
+              Authoritative provider usage grouped by execution/control plane and durable accounting category.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto p-0">
+            <table className="w-full min-w-[900px] text-sm">
+              <thead className="border-y bg-muted/30 text-left text-xs text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2 font-medium">Plane</th>
+                  <th className="px-4 py-2 font-medium">Category</th>
+                  <th className="px-4 py-2 font-medium">Tasks</th>
+                  <th className="px-4 py-2 font-medium">Input</th>
+                  <th className="px-4 py-2 font-medium">Output</th>
+                  <th className="px-4 py-2 font-medium">Cache R/W</th>
+                  <th className="px-4 py-2 font-medium">Runtime</th>
+                  <th className="px-4 py-2 font-medium">Cost</th>
+                  <th className="px-4 py-2 font-medium">Brain context</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {data.usage.map((bucket) => (
+                  <tr key={`${bucket.plane}:${bucket.category}`} className="hover:bg-muted/20">
+                    <td className="px-4 py-3"><Badge variant="outline">{bucket.plane}</Badge></td>
+                    <td className="px-4 py-3 font-medium">{bucket.category.replaceAll("_", " ")}</td>
+                    <td className="px-4 py-3">{bucket.task_count}</td>
+                    <td className="px-4 py-3">{formatTokens(bucket.input_tokens)}</td>
+                    <td className="px-4 py-3">{formatTokens(bucket.output_tokens)}</td>
+                    <td className="px-4 py-3">{formatTokens(bucket.cache_read_tokens)} / {formatTokens(bucket.cache_write_tokens)}</td>
+                    <td className="px-4 py-3">{formatDuration(bucket.runtime_seconds)}</td>
+                    <td className="px-4 py-3">{bucket.cost_usd_ticks ? formatCostTicks(bucket.cost_usd_ticks) : "—"}</td>
+                    <td className="px-4 py-3">
+                      {bucket.brain_context_tokens ? formatTokens(bucket.brain_context_tokens) : "—"}
+                      {bucket.brain_context_tokens > 0 && bucket.brain_context_estimated && (
+                        <span className="ml-1 text-[11px] text-muted-foreground">est.</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {data.usage.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
+                      No attributed project usage yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-sm">
               <Bot className="size-4 text-muted-foreground" /> Agent performance
             </CardTitle>
@@ -672,7 +750,8 @@ export function ProjectReport({ projectId }: { projectId: string }) {
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span>{data.tasks.length} execution records</span>
               {executionGroupBy !== "none" && <span>{groupedExecutions.length} groups</span>}
-              <span>Review rejects come from workflow <code>review.changes_requested</code> events.</span>
+              <span>{summary.usage_accounted_tasks} tasks have durable project usage attribution.</span>
+              <span>Review rejects come from structured <code>review.changes_requested</code> verdict events.</span>
             </div>
           </CardHeader>
           <CardContent className="overflow-x-auto p-0">
