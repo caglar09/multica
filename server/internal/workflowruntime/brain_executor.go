@@ -20,7 +20,6 @@ import (
 )
 
 const (
-	brainSystemKey = "autonomous_project_brain"
 	brainAgentName = "Autonomous Project Brain"
 	brainPollPeriod = 300 * time.Millisecond
 )
@@ -80,7 +79,7 @@ func (e *BrainRuntimeExecutor) ensureCarrier(ctx context.Context, cfg projectorc
 	defer tx.Rollback(ctx)
 	q := e.taskSvc.Queries.WithTx(tx)
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-		"autonomous-project-brain:"+util.UUIDToString(cfg.WorkspaceID)); err != nil { return db.Agent{}, db.AgentRuntime{}, err }
+		"autonomous-project-brain:"+util.UUIDToString(cfg.ProjectID)); err != nil { return db.Agent{}, db.AgentRuntime{}, err }
 
 	mika, err := q.GetAgentBySystemKey(ctx, db.GetAgentBySystemKeyParams{
 		WorkspaceID: cfg.WorkspaceID,
@@ -126,15 +125,16 @@ func (e *BrainRuntimeExecutor) ensureCarrier(ctx context.Context, cfg projectorc
 	if err != nil { return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("load brain runtime: %w", err) }
 	if runtime.Status != "online" { return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("configured brain runtime %q is %s", runtime.Name, runtime.Status) }
 
+	brainKey := "autonomous_project_brain:" + util.UUIDToString(cfg.ProjectID)
 	carrier, err := q.GetAgentBySystemKey(ctx, db.GetAgentBySystemKeyParams{
 		WorkspaceID: cfg.WorkspaceID,
-		SystemKey: pgtype.Text{String: brainSystemKey, Valid: true},
+		SystemKey: pgtype.Text{String: brainKey, Valid: true},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		carrier, err = q.CreateAgentBuilder(ctx, db.CreateAgentBuilderParams{
 			WorkspaceID: cfg.WorkspaceID, Name: brainAgentName, RuntimeMode: runtimeMode,
 			RuntimeID: runtimeID, OwnerID: mika.OwnerID, Instructions: brainInstructions,
-			Model: model, SystemKey: pgtype.Text{String: brainSystemKey, Valid: true},
+			Model: model, SystemKey: pgtype.Text{String: brainKey, Valid: true},
 		})
 	}
 	if err != nil { return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("ensure brain carrier: %w", err) }
@@ -151,7 +151,7 @@ func (e *BrainRuntimeExecutor) ensureCarrier(ctx context.Context, cfg projectorc
 	if err := tx.Commit(ctx); err != nil { return db.Agent{}, db.AgentRuntime{}, err }
 
 	carrier, err = e.taskSvc.Queries.GetAgentBySystemKey(ctx, db.GetAgentBySystemKeyParams{
-		WorkspaceID: cfg.WorkspaceID, SystemKey: pgtype.Text{String: brainSystemKey, Valid: true},
+		WorkspaceID: cfg.WorkspaceID, SystemKey: pgtype.Text{String: brainKey, Valid: true},
 	})
 	return carrier, runtime, err
 }
