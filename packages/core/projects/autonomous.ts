@@ -52,6 +52,12 @@ export function useReplanAutonomousProject() {
   );
 }
 
+export function useRestartAutonomousWorkflow() {
+  return useAutonomousControlMutation((projectId) =>
+    api.restartProjectAutonomousWorkflow(projectId),
+  );
+}
+
 export function useRetryAutonomousAction() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();

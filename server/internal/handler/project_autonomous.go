@@ -1509,6 +1509,41 @@ func (h *Handler) ReplanProjectAutonomous(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusAccepted, map[string]any{"requested": true})
 }
 
+func (h *Handler) RestartProjectAutonomousWorkflow(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
+		return
+	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+		ID: projectID,
+		WorkspaceID: workspaceID,
+	}); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if h.AutonomousWorkflowRestart == nil {
+		writeError(w, http.StatusServiceUnavailable, "autonomous workflow runtime is unavailable")
+		return
+	}
+	if err := h.AutonomousWorkflowRestart(r.Context(), workspaceID, projectID); err != nil {
+		slog.Warn("autonomous workflow restart failed",
+			"workspace_id", uuidToString(workspaceID),
+			"project_id", uuidToString(projectID),
+			"error", err,
+		)
+		writeError(w, http.StatusInternalServerError, "failed to restart autonomous project workflow")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"restarted": true})
+}
+
 func (h *Handler) RetryProjectAutonomousAction(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
 	if !ok {

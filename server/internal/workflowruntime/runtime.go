@@ -573,6 +573,160 @@ func (r *Runtime) processRequestedReplans(ctx context.Context) error {
 	return nil
 }
 
+// RestartProjectWorkflow performs an immediate, project-scoped recovery pass.
+//
+// It deliberately does not register a second set of event-bus listeners or start
+// duplicate workers. The runtime workers are already supervised loops. What can
+// be lost across a process/daemon interruption is the in-process notification
+// between a durable DB commit and the listener. This method replays that durable
+// issue/task state immediately and releases only expired action leases.
+func (r *Runtime) RestartProjectWorkflow(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) error {
+	if r == nil || r.pool == nil || r.store == nil {
+		return errors.New("autonomous workflow runtime is not configured")
+	}
+	if !workspaceID.Valid || !projectID.Valid {
+		return errors.New("workspace_id and project_id are required")
+	}
+
+	// ActionWorker can reclaim expired running actions itself; resetting only
+	// expired leases here makes the operator action immediate without duplicating
+	// a healthy in-flight side effect.
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_workflow_action a
+		SET status = 'pending',
+		    available_at = now(),
+		    lease_token = NULL,
+		    lease_expires_at = NULL,
+		    updated_at = now()
+		FROM autonomous_workflow_run wr
+		WHERE a.run_id = wr.id
+		  AND wr.workspace_id = $1
+		  AND wr.project_id = $2
+		  AND a.status = 'running'
+		  AND (a.lease_expires_at IS NULL OR a.lease_expires_at < now())
+	`, workspaceID, projectID); err != nil {
+		return fmt.Errorf("release expired autonomous workflow action leases: %w", err)
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT issue_id
+		FROM autonomous_workflow_run
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND workflow_name = $3
+		  AND state NOT IN ('done', 'cancelled')
+		ORDER BY updated_at ASC
+		LIMIT 500
+	`, workspaceID, projectID, softwareDevelopmentWorkflow)
+	if err != nil {
+		return fmt.Errorf("query project workflows for restart: %w", err)
+	}
+	issueIDs := make([]pgtype.UUID, 0, 32)
+	for rows.Next() {
+		var issueID pgtype.UUID
+		if err := rows.Scan(&issueID); err != nil {
+			rows.Close()
+			return err
+		}
+		issueIDs = append(issueIDs, issueID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	workspaceIDString := util.UUIDToString(workspaceID)
+	for _, issueID := range issueIDs {
+		run, exists, err := r.store.FindRun(
+			ctx,
+			softwareDevelopmentWorkflow,
+			workspaceIDString,
+			util.UUIDToString(issueID),
+		)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if err := r.reconcileRun(ctx, run); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
+			return fmt.Errorf("restart autonomous workflow run %s: %w", run.ID, err)
+		}
+	}
+
+	// Also recover an issue that reached In Progress while the process was down
+	// before the workflow run itself could be created.
+	unstartedRows, err := r.pool.Query(ctx, `
+		SELECT i.id, i.status, i.revision
+		FROM issue i
+		WHERE i.workspace_id = $1
+		  AND i.project_id = $2
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM autonomous_workflow_run wr
+			WHERE wr.issue_id = i.id
+			  AND wr.workspace_id = i.workspace_id
+			  AND wr.workflow_name = $3
+		  )
+		ORDER BY i.updated_at DESC
+		LIMIT 200
+	`, workspaceID, projectID, softwareDevelopmentWorkflow)
+	if err != nil {
+		return fmt.Errorf("query unstarted project workflows for restart: %w", err)
+	}
+	type unstartedIssue struct {
+		id       pgtype.UUID
+		status   string
+		revision int64
+	}
+	unstarted := make([]unstartedIssue, 0, 16)
+	for unstartedRows.Next() {
+		var item unstartedIssue
+		if err := unstartedRows.Scan(&item.id, &item.status, &item.revision); err != nil {
+			unstartedRows.Close()
+			return err
+		}
+		unstarted = append(unstarted, item)
+	}
+	if err := unstartedRows.Err(); err != nil {
+		unstartedRows.Close()
+		return err
+	}
+	unstartedRows.Close()
+
+	for _, item := range unstarted {
+		if issuestatus.Effective(ctx, r.taskSvc.Queries, workspaceID, item.status) != issuestatus.InProgress {
+			continue
+		}
+		event := events.Event{
+			Type:        protocol.EventIssueUpdated,
+			WorkspaceID: workspaceIDString,
+			ActorType:   "system",
+			Payload: map[string]any{
+				"issue": map[string]any{
+					"id":       util.UUIDToString(item.id),
+					"status":   item.status,
+					"revision": item.revision,
+				},
+			},
+		}
+		if err := r.handleIssueEvent(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
+			return fmt.Errorf("restart unstarted autonomous workflow: %w", err)
+		}
+	}
+
+	slog.Info("autonomous project workflow restart completed",
+		"workspace_id", workspaceIDString,
+		"project_id", util.UUIDToString(projectID),
+		"run_count", len(issueIDs),
+	)
+	return nil
+}
+
 func (r *Runtime) reconcileOnce(ctx context.Context) error {
 	runs, err := r.store.ListActiveRuns(ctx, 200)
 	if err != nil {
@@ -665,6 +819,31 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 		}
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+	if run.State == issuestatus.Blocked && effective == issuestatus.InProgress {
+		// The issue row may have committed its retry/resume transition while the
+		// process was down before issue:updated reached the in-process bus. Repair
+		// the durable workflow from the authoritative row so Blocked cannot become
+		// a terminal dead-end after a restart.
+		result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                fmt.Sprintf("reconcile-issue-retry:%s:%d", run.IssueID, issue.Revision),
+			Type:              "issue.retry_requested",
+			WorkspaceID:       run.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           run.IssueID,
+			AccountableUserID: run.AccountableUserID,
+			Payload:           map[string]any{"status": issue.Status},
+		})
+		if handleErr != nil {
+			return handleErr
+		}
+		if result.Applied {
+			slog.Info("reconciled blocked autonomous workflow from in-progress issue",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+			)
+		}
+		return nil
+	}
 	if effective == issuestatus.Done {
 		// Issue status is durable user/agent intent. If the process died after
 		// the issue row committed but before issue:updated was published, repair

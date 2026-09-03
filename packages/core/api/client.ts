@@ -3570,6 +3570,12 @@ export class ApiClient {
     return this.fetch(`/api/projects/${id}/autonomous/replan`, { method: "POST" });
   }
 
+  async restartProjectAutonomousWorkflow(id: string): Promise<{ restarted: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/workflow/restart`, {
+      method: "POST",
+    });
+  }
+
   async updateProjectAutonomousBrain(
     id: string,
     config: UpdateAutonomousBrainConfig,

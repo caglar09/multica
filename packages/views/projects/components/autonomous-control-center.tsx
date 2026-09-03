@@ -34,6 +34,7 @@ import {
   useConfirmAutonomousTeam,
   usePauseAutonomousProject,
   useReplanAutonomousProject,
+  useRestartAutonomousWorkflow,
   useResumeAutonomousProject,
   useRetryAutonomousAction,
   useUpdateAutonomousBrain,
@@ -1065,6 +1066,7 @@ export function AutonomousControlCenter({
   const pause = usePauseAutonomousProject();
   const resume = useResumeAutonomousProject();
   const replan = useReplanAutonomousProject();
+  const restartWorkflow = useRestartAutonomousWorkflow();
   const confirmTeam = useConfirmAutonomousTeam();
   const retryAction = useRetryAutonomousAction();
   const resolveEscalation = useResolveAutonomousEscalation();
@@ -1140,7 +1142,12 @@ export function AutonomousControlCenter({
   }
 
   const controlMutationPending =
-    pause.isPending || resume.isPending || replan.isPending || confirmTeam.isPending || updateBrain.isPending;
+    pause.isPending ||
+    resume.isPending ||
+    replan.isPending ||
+    restartWorkflow.isPending ||
+    confirmTeam.isPending ||
+    updateBrain.isPending;
 
   const handlePauseResume = () => {
     const mutation = data.control.paused ? resume : pause;
@@ -1160,6 +1167,14 @@ export function AutonomousControlCenter({
     replan.mutate(projectId, {
       onSuccess: () => toast.success("Runtime team replan requested"),
       onError: () => toast.error("Could not request team replan"),
+    });
+  };
+
+  const handleRestartWorkflow = () => {
+    restartWorkflow.mutate(projectId, {
+      onSuccess: () =>
+        toast.success("Workflow restarted and durable task state reconciled"),
+      onError: () => toast.error("Could not restart autonomous workflow"),
     });
   };
 
@@ -1214,6 +1229,16 @@ export function AutonomousControlCenter({
             </Button>
             {canControl ? (
               <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRestartWorkflow}
+                  disabled={controlMutationPending}
+                  title="Replay durable issue/task state and recover expired workflow actions without creating a new project plan"
+                >
+                  <RotateCcw className={cn(restartWorkflow.isPending && "animate-spin")} />
+                  {restartWorkflow.isPending ? "Restarting…" : "Restart workflow"}
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"

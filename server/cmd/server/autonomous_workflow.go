@@ -24,7 +24,7 @@ func startAutonomousWorkflow(
 	bus *events.Bus,
 	pool *pgxpool.Pool,
 	taskSvc *service.TaskService,
-) {
+) *workflowruntime.Runtime {
 	required := true
 	requiredRaw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_TEAM_RUNTIME_REQUIRED"))
 	if requiredRaw == "" {
@@ -64,14 +64,17 @@ func startAutonomousWorkflow(
 		},
 	)
 
-	if _, err := workflowruntime.RegisterWithPlanner(
+	runtime, err := workflowruntime.RegisterWithPlanner(
 		ctx,
 		bus,
 		pool,
 		taskSvc,
 		workflowruntime.ConfigFromEnv(),
 		planner,
-	); err != nil {
+	)
+	if err != nil {
 		slog.Error("autonomous workflow failed to start", "error", err)
+		return nil
 	}
+	return runtime
 }

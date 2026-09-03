@@ -26,6 +26,7 @@ export {
   usePauseAutonomousProject,
   useResumeAutonomousProject,
   useReplanAutonomousProject,
+  useRestartAutonomousWorkflow,
   useConfirmAutonomousTeam,
   useRetryAutonomousAction,
   useResolveAutonomousEscalation,

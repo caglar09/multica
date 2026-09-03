@@ -186,6 +186,9 @@ type Handler struct {
 	PluginService          *service.PluginService
 	IssueService           *service.IssueService
 	AutopilotService       *service.AutopilotService
+	// AutonomousWorkflowRestart requests an immediate project-scoped durable
+	// workflow recovery pass. Wired by cmd/server after the runtime starts.
+	AutonomousWorkflowRestart func(context.Context, pgtype.UUID, pgtype.UUID) error
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider

@@ -624,7 +624,9 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
-	startAutonomousWorkflow(sweepCtx, bus, pool, taskSvc)
+	if autonomousRuntime := startAutonomousWorkflow(sweepCtx, bus, pool, taskSvc); autonomousRuntime != nil {
+		h.AutonomousWorkflowRestart = autonomousRuntime.RestartProjectWorkflow
+	}
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
