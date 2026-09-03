@@ -4,6 +4,8 @@
 // SSR-render on web (where `window.desktopAPI` is undefined) and degrade
 // gracefully to no-op promises instead of crashing.
 
+const LOCAL_DAEMON_OPEN_DIRECTORY_URL = "http://127.0.0.1:19514/open-directory";
+
 export type PickDirectoryResult = {
   ok: boolean;
   path?: string;
@@ -85,6 +87,34 @@ export async function openLocalDirectory(
   path: string,
 ): Promise<OpenLocalDirectoryResult> {
   const api = readDesktopAPI();
-  if (!api?.openLocalDirectory) return { ok: false, reason: "unsupported" };
-  return api.openLocalDirectory(path);
+  if (api?.openLocalDirectory) return api.openLocalDirectory(path);
+
+  // Local/self-host web UI: ask the loopback daemon to reveal only a
+  // daemon-managed workspace directory. The daemon enforces both loopback
+  // Origin and WorkspacesRoot containment, so this does not become a generic
+  // browser-to-filesystem bridge.
+  if (typeof window !== "undefined") {
+    try {
+      const response = await fetch(LOCAL_DAEMON_OPEN_DIRECTORY_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      if (response.ok) return { ok: true };
+      const message = (await response.text()).trim();
+      return {
+        ok: false,
+        reason: "error",
+        error: message || `Failed to open directory (HTTP ${response.status})`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "unsupported",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  return { ok: false, reason: "unsupported" };
 }
