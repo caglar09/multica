@@ -170,7 +170,26 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [progressOpen, setProgressOpen] = useState(true);
   const [descriptionOpen, setDescriptionOpen] = useState(true);
-  const [contentView, setContentView] = useState<"issues" | "autonomous">("issues");
+  const contentView =
+    router.searchParams.get("tab") === "autonomous" ? "autonomous" : "issues";
+
+  const handleContentViewChange = useCallback(
+    (view: "issues" | "autonomous") => {
+      const params = new URLSearchParams(router.searchParams);
+      if (view === "autonomous") {
+        params.set("tab", "autonomous");
+      } else {
+        params.delete("tab");
+      }
+
+      const search = params.toString();
+      const nextPath = `${router.pathname}${search ? `?${search}` : ""}${router.hash}`;
+      if (nextPath !== currentPath(router)) {
+        router.replace(nextPath);
+      }
+    },
+    [router],
+  );
 
   // Sidebar panel
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -597,7 +616,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
               type="button"
               size="sm"
               variant={contentView === "issues" ? "secondary" : "ghost"}
-              onClick={() => setContentView("issues")}
+              onClick={() => handleContentViewChange("issues")}
             >
               <ListTodo />
               Issues
@@ -606,7 +625,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
               type="button"
               size="sm"
               variant={contentView === "autonomous" ? "secondary" : "ghost"}
-              onClick={() => setContentView("autonomous")}
+              onClick={() => handleContentViewChange("autonomous")}
             >
               <Sparkles />
               Autonomous
