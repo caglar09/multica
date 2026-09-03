@@ -97,6 +97,7 @@ import type {
   CancelTaskResponse,
   Project,
   AutonomousProjectSnapshot,
+  ProjectReportSnapshot,
   AutonomousRoleRuntimeAssignment,
   UpdateAutonomousBrainConfig,
   CreateProjectRequest,
@@ -3556,6 +3557,10 @@ export class ApiClient {
 
   async getProjectAutonomous(id: string): Promise<AutonomousProjectSnapshot> {
     return this.fetch(`/api/projects/${id}/autonomous`);
+  }
+
+  async getProjectReport(id: string): Promise<ProjectReportSnapshot> {
+    return this.fetch(`/api/projects/${id}/report`);
   }
 
   async pauseProjectAutonomous(id: string): Promise<{ paused: boolean }> {

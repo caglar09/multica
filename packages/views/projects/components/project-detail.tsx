@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
-import { Check, ChevronRight, FolderOpen, Link2, ListTodo, MoreHorizontal, PanelRight, Pin, PinOff, Sparkles, Trash2, UserMinus } from "lucide-react";
+import { BarChart3, Check, ChevronRight, FolderOpen, Link2, ListTodo, MoreHorizontal, PanelRight, Pin, PinOff, Sparkles, Trash2, UserMinus } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
@@ -29,6 +29,7 @@ import { ProjectResourcesSection } from "./project-resources-section";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { AutonomousControlCenter } from "./autonomous-control-center";
+import { ProjectReport } from "./project-report";
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -178,16 +179,17 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [progressOpen, setProgressOpen] = useState(true);
   const [descriptionOpen, setDescriptionOpen] = useState(true);
+  const tabParam = router.searchParams.get("tab");
   const contentView =
-    router.searchParams.get("tab") === "autonomous" ? "autonomous" : "issues";
+    tabParam === "autonomous" || tabParam === "report" ? tabParam : "issues";
 
   const handleContentViewChange = useCallback(
-    (view: "issues" | "autonomous") => {
+    (view: "issues" | "autonomous" | "report") => {
       const params = new URLSearchParams(router.searchParams);
-      if (view === "autonomous") {
-        params.set("tab", "autonomous");
-      } else {
+      if (view === "issues") {
         params.delete("tab");
+      } else {
+        params.set("tab", view);
       }
 
       const search = params.toString();
@@ -647,6 +649,15 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
               <Sparkles />
               Autonomous
             </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={contentView === "report" ? "secondary" : "ghost"}
+              onClick={() => handleContentViewChange("report")}
+            >
+              <BarChart3 />
+              Reports
+            </Button>
           </div>
 
           <div className="flex h-full min-h-0 flex-1 flex-col">
@@ -655,8 +666,10 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 scope={issueScope}
                 modes={["board", "list", "table", "swimlane", "gantt"]}
               />
-            ) : (
+            ) : contentView === "autonomous" ? (
               <AutonomousControlCenter projectId={projectId} canControl={isWorkspaceAdmin} />
+            ) : (
+              <ProjectReport projectId={projectId} />
             )}
           </div>
           </div>

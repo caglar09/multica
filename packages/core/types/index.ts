@@ -364,3 +364,12 @@ export type {
   AutonomousBrainConfig,
   UpdateAutonomousBrainConfig,
 } from "./autonomous";
+
+export type {
+  ProjectReportSummary,
+  ProjectReportTask,
+  ProjectReportAgent,
+  ProjectReportRuntime,
+  ProjectReportDay,
+  ProjectReportSnapshot,
+} from "./project-report";
