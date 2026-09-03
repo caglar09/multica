@@ -3686,6 +3686,11 @@ type TaskCompleteRequest struct {
 	// local_directory tasks never touch the user's working copy, so this is the
 	// only pointer to where the changes went. Empty for every other task kind.
 	BranchName string `json:"branch_name,omitempty"`
+	// Worktree* fields are daemon-observed Git evidence. They are persisted
+	// inside task.result and later become the authoritative ChangeSet identity.
+	WorktreeBaseSHA      string   `json:"worktree_base_sha,omitempty"`
+	WorktreeCommitSHA    string   `json:"worktree_commit_sha,omitempty"`
+	WorktreeChangedFiles []string `json:"worktree_changed_files,omitempty"`
 	// SessionRolloutMissing: the daemon withheld this task's Codex session
 	// because its rollout was missing (MUL-5305). Clear the resume pointer and
 	// flag the continuity gap for the next claim.
@@ -3711,6 +3716,11 @@ func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.WorkDir = util.SanitizeTextForPostgres(req.WorkDir)
 	req.DurableWorkDir = util.SanitizeTextForPostgres(req.DurableWorkDir)
 	req.BranchName = util.SanitizeTextForPostgres(req.BranchName)
+	req.WorktreeBaseSHA = util.SanitizeTextForPostgres(req.WorktreeBaseSHA)
+	req.WorktreeCommitSHA = util.SanitizeTextForPostgres(req.WorktreeCommitSHA)
+	for i := range req.WorktreeChangedFiles {
+		req.WorktreeChangedFiles[i] = util.SanitizeTextForPostgres(req.WorktreeChangedFiles[i])
+	}
 	req.RetiredSessionID = util.SanitizeTextForPostgres(req.RetiredSessionID)
 }
 

@@ -300,8 +300,11 @@ type TaskUsageEntry struct {
 type TaskResult struct {
 	Status     string `json:"status"`
 	Comment    string `json:"comment"`
-	BranchName string `json:"branch_name,omitempty"`
-	EnvType    string `json:"env_type,omitempty"`
+	BranchName           string   `json:"branch_name,omitempty"`
+	WorktreeBaseSHA      string   `json:"worktree_base_sha,omitempty"`
+	WorktreeCommitSHA    string   `json:"worktree_commit_sha,omitempty"`
+	WorktreeChangedFiles []string `json:"worktree_changed_files,omitempty"`
+	EnvType              string   `json:"env_type,omitempty"`
 	SessionID  string `json:"session_id,omitempty"` // Claude session ID for future resumption
 	WorkDir    string `json:"work_dir,omitempty"`   // working directory used during execution
 	// DurableWorkDir replaces WorkDir only after a disposable local worktree

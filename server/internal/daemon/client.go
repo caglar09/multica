@@ -494,10 +494,19 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 	}, nil)
 }
 
-func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
+func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, worktreeBaseSHA, worktreeCommitSHA string, worktreeChangedFiles []string, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
+	}
+	if worktreeBaseSHA != "" {
+		body["worktree_base_sha"] = worktreeBaseSHA
+	}
+	if worktreeCommitSHA != "" {
+		body["worktree_commit_sha"] = worktreeCommitSHA
+	}
+	if len(worktreeChangedFiles) > 0 {
+		body["worktree_changed_files"] = worktreeChangedFiles
 	}
 	if sessionID != "" {
 		body["session_id"] = sessionID
