@@ -3,8 +3,9 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -664,6 +666,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 			  ON wr.issue_id = n.materialized_issue_id
 			 AND wr.workspace_id = n.workspace_id
 			 AND wr.project_id = n.project_id
+			 AND wr.workflow_name = 'software-development'
 			WHERE n.plan_id = $1
 			ORDER BY n.priority DESC, n.created_at ASC
 		`, projectPlanID)
@@ -1193,6 +1196,10 @@ func (h *Handler) loadAutonomousDiagnostics(
 	}
 	tasksByIssue := map[string]taskState{}
 	if plan != nil {
+		planID, err := util.ParseUUID(plan.ID)
+		if err != nil {
+			return nil, fmt.Errorf("parse autonomous project plan id: %w", err)
+		}
 		rows, err := h.DB.Query(ctx, `
 			SELECT DISTINCT ON (t.issue_id)
 			       t.issue_id, t.status, COALESCE(t.failure_reason, ''),
@@ -1202,7 +1209,7 @@ func (h *Handler) loadAutonomousDiagnostics(
 			JOIN autonomous_project_plan_node n ON n.materialized_issue_id = t.issue_id
 			WHERE n.plan_id = $1
 			ORDER BY t.issue_id, t.created_at DESC
-		`, utilParseUUIDOrZero(plan.ID))
+		`, planID)
 		if err != nil {
 			return nil, err
 		}
@@ -1409,7 +1416,7 @@ func (h *Handler) loadAutonomousDiagnostics(
 	// normally retire these within one reconciliation pass; if it cannot, the
 	// Control Center still explains the orphan instead of silently looking idle.
 	if plan != nil {
-		planID, err := parseUUIDForAutonomousDiagnostic(plan.ID)
+		planID, err := util.ParseUUID(plan.ID)
 		if err == nil {
 			rows, err := h.DB.Query(ctx, `
 				SELECT DISTINCT i.id, i.title, i.status, n.node_key, p.revision, i.updated_at
@@ -1473,20 +1480,6 @@ func (h *Handler) loadAutonomousDiagnostics(
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
 	return out, nil
-}
-
-func utilParseUUIDOrZero(value string) pgtype.UUID {
-	id, err := parseUUIDForAutonomousDiagnostic(value)
-	if err != nil {
-		return pgtype.UUID{}
-	}
-	return id
-}
-
-func parseUUIDForAutonomousDiagnostic(value string) (pgtype.UUID, error) {
-	var id pgtype.UUID
-	err := id.Scan(value)
-	return id, err
 }
 
 func (h *Handler) requireAutonomousControlAdmin(
