@@ -31,6 +31,7 @@ import (
 const softwareDevelopmentWorkflow = "software-development"
 
 const autonomousPlanningTimeout = 5 * time.Minute
+const blockedFailureRecoveryLookback = time.Minute
 
 type Config struct {
 	Enabled           bool
@@ -939,6 +940,13 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 		// child only for retryable infrastructure failures or quota errors carrying
 		// an explicit reset window, and its pending-task guard makes this idempotent.
 		var failedTaskID pgtype.UUID
+		// The failure that CAUSED the blocked transition normally completes a few
+		// milliseconds BEFORE workflow_run.updated_at is written. Requiring
+		// completed_at > run.UpdatedAt therefore excludes the exact row recovery
+		// needs (CAGL-10 reproduced with a 16ms gap). Look back a bounded minute:
+		// enough to bridge the task-fail -> workflow-block commit ordering while
+		// still refusing to resurrect arbitrary historical failures.
+		failureRecoverySince := run.UpdatedAt.Add(-blockedFailureRecoveryLookback)
 		err = r.pool.QueryRow(ctx, `
 			SELECT id
 			FROM agent_task_queue
@@ -948,10 +956,10 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 				($2::uuid IS NOT NULL AND agent_id = $2)
 				OR ($3::uuid IS NOT NULL AND agent_id = $3)
 			  )
-			  AND COALESCE(completed_at, created_at) > $4
+			  AND COALESCE(completed_at, created_at) >= $4
 			ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
 			LIMIT 1
-		`, issueID, ownerID, reviewerID, run.UpdatedAt).Scan(&failedTaskID)
+		`, issueID, ownerID, reviewerID, failureRecoverySince).Scan(&failedTaskID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
