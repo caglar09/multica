@@ -422,6 +422,27 @@ jobs:
         if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: pnpm exec turbo test --filter='@multica/views' -- --shard=${{ matrix.index }}/${{ matrix.total }}
 
+  mobile-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate mobile
+        run: pnpm exec turbo typecheck lint test --filter=@multica/mobile
+
   # Aggregate gate. `frontend` is the status-check name the repository's
   # branch rules refer to, so it has to survive the split above: this job
   # keeps reporting under that name and simply fails when any worker fails.
@@ -831,3 +852,29 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/install.ps1.test.ps1
+
+  full-validation:
+    name: Full Validation
+    needs: [frontend, backend, windows-execenv, mobile-validation]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify complete project validation
+        env:
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          WINDOWS_RESULT: ${{ needs.windows-execenv.result }}
+          MOBILE_RESULT: ${{ needs.mobile-validation.result }}
+        run: |
+          echo "frontend: $FRONTEND_RESULT"
+          echo "backend:  $BACKEND_RESULT"
+          echo "windows:  $WINDOWS_RESULT"
+          echo "mobile:   $MOBILE_RESULT"
+          if [ "$FRONTEND_RESULT" != "success" ] || \
+             [ "$BACKEND_RESULT" != "success" ] || \
+             [ "$WINDOWS_RESULT" != "success" ] || \
+             [ "$MOBILE_RESULT" != "success" ]; then
+            echo "::error::full project validation failed"
+            exit 1
+          fi
+
