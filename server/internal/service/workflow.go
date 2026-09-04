@@ -2,11 +2,16 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/projectorchestration"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -41,13 +46,9 @@ func (s *TaskService) SetIssueStatusForWorkflow(ctx context.Context, issueID pgt
 }
 
 // EnqueueTaskForWorkflow hands a durable workflow action to Multica's normal
-// task admission path. This is intentionally a wrapper around
-// enqueueMentionTask rather than a direct agent_task_queue insert: runtime
-// readiness, attribution policy, duplicate-pending protection, task broadcasts
-// and daemon wakeups therefore stay identical to ordinary agent dispatch.
-//
-// accountableUserID is the workflow's stable top-level human. When absent the
-// existing attribution fallback policy remains authoritative.
+// task admission path. Project-bound autonomous tasks are context-compiled
+// before admission. A compiler failure is fail-closed: no task reaches a daemon
+// with an unbounded/ad-hoc project prompt.
 func (s *TaskService) EnqueueTaskForWorkflow(
 	ctx context.Context,
 	issue db.Issue,
@@ -55,7 +56,38 @@ func (s *TaskService) EnqueueTaskForWorkflow(
 	accountableUserID pgtype.UUID,
 	handoffNote string,
 ) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTask(
+	var contextActionID pgtype.UUID
+	if issue.ProjectID.Valid {
+		if s == nil || s.TxStarter == nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("project workflow context compiler requires transaction support")
+		}
+		actionID, kind, envelope, marker, err := parseWorkflowContextEnvelope(handoffNote)
+		if err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("parse workflow context envelope: %w", err)
+		}
+		tx, err := s.TxStarter.Begin(ctx)
+		if err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("begin workflow context compilation: %w", err)
+		}
+		pkg, compileErr := projectorchestration.CompileWorkflowContext(ctx, tx, issue, agentID, actionID, kind)
+		if compileErr != nil {
+			_ = tx.Rollback(ctx)
+			return db.AgentTaskQueue{}, fmt.Errorf("compile bounded project context: %w", compileErr)
+		}
+		envelope["context_package"] = pkg
+		raw, err := json.Marshal(envelope)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return db.AgentTaskQueue{}, fmt.Errorf("encode bounded project context: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("commit workflow context compilation: %w", err)
+		}
+		handoffNote = marker + "\n" + string(raw)
+		contextActionID = actionID
+	}
+
+	queued, err := s.enqueueMentionTask(
 		ctx,
 		issue,
 		agentID,
@@ -67,4 +99,58 @@ func (s *TaskService) EnqueueTaskForWorkflow(
 		accountableUserID,
 		pgtype.UUID{},
 	)
+	if err != nil {
+		return queued, err
+	}
+	if contextActionID.Valid && queued.ID.Valid {
+		if err := s.bindWorkflowContextTask(ctx, contextActionID, queued.ID); err != nil {
+			// The task already contains the durable action marker + compiled package,
+			// so binding failure must not enqueue a duplicate on action retry. The
+			// workflow_action_id remains an authoritative audit join until repair.
+			slog.Warn("workflow context task binding failed",
+				"workflow_action_id", util.UUIDToString(contextActionID),
+				"task_id", util.UUIDToString(queued.ID),
+				"error", err,
+			)
+		}
+	}
+	return queued, nil
+}
+
+func parseWorkflowContextEnvelope(handoffNote string) (pgtype.UUID, string, map[string]any, string, error) {
+	parts := strings.SplitN(strings.TrimSpace(handoffNote), "\n", 2)
+	if len(parts) != 2 {
+		return pgtype.UUID{}, "", nil, "", fmt.Errorf("workflow handoff is missing action marker or structured envelope")
+	}
+	marker := strings.TrimSpace(parts[0])
+	const prefix = "[workflow-action:"
+	if !strings.HasPrefix(marker, prefix) || !strings.HasSuffix(marker, "]") {
+		return pgtype.UUID{}, "", nil, "", fmt.Errorf("workflow handoff marker is malformed")
+	}
+	actionID, err := util.ParseUUID(strings.TrimSuffix(strings.TrimPrefix(marker, prefix), "]"))
+	if err != nil {
+		return pgtype.UUID{}, "", nil, "", err
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(parts[1]), &envelope); err != nil {
+		return pgtype.UUID{}, "", nil, "", fmt.Errorf("decode structured workflow envelope: %w", err)
+	}
+	kind, _ := envelope["kind"].(string)
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return pgtype.UUID{}, "", nil, "", fmt.Errorf("structured workflow envelope is missing kind")
+	}
+	return actionID, kind, envelope, marker, nil
+}
+
+func (s *TaskService) bindWorkflowContextTask(ctx context.Context, actionID, taskID pgtype.UUID) error {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := projectorchestration.BindWorkflowContextTask(ctx, tx, actionID, taskID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
