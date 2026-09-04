@@ -8,10 +8,9 @@ import (
 
 var ErrNoEligibleAgent = errors.New("no eligible project agent")
 
-// canonicalCapability collapses the small, backend-owned capability vocabulary
-// variants that the Team Planner and Project Planner can legitimately emit.
-// Eligibility must stay deterministic, but it must not depend on punctuation or
-// synonymous labels produced by two independent LLM planning passes.
+// canonicalCapability collapses punctuation and conservative ontology aliases
+// that the Team Planner and Project Planner can legitimately emit differently.
+// This is deterministic normalization only; it is not fuzzy/LLM inference.
 func canonicalCapability(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "" {
@@ -31,12 +30,8 @@ func canonicalCapability(value string) string {
 				lastDash = true
 			}
 		}
-	}
 	value = strings.Trim(b.String(), "-")
 
-	// Keep this list intentionally conservative. These are spelling/ontology
-	// aliases, not fuzzy semantic inference; the backend still owns the hard
-	// eligibility fence.
 	switch value {
 	case "system-architecture", "solution-architecture", "software-architecture", "system-design", "architecture-design":
 		return "architecture"
@@ -66,15 +61,23 @@ func canonicalCapability(value string) string {
 	return value
 }
 
-// MissingCapabilities returns the canonical requirements not covered by have.
-// It is useful both for scheduler decisions and operator-facing diagnostics.
-func MissingCapabilities(have, required []string) []string {
-	set := make(map[string]struct{}, len(have))
-	for _, value := range have {
+func canonicalCapabilitySet(values []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
 		if value = canonicalCapability(value); value != "" {
 			set[value] = struct{}{}
 		}
 	}
+	return set
+}
+
+// MissingCapabilities returns canonical requirements not explicitly advertised
+// by an agent. Missing entries are diagnostics/ranking evidence; they are not a
+// hard rejection by themselves because role family is the backend-owned hard
+// specialization boundary and the two LLM planners do not share a closed
+// capability enum.
+func MissingCapabilities(have, required []string) []string {
+	set := canonicalCapabilitySet(have)
 	missing := make([]string, 0)
 	seen := make(map[string]struct{}, len(required))
 	for _, value := range required {
@@ -93,45 +96,48 @@ func MissingCapabilities(have, required []string) []string {
 	return missing
 }
 
-// CapabilitiesCover is the Phase 2 hard eligibility fence. A scheduler may
-// rank only candidates that cover every required capability after deterministic
-// canonicalization.
+// CapabilitiesCover answers whether a role has usable capability metadata for
+// the requested work. Family matching remains the hard scheduler fence. This
+// prevents independently generated capability strings (for example QA:
+// "quality_assurance" vs node: "accessibility") from deadlocking an otherwise
+// correctly staffed autonomous project.
 func CapabilitiesCover(have, required []string) bool {
-	return len(MissingCapabilities(have, required)) == 0
+	if len(required) == 0 {
+		return true
+	}
+	return len(canonicalCapabilitySet(have)) > 0
 }
 
-// SpecializationConfidence is deliberately secondary to CapabilitiesCover:
-// it can rank two eligible candidates but can never make an ineligible one
-// eligible. Fewer unrelated capabilities yield a slightly stronger
-// specialization signal for an exact requirement set.
+// SpecializationConfidence ranks already family-eligible candidates by the
+// fraction of explicit requirements they advertise. Missing capability labels
+// lower confidence but never override the hard role-family boundary.
 func SpecializationConfidence(have, required []string) float64 {
-	if !CapabilitiesCover(have, required) {
-		return 0
-	}
 	if len(required) == 0 {
 		return 0.5
 	}
-	unique := map[string]struct{}{}
-	for _, value := range have {
-		if value = canonicalCapability(value); value != "" {
-			unique[value] = struct{}{}
-		}
-	}
-	if len(unique) == 0 {
+	haveSet := canonicalCapabilitySet(have)
+	if len(haveSet) == 0 {
 		return 0
 	}
-	requiredUnique := map[string]struct{}{}
-	for _, value := range required {
-		if value = canonicalCapability(value); value != "" {
-			requiredUnique[value] = struct{}{}
+	requiredSet := canonicalCapabilitySet(required)
+	if len(requiredSet) == 0 {
+		return 0.5
+	}
+	matched := 0
+	for value := range requiredSet {
+		if _, ok := haveSet[value]; ok {
+			matched++
 		}
 	}
-	confidence := float64(len(requiredUnique)) / float64(len(unique))
-	if confidence > 1 {
-		return 1
+	if matched == 0 {
+		return 0.25
 	}
+	confidence := float64(matched) / float64(len(requiredSet))
 	if confidence < 0.25 {
 		return 0.25
+	}
+	if confidence > 1 {
+		return 1
 	}
 	return confidence
 }
