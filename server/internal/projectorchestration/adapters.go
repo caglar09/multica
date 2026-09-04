@@ -18,44 +18,44 @@ type RepositoryAnalyzer interface {
 }
 
 type RepositorySnapshot struct {
-	Revision      string
-	Modules       []string
-	TestTargets   []string
-	APISurfaces   []string
-	DataStores    []string
-	Dependencies  []string
-	Evidence      map[string]any
+	Revision     string         `json:"revision"`
+	Modules      []string       `json:"modules"`
+	TestTargets  []string       `json:"test_targets"`
+	APISurfaces  []string       `json:"api_surfaces"`
+	DataStores   []string       `json:"data_stores"`
+	Dependencies []string       `json:"dependencies"`
+	Evidence     map[string]any `json:"evidence"`
 }
 
 type ChangeImpactRequest struct {
-	NodeKey      string
-	ChangedFiles []string
-	Summary      string
+	NodeKey      string   `json:"node_key"`
+	ChangedFiles []string `json:"changed_files"`
+	Summary      string   `json:"summary"`
 }
 
 type ChangeImpactEvidence struct {
-	AffectedModules []string
-	AffectedTests   []string
-	AffectedAPIs    []string
-	AffectedData    []string
-	Risk            RiskLevel
-	Evidence        map[string]any
+	AffectedModules []string       `json:"affected_modules"`
+	AffectedTests   []string       `json:"affected_tests"`
+	AffectedAPIs    []string       `json:"affected_apis"`
+	AffectedData    []string       `json:"affected_data"`
+	Risk            RiskLevel      `json:"risk"`
+	Evidence        map[string]any `json:"evidence"`
 }
 
 type QualityGateRequest struct {
-	WorkspaceID pgtype.UUID
-	ProjectID   pgtype.UUID
-	PlanID      pgtype.UUID
-	NodeID      pgtype.UUID
-	IssueID     pgtype.UUID
-	GateType    string
-	Artifact    map[string]any
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	ProjectID   pgtype.UUID   `json:"project_id"`
+	PlanID      pgtype.UUID   `json:"plan_id"`
+	NodeID      pgtype.UUID   `json:"node_id"`
+	IssueID     pgtype.UUID   `json:"issue_id"`
+	GateType    string        `json:"gate_type"`
+	Artifact    map[string]any `json:"artifact"`
 }
 
 type QualityGateResult struct {
-	Passed   bool
-	Evidence map[string]any
-	Error    string
+	Passed   bool           `json:"passed"`
+	Evidence map[string]any `json:"evidence"`
+	Error    string         `json:"error"`
 }
 
 // QualityGateRunner is the deterministic verifier boundary for build/lint/test/
@@ -74,26 +74,26 @@ type DeploymentAdapter interface {
 }
 
 type DeploymentRequest struct {
-	WorkspaceID  pgtype.UUID
-	ProjectID    pgtype.UUID
-	PlanID       pgtype.UUID
-	Environment  string
-	ReleaseRef   string
-	Policy       Policy
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+	PlanID      pgtype.UUID `json:"plan_id"`
+	Environment string      `json:"environment"`
+	ReleaseRef  string      `json:"release_ref"`
+	Policy      Policy      `json:"policy"`
 }
 
 type RollbackRequest struct {
-	WorkspaceID  pgtype.UUID
-	ProjectID    pgtype.UUID
-	DeploymentID pgtype.UUID
-	Reason       string
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	ProjectID    pgtype.UUID `json:"project_id"`
+	DeploymentID pgtype.UUID `json:"deployment_id"`
+	Reason       string      `json:"reason"`
 }
 
 type DeploymentResult struct {
-	Provider    string
-	ExternalRef string
-	Status      string
-	Evidence    map[string]any
+	Provider    string         `json:"provider"`
+	ExternalRef string         `json:"external_ref"`
+	Status      string         `json:"status"`
+	Evidence    map[string]any `json:"evidence"`
 }
 
 // ObservationAdapter turns provider telemetry into normalized evidence. It
@@ -104,16 +104,16 @@ type ObservationAdapter interface {
 }
 
 type ObservationRequest struct {
-	WorkspaceID  pgtype.UUID
-	ProjectID    pgtype.UUID
-	DeploymentID pgtype.UUID
-	WindowSeconds int64
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	ProjectID     pgtype.UUID `json:"project_id"`
+	DeploymentID  pgtype.UUID `json:"deployment_id"`
+	WindowSeconds int64       `json:"window_seconds"`
 }
 
 type ObservationResult struct {
-	Healthy     bool
-	ErrorRate   float64
-	LatencyP95  float64
-	Signals     []string
-	Evidence    map[string]any
+	Healthy    bool           `json:"healthy"`
+	ErrorRate  float64        `json:"error_rate"`
+	LatencyP95 float64        `json:"latency_p95"`
+	Signals    []string       `json:"signals"`
+	Evidence   map[string]any `json:"evidence"`
 }
