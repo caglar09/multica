@@ -209,3 +209,17 @@ func BindDirectContextTask(ctx context.Context, tx pgx.Tx, compilationID, taskID
 	`, compilationID, taskID)
 	return err
 }
+
+// DiscardUnboundDirectContext removes a direct compilation that never reached
+// task admission. Bound receipts are immutable audit records and are never
+// deleted by this cleanup path.
+func DiscardUnboundDirectContext(ctx context.Context, tx pgx.Tx, compilationID pgtype.UUID) error {
+	if tx == nil || !compilationID.Valid {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		DELETE FROM autonomous_project_context_compilation
+		WHERE id=$1 AND workflow_action_id IS NULL AND task_id IS NULL
+	`, compilationID)
+	return err
+}
