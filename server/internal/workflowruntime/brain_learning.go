@@ -61,13 +61,17 @@ func (r *Runtime) enqueueBrainLearning(ctx context.Context, task db.AgentTaskQue
 			evidence["result_truncated"] = true
 		}
 	}
+	rawEvidence, err := json.Marshal(evidence)
+	if err != nil {
+		return fmt.Errorf("encode brain learning evidence: %w", err)
+	}
 	return r.enqueueControlPlaneJob(
 		ctx,
 		issue.WorkspaceID,
 		issue.ProjectID,
 		controlPlaneJobBrainLearning,
 		"task:"+util.UUIDToString(task.ID),
-		brainLearningJobPayload{TaskID: util.UUIDToString(task.ID), Evidence: evidence},
+		brainLearningJobPayload{TaskID: util.UUIDToString(task.ID), Evidence: rawEvidence},
 		40,
 		3,
 	)
