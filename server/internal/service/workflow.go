@@ -133,6 +133,14 @@ func (s *TaskService) EnqueueTaskForWorkflow(
 		pgtype.UUID{},
 	)
 	if err != nil {
+		if contextCompilationID.Valid {
+			if cleanupErr := s.discardDirectContextCompilation(ctx, contextCompilationID); cleanupErr != nil {
+				slog.Warn("failed to discard unbound direct project context",
+					"context_compilation_id", util.UUIDToString(contextCompilationID),
+					"error", cleanupErr,
+				)
+			}
+		}
 		return queued, err
 	}
 	if contextActionID.Valid && queued.ID.Valid {
@@ -206,6 +214,18 @@ func (s *TaskService) bindDirectContextTask(ctx context.Context, compilationID, 
 	}
 	defer tx.Rollback(ctx)
 	if err := projectorchestration.BindDirectContextTask(ctx, tx, compilationID, taskID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *TaskService) discardDirectContextCompilation(ctx context.Context, compilationID pgtype.UUID) error {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := projectorchestration.DiscardUnboundDirectContext(ctx, tx, compilationID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
