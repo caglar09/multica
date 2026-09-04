@@ -30,6 +30,7 @@ func canonicalCapability(value string) string {
 				lastDash = true
 			}
 		}
+	}
 	value = strings.Trim(b.String(), "-")
 
 	switch value {
