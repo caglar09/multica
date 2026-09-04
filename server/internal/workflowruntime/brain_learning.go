@@ -1,6 +1,7 @@
 package workflowruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,21 +17,41 @@ import (
 
 const brainLearningTimeout = 5 * time.Minute
 
+func shouldEnqueueBrainLearning(task db.AgentTaskQueue) bool {
+	raw := bytes.TrimSpace(task.Result)
+	if len(raw) == 0 {
+		return false
+	}
+	if output, err := parseImplementationHandoff(task.Result); err == nil {
+		return len(output.Decisions) > 0 || len(output.Artifacts) > 0 ||
+			len(output.ChangedFiles) > 0 || len(output.Findings) > 0 ||
+			len(output.Risks) > 0 || len(output.Blockers) > 0
+	}
+	if verdict, err := parseReviewVerdict(task.Result); err == nil {
+		return verdict.Verdict == "changes_requested" || len(verdict.Findings) > 0
+	}
+	// Unknown task contracts are allowed into semantic learning only when there
+	// is enough evidence to justify an extra control-plane model invocation.
+	return len(raw) >= 256
+}
+
 func (r *Runtime) enqueueBrainLearning(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) error {
-	if r == nil || r.projectStore == nil || !issue.ProjectID.Valid {
+	if r == nil || r.projectStore == nil || !issue.ProjectID.Valid || !shouldEnqueueBrainLearning(task) {
 		return nil
 	}
 	cfg, err := r.projectStore.GetBrainConfig(ctx, issue.WorkspaceID, issue.ProjectID)
-	if err != nil { return fmt.Errorf("load project brain config: %w", err) }
+	if err != nil {
+		return fmt.Errorf("load project brain config: %w", err)
+	}
 	if !cfg.Enabled || cfg.LearningMode == "deterministic" {
 		return nil
 	}
 
 	const maxEvidenceBytes = 24000
 	evidence := map[string]any{
-		"task_id": util.UUIDToString(task.ID),
-		"issue_id": util.UUIDToString(issue.ID),
-		"agent_id": util.UUIDToString(task.AgentID),
+		"task_id":     util.UUIDToString(task.ID),
+		"issue_id":    util.UUIDToString(issue.ID),
+		"agent_id":    util.UUIDToString(task.AgentID),
 		"task_status": task.Status,
 	}
 	if len(task.Result) > 0 {
@@ -66,7 +87,9 @@ func (r *Runtime) runBrainWorker(ctx context.Context) {
 				slog.Error("project brain learning claim failed", "error", err)
 				break
 			}
-			if !ok { break }
+			if !ok {
+				break
+			}
 			r.processBrainLearning(ctx, job)
 		}
 	}
@@ -96,10 +119,26 @@ func (r *Runtime) processBrainLearning(parent context.Context, job projectorches
 		_ = r.projectStore.FailBrainLearning(context.Background(), job, err)
 		return
 	}
-	sourceID := util.UUIDToString(job.TaskID)
+	source := projectorchestration.MemorySource{
+		SourceType:    "brain_learning",
+		SourceID:      util.UUIDToString(job.TaskID),
+		CreatedByType: "agent",
+		Authority:     projectorchestration.AuthorityAgentInference,
+		Evidence:      job.Evidence,
+		ObservedAt:    time.Now().UTC(),
+	}
 	for _, memory := range memories {
-		if err := r.projectStore.RetainMemory(ctx, job.WorkspaceID, job.ProjectID, memory, "brain_learning", sourceID); err != nil {
-			_ = r.projectStore.FailBrainLearning(context.Background(), job, err)
+		retention, retainErr := r.projectStore.RetainMemoryGoverned(
+			ctx, job.WorkspaceID, job.ProjectID, memory, source,
+		)
+		if retainErr != nil {
+			_ = r.projectStore.FailBrainLearning(context.Background(), job, retainErr)
+			return
+		}
+		if impactErr := r.projectStore.AssessMemoryImpact(
+			ctx, job.WorkspaceID, job.ProjectID, memory, retention, source,
+		); impactErr != nil {
+			_ = r.projectStore.FailBrainLearning(context.Background(), job, impactErr)
 			return
 		}
 	}
@@ -110,11 +149,13 @@ func (r *Runtime) processBrainLearning(parent context.Context, job projectorches
 
 func decodeBrainMemories(output string) ([]projectorchestration.MemoryCandidate, error) {
 	raw := strings.TrimSpace(output)
-	if raw == "" { return nil, errors.New("brain runtime returned empty response") }
+	if raw == "" {
+		return nil, errors.New("brain runtime returned empty response")
+	}
 	if strings.HasPrefix(raw, "```") {
 		lines := strings.Split(raw, "\n")
 		if len(lines) >= 3 {
-			lines = lines[1:len(lines)-1]
+			lines = lines[1 : len(lines)-1]
 			raw = strings.TrimSpace(strings.Join(lines, "\n"))
 		}
 	}
@@ -124,6 +165,8 @@ func decodeBrainMemories(output string) ([]projectorchestration.MemoryCandidate,
 	if err := json.Unmarshal([]byte(raw), &response); err != nil {
 		return nil, fmt.Errorf("decode brain memories: %w", err)
 	}
-	if len(response.Memories) > 12 { return nil, errors.New("brain runtime returned too many memories") }
+	if len(response.Memories) > 12 {
+		return nil, errors.New("brain runtime returned too many memories")
+	}
 	return response.Memories, nil
 }
