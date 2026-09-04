@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -147,7 +148,11 @@ func (e *MikaProjectPlanExecutor) ensureProjectPlannerCarrier(ctx context.Contex
 		return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("%w: Mika has no runtime", projectorchestration.ErrPlannerUnavailable)
 	}
 
-	runtime, err := qtx.GetAgentRuntime(ctx, mika.RuntimeID)
+	runtime, err := (service.RuntimeLookup{
+		Queries: qtx,
+		Metrics: e.taskSvc.Metrics,
+		Source:  obsmetrics.RuntimeLookupSourceOther,
+	}).Get(ctx, mika.RuntimeID)
 	if err != nil {
 		return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("load Mika runtime for project planner: %w", err)
 	}
@@ -220,7 +225,11 @@ func (e *MikaProjectPlanExecutor) ensureProjectPlannerCarrier(ctx context.Contex
 	if err != nil {
 		return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("reload project planner carrier: %w", err)
 	}
-	runtime, err = e.taskSvc.Queries.GetAgentRuntime(ctx, carrier.RuntimeID)
+	runtime, err = (service.RuntimeLookup{
+		Queries: e.taskSvc.Queries,
+		Metrics: e.taskSvc.Metrics,
+		Source:  obsmetrics.RuntimeLookupSourceOther,
+	}).Get(ctx, carrier.RuntimeID)
 	if err != nil {
 		return db.Agent{}, db.AgentRuntime{}, fmt.Errorf("reload project planner runtime: %w", err)
 	}
