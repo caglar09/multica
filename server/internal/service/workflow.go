@@ -45,10 +45,11 @@ func (s *TaskService) SetIssueStatusForWorkflow(ctx context.Context, issueID pgt
 	return updated, nil
 }
 
-// EnqueueTaskForWorkflow hands a durable workflow action to Multica's normal
-// task admission path. Project-bound autonomous tasks are context-compiled
-// before admission. A compiler failure is fail-closed: no task reaches a daemon
-// with an unbounded/ad-hoc project prompt.
+// EnqueueTaskForWorkflow hands autonomous work to Multica's normal task
+// admission path. Project-bound tasks are context-compiled before admission.
+// Durable workflow actions reuse their action-bound package; direct Project OS
+// stages receive the same bounded policy through an action-less compilation
+// receipt. Any compiler failure is fail-closed.
 func (s *TaskService) EnqueueTaskForWorkflow(
 	ctx context.Context,
 	issue db.Issue,
@@ -57,41 +58,73 @@ func (s *TaskService) EnqueueTaskForWorkflow(
 	handoffNote string,
 ) (db.AgentTaskQueue, error) {
 	var contextActionID pgtype.UUID
+	var contextCompilationID pgtype.UUID
 	if issue.ProjectID.Valid {
 		if s == nil || s.TxStarter == nil {
 			return db.AgentTaskQueue{}, fmt.Errorf("project workflow context compiler requires transaction support")
 		}
-		actionID, kind, envelope, marker, err := parseWorkflowContextEnvelope(handoffNote)
-		if err != nil {
-			return db.AgentTaskQueue{}, fmt.Errorf("parse workflow context envelope: %w", err)
+
+		trimmedHandoff := strings.TrimSpace(handoffNote)
+		if strings.HasPrefix(trimmedHandoff, "[workflow-action:") {
+			actionID, kind, envelope, marker, err := parseWorkflowContextEnvelope(handoffNote)
+			if err != nil {
+				return db.AgentTaskQueue{}, fmt.Errorf("parse workflow context envelope: %w", err)
+			}
+			tx, err := s.TxStarter.Begin(ctx)
+			if err != nil {
+				return db.AgentTaskQueue{}, fmt.Errorf("begin workflow context compilation: %w", err)
+			}
+			pkg, compileErr := projectorchestration.CompileWorkflowContext(ctx, tx, issue, agentID, actionID, kind)
+			if compileErr != nil {
+				_ = tx.Rollback(ctx)
+				return db.AgentTaskQueue{}, fmt.Errorf("compile bounded project context: %w", compileErr)
+			}
+			envelope["context_package"] = pkg
+			raw, err := json.Marshal(envelope)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return db.AgentTaskQueue{}, fmt.Errorf("encode bounded project context: %w", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return db.AgentTaskQueue{}, fmt.Errorf("commit workflow context compilation: %w", err)
+			}
+			handoffNote = marker + "\n" + string(raw)
+			contextActionID = actionID
+		} else {
+			tx, err := s.TxStarter.Begin(ctx)
+			if err != nil {
+				return db.AgentTaskQueue{}, fmt.Errorf("begin direct project context compilation: %w", err)
+			}
+			compiled, compileErr := projectorchestration.CompileDirectProjectContext(
+				ctx, tx, issue, agentID, "project_stage_assignment",
+			)
+			if compileErr != nil {
+				_ = tx.Rollback(ctx)
+				return db.AgentTaskQueue{}, fmt.Errorf("compile bounded direct project context: %w", compileErr)
+			}
+			envelope := map[string]any{
+				"kind":            "project_stage_assignment",
+				"note":            trimmedHandoff,
+				"context_package": compiled.Package,
+			}
+			raw, err := json.Marshal(envelope)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return db.AgentTaskQueue{}, fmt.Errorf("encode bounded direct project context: %w", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return db.AgentTaskQueue{}, fmt.Errorf("commit direct project context compilation: %w", err)
+			}
+			handoffNote = "[project-context]\n" + string(raw)
+			contextCompilationID = compiled.ID
 		}
-		tx, err := s.TxStarter.Begin(ctx)
-		if err != nil {
-			return db.AgentTaskQueue{}, fmt.Errorf("begin workflow context compilation: %w", err)
-		}
-		pkg, compileErr := projectorchestration.CompileWorkflowContext(ctx, tx, issue, agentID, actionID, kind)
-		if compileErr != nil {
-			_ = tx.Rollback(ctx)
-			return db.AgentTaskQueue{}, fmt.Errorf("compile bounded project context: %w", compileErr)
-		}
-		envelope["context_package"] = pkg
-		raw, err := json.Marshal(envelope)
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			return db.AgentTaskQueue{}, fmt.Errorf("encode bounded project context: %w", err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return db.AgentTaskQueue{}, fmt.Errorf("commit workflow context compilation: %w", err)
-		}
-		handoffNote = marker + "\n" + string(raw)
-		contextActionID = actionID
 	}
 
 	queued, err := s.enqueueMentionTask(
 		ctx,
 		issue,
 		agentID,
-		pgtype.UUID{}, // no synthetic comment: the workflow event is the trigger
+		pgtype.UUID{}, // no synthetic comment: the workflow/project event is the trigger
 		false,
 		pgtype.UUID{},
 		false,
@@ -109,6 +142,17 @@ func (s *TaskService) EnqueueTaskForWorkflow(
 			// workflow_action_id remains an authoritative audit join until repair.
 			slog.Warn("workflow context task binding failed",
 				"workflow_action_id", util.UUIDToString(contextActionID),
+				"task_id", util.UUIDToString(queued.ID),
+				"error", err,
+			)
+		}
+	}
+	if contextCompilationID.Valid && queued.ID.Valid {
+		if err := s.bindDirectContextTask(ctx, contextCompilationID, queued.ID); err != nil {
+			// The admitted task already embeds the package. Keep execution safe and
+			// surface the audit-link repair separately instead of duplicating work.
+			slog.Warn("direct project context task binding failed",
+				"context_compilation_id", util.UUIDToString(contextCompilationID),
 				"task_id", util.UUIDToString(queued.ID),
 				"error", err,
 			)
@@ -150,6 +194,18 @@ func (s *TaskService) bindWorkflowContextTask(ctx context.Context, actionID, tas
 	}
 	defer tx.Rollback(ctx)
 	if err := projectorchestration.BindWorkflowContextTask(ctx, tx, actionID, taskID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *TaskService) bindDirectContextTask(ctx context.Context, compilationID, taskID pgtype.UUID) error {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := projectorchestration.BindDirectContextTask(ctx, tx, compilationID, taskID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
