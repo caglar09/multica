@@ -1,0 +1,30 @@
+DROP TRIGGER IF EXISTS trg_autonomous_project_cleanup_change_model_after_plan_delete ON autonomous_project_plan;
+DROP FUNCTION IF EXISTS autonomous_project_cleanup_change_model_after_plan_delete();
+DROP INDEX IF EXISTS idx_autonomous_node_retirement_pending;
+DROP TABLE IF EXISTS autonomous_project_node_retirement;
+DROP INDEX IF EXISTS uq_autonomous_plan_mutation_change_request;
+DROP TABLE IF EXISTS autonomous_project_plan_mutation;
+DROP TRIGGER IF EXISTS trg_autonomous_project_change_request_history ON autonomous_project_change_request;
+DROP FUNCTION IF EXISTS autonomous_project_change_request_history();
+DROP INDEX IF EXISTS idx_autonomous_change_request_event_request;
+DROP TABLE IF EXISTS autonomous_project_change_request_event;
+DROP INDEX IF EXISTS idx_autonomous_change_request_project_state;
+DROP TABLE IF EXISTS autonomous_project_change_request;
+
+DROP INDEX IF EXISTS idx_autonomous_project_logical_node;
+DROP INDEX IF EXISTS uq_autonomous_project_plan_logical_node;
+DROP TRIGGER IF EXISTS trg_autonomous_project_assign_logical_node_id ON autonomous_project_plan_node;
+DROP FUNCTION IF EXISTS autonomous_project_assign_logical_node_id();
+ALTER TABLE autonomous_project_plan_node DROP COLUMN IF EXISTS logical_node_id;
+
+DROP INDEX IF EXISTS idx_autonomous_project_plan_spec_revision;
+DROP TRIGGER IF EXISTS trg_autonomous_project_bind_plan_specification ON autonomous_project_plan;
+DROP FUNCTION IF EXISTS autonomous_project_bind_plan_specification();
+ALTER TABLE autonomous_project_plan DROP COLUMN IF EXISTS specification_revision_id;
+
+DROP TRIGGER IF EXISTS trg_autonomous_project_specification_immutable ON autonomous_project_specification_revision;
+DROP FUNCTION IF EXISTS autonomous_project_specification_immutable();
+DROP TABLE IF EXISTS autonomous_project_specification_head;
+DROP INDEX IF EXISTS uq_project_spec_revision_source;
+DROP INDEX IF EXISTS idx_project_spec_revision_project;
+DROP TABLE IF EXISTS autonomous_project_specification_revision;
