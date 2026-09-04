@@ -1,0 +1,329 @@
+name: Phase 5 Control Plane Patch
+
+on:
+  push:
+    branches:
+      - feat/autonomous-project-os
+    paths:
+      - .github/workflows/phase5-control-plane-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[phase5-patch]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/autonomous-project-os
+          fetch-depth: 0
+
+      - name: Patch reconciler and quality continuation
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_go_function(text: str, signature: str, replacement: str) -> str:
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit(f"signature not found: {signature}")
+              brace = text.find('{', start)
+              if brace < 0:
+                  raise SystemExit(f"opening brace not found: {signature}")
+              depth = 0
+              i = brace
+              in_string = False
+              in_raw = False
+              escaped = False
+              while i < len(text):
+                  ch = text[i]
+                  if in_string:
+                      if escaped:
+                          escaped = False
+                      elif ch == '\\':
+                          escaped = True
+                      elif ch == '"':
+                          in_string = False
+                  elif in_raw:
+                      if ch == '`':
+                          in_raw = False
+                  else:
+                      if ch == '"':
+                          in_string = True
+                      elif ch == '`':
+                          in_raw = True
+                      elif ch == '{':
+                          depth += 1
+                      elif ch == '}':
+                          depth -= 1
+                          if depth == 0:
+                              return text[:start] + replacement.rstrip() + "\n" + text[i+1:]
+                  i += 1
+              raise SystemExit(f"unterminated function: {signature}")
+
+          path = Path('server/internal/workflowruntime/project_orchestrator.go')
+          text = path.read_text()
+
+          text = replace_go_function(text, 'func (r *Runtime) processProjectBootstrap(ctx context.Context) error', r'''func (r *Runtime) processProjectBootstrap(ctx context.Context) error {
+	if r == nil || r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT b.workspace_id, b.project_id
+		FROM autonomous_project_bootstrap b
+		WHERE b.autonomy_mode = 'autonomous'
+		  AND (
+			b.status = 'ready'
+			OR (b.status = 'started' AND b.updated_at < now() - interval '30 seconds')
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_team t
+			WHERE t.workspace_id = b.workspace_id
+			  AND t.project_id = b.project_id
+			  AND t.status = 'active'
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_team_draft d
+			WHERE d.workspace_id = b.workspace_id
+			  AND d.project_id = b.project_id
+			  AND d.status IN ('awaiting_configuration', 'provisioning', 'applied')
+		  )
+		ORDER BY b.updated_at ASC
+		LIMIT 20
+	`)
+	if err != nil {
+		return fmt.Errorf("query autonomous project bootstraps: %w", err)
+	}
+	type candidate struct{ workspaceID, projectID pgtype.UUID }
+	items := make([]candidate, 0, 20)
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.workspaceID, &item.projectID); err != nil {
+			rows.Close()
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, item := range items {
+		if _, err := r.pool.Exec(ctx, `
+			UPDATE autonomous_project_bootstrap
+			SET status='started', updated_at=now()
+			WHERE workspace_id=$1 AND project_id=$2
+			  AND autonomy_mode='autonomous' AND status IN ('ready','started')
+		`, item.workspaceID, item.projectID); err != nil {
+			return fmt.Errorf("mark project bootstrap started: %w", err)
+		}
+		if err := r.enqueueControlPlaneJob(
+			ctx, item.workspaceID, item.projectID,
+			controlPlaneJobTeamPlanner, "bootstrap",
+			teamPlannerJobPayload{}, 100, 3,
+		); err != nil {
+			return fmt.Errorf("enqueue autonomous team planner: %w", err)
+		}
+	}
+	return nil
+}''')
+
+          text = replace_go_function(text, 'func (r *Runtime) processProjectPlanning(ctx context.Context) error', r'''func (r *Runtime) processProjectPlanning(ctx context.Context) error {
+	if r.projectPlanner == nil || r.projectStore == nil || r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT d.project_id, d.workspace_id, d.confirmed_at
+		FROM autonomous_project_team_draft d
+		WHERE d.status = 'applied'
+		  AND d.confirmed_at IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_plan p
+			WHERE p.workspace_id=d.workspace_id AND p.project_id=d.project_id
+			  AND p.status IN ('active','completed')
+		  )
+		ORDER BY d.confirmed_at ASC
+		LIMIT 20
+	`)
+	if err != nil {
+		return fmt.Errorf("query projects requiring durable planning: %w", err)
+	}
+	type candidate struct {
+		projectID, workspaceID pgtype.UUID
+		confirmedAt time.Time
+	}
+	items := make([]candidate, 0, 20)
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.projectID, &item.workspaceID, &item.confirmedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, item := range items {
+		sourceRevision := item.confirmedAt.UTC().Format(time.RFC3339Nano)
+		if err := r.enqueueControlPlaneJob(
+			ctx, item.workspaceID, item.projectID,
+			controlPlaneJobProjectPlanner, "team:"+sourceRevision,
+			projectPlannerJobPayload{SourceRevision: sourceRevision}, 90, 3,
+		); err != nil {
+			return fmt.Errorf("enqueue project planner: %w", err)
+		}
+	}
+	return nil
+}''')
+
+          text = replace_go_function(text, 'func (r *Runtime) processRequestedReplans(ctx context.Context) error', r'''func (r *Runtime) processRequestedReplans(ctx context.Context) error {
+	if r == nil || r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT workspace_id, project_id, replan_requested_at
+		FROM autonomous_project_control
+		WHERE paused=FALSE
+		  AND replan_requested_at IS NOT NULL
+		  AND (replan_completed_at IS NULL OR replan_completed_at < replan_requested_at)
+		ORDER BY replan_requested_at ASC
+		LIMIT 20
+	`)
+	if err != nil {
+		return fmt.Errorf("query requested autonomous team replans: %w", err)
+	}
+	type candidate struct {
+		workspaceID, projectID pgtype.UUID
+		requestedAt time.Time
+	}
+	items := make([]candidate, 0, 20)
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.workspaceID, &item.projectID, &item.requestedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, item := range items {
+		sourceRevision := item.requestedAt.UTC().Format(time.RFC3339Nano)
+		if err := r.enqueueControlPlaneJob(
+			ctx, item.workspaceID, item.projectID,
+			controlPlaneJobTeamReplan, "request:"+sourceRevision,
+			teamReplanJobPayload{SourceRevision: sourceRevision}, 95, 3,
+		); err != nil {
+			return fmt.Errorf("enqueue requested autonomous team replan: %w", err)
+		}
+	}
+	return nil
+}''')
+          path.write_text(text)
+
+          quality = Path('server/internal/workflowruntime/phase2_quality.go')
+          qtext = quality.read_text()
+          qtext = replace_go_function(qtext, 'func (r *Runtime) runTaskQualityIfRequired(ctx context.Context, task db.AgentTaskQueue, issue db.Issue, artifactType string, artifact map[string]any) (bool, error)', r'''func (r *Runtime) runTaskQualityIfRequired(ctx context.Context, task db.AgentTaskQueue, issue db.Issue, artifactType string, artifact map[string]any) (bool, error) {
+	q, err := r.loadNodeQualityByIssue(ctx, issue.WorkspaceID, issue.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	gateType := projectQualityGateType(q.Kind)
+	if gateType == "" {
+		return false, nil
+	}
+	required, deterministic, err := r.requiredGate(ctx, q, gateType)
+	if err != nil || !required {
+		return false, err
+	}
+	if deterministic {
+		key := "task:" + util.UUIDToString(task.ID) + ":gate:" + gateType
+		if err := r.enqueueControlPlaneJob(
+			ctx, q.WorkspaceID, q.ProjectID,
+			controlPlaneJobQualityGate, key,
+			qualityGateJobPayload{
+				TaskID: util.UUIDToString(task.ID),
+				IssueID: util.UUIDToString(issue.ID),
+				GateType: gateType,
+				ArtifactType: artifactType,
+				Artifact: artifact,
+			},
+			80, 3,
+		); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	if gateErr := r.passSemanticGate(ctx, q, gateType, map[string]any{
+		"task_id": util.UUIDToString(task.ID), "artifact_type": artifactType,
+	}); gateErr != nil {
+		if err := r.blockForQualityFailure(ctx, q, gateType, gateErr); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	return false, nil
+}''')
+          quality.write_text(qtext)
+
+          runtime = Path('server/internal/workflowruntime/runtime.go')
+          rtext = runtime.read_text()
+          signature = 'func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) error'
+          fs = rtext.find(signature)
+          if fs < 0:
+              raise SystemExit('handleTaskCompleted not found')
+          next_func = rtext.find('\nfunc ', fs + len(signature))
+          if next_func < 0:
+              next_func = len(rtext)
+          segment = rtext[fs:next_func]
+          if 'event.Type != controlPlaneQualityResumeEvent' not in segment:
+              preamble_start = segment.find('\tif err := r.recordAgentPerformance')
+              continuation = segment.find('\tif handled, projectErr := r.completeNonImplementationProjectNode')
+              if preamble_start < 0 or continuation < 0 or continuation <= preamble_start:
+                  raise SystemExit('handleTaskCompleted preamble markers not found')
+              middle = segment[preamble_start:continuation]
+              indented = ''.join('\t' + line if line.strip() else line for line in middle.splitlines(True))
+              wrapped = '\tif event.Type != controlPlaneQualityResumeEvent {\n' + indented + '\t}\n'
+              segment = segment[:preamble_start] + wrapped + segment[continuation:]
+              rtext = rtext[:fs] + segment + rtext[next_func:]
+          runtime.write_text(rtext)
+          PY
+
+          gofmt -w \
+            server/internal/workflowruntime/control_plane_jobs.go \
+            server/internal/workflowruntime/brain_learning.go \
+            server/internal/workflowruntime/phase2_quality.go \
+            server/internal/workflowruntime/project_orchestrator.go \
+            server/internal/workflowruntime/runtime.go
+
+      - name: Verify control-plane packages
+        working-directory: server
+        run: |
+          go test ./internal/projectorchestration ./internal/workflowruntime ./internal/teamprovision
+
+      - name: Commit Phase 5 implementation
+        shell: bash
+        run: |
+          rm .github/workflows/phase5-control-plane-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/internal/workflowruntime server/migrations/475_autonomous_control_plane_job.up.sql .github/workflows/phase5-control-plane-patch.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "feat(control-plane): decouple durable workers [phase5-patch]"
+          git push origin HEAD:feat/autonomous-project-os
