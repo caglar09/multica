@@ -6,16 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
-	"time"
 
-	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
-
-const brainLearningTimeout = 5 * time.Minute
 
 func shouldEnqueueBrainLearning(task db.AgentTaskQueue) bool {
 	raw := bytes.TrimSpace(task.Result)
@@ -30,8 +25,6 @@ func shouldEnqueueBrainLearning(task db.AgentTaskQueue) bool {
 	if verdict, err := parseReviewVerdict(task.Result); err == nil {
 		return verdict.Verdict == "changes_requested" || len(verdict.Findings) > 0
 	}
-	// Unknown task contracts are allowed into semantic learning only when there
-	// is enough evidence to justify an extra control-plane model invocation.
 	return len(raw) >= 256
 }
 
@@ -63,88 +56,27 @@ func (r *Runtime) enqueueBrainLearning(ctx context.Context, task db.AgentTaskQue
 				evidence["result_text"] = string(task.Result)
 			}
 		} else {
-			// Keep the evidence envelope valid JSON. Raw JSON must never be byte-sliced:
-			// a truncated object would make the durable learning job impossible to encode.
 			evidence["result_excerpt"] = string(task.Result[:maxEvidenceBytes])
 			evidence["result_truncated"] = true
 		}
 	}
-	return r.projectStore.EnqueueBrainLearning(ctx, issue.WorkspaceID, issue.ProjectID, task.ID, evidence)
+	return r.enqueueControlPlaneJob(
+		ctx,
+		issue.WorkspaceID,
+		issue.ProjectID,
+		controlPlaneJobBrainLearning,
+		"task:"+util.UUIDToString(task.ID),
+		brainLearningJobPayload{TaskID: util.UUIDToString(task.ID), Evidence: evidence},
+		40,
+		3,
+	)
 }
 
+// runBrainWorker is retained as the startup hook used by Runtime registration.
+// Phase 5 expands it into the generic durable control-plane worker pool.
 func (r *Runtime) runBrainWorker(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		for {
-			job, ok, err := r.projectStore.ClaimBrainLearning(ctx, 6*time.Minute)
-			if err != nil {
-				slog.Error("project brain learning claim failed", "error", err)
-				break
-			}
-			if !ok {
-				break
-			}
-			r.processBrainLearning(ctx, job)
-		}
-	}
-}
-
-func (r *Runtime) processBrainLearning(parent context.Context, job projectorchestration.BrainLearningJob) {
-	ctx, cancel := context.WithTimeout(parent, brainLearningTimeout)
-	defer cancel()
-
-	cfg, err := r.projectStore.GetBrainConfig(ctx, job.WorkspaceID, job.ProjectID)
-	if err != nil {
-		_ = r.projectStore.FailBrainLearning(context.Background(), job, err)
-		return
-	}
-	if !cfg.Enabled || cfg.LearningMode == "deterministic" {
-		_ = r.projectStore.CompleteBrainLearning(context.Background(), job.ID, "deterministic", "")
-		return
-	}
-
-	result, err := r.brainExecutor.Execute(ctx, cfg, job.Evidence)
-	if err != nil {
-		_ = r.projectStore.FailBrainLearning(context.Background(), job, err)
-		return
-	}
-	memories, err := decodeBrainMemories(result.Output)
-	if err != nil {
-		_ = r.projectStore.FailBrainLearning(context.Background(), job, err)
-		return
-	}
-	source := projectorchestration.MemorySource{
-		SourceType:    "brain_learning",
-		SourceID:      util.UUIDToString(job.TaskID),
-		CreatedByType: "agent",
-		Authority:     projectorchestration.AuthorityAgentInference,
-		Evidence:      job.Evidence,
-		ObservedAt:    time.Now().UTC(),
-	}
-	for _, memory := range memories {
-		retention, retainErr := r.projectStore.RetainMemoryGoverned(
-			ctx, job.WorkspaceID, job.ProjectID, memory, source,
-		)
-		if retainErr != nil {
-			_ = r.projectStore.FailBrainLearning(context.Background(), job, retainErr)
-			return
-		}
-		if impactErr := r.projectStore.AssessMemoryImpact(
-			ctx, job.WorkspaceID, job.ProjectID, memory, retention, source,
-		); impactErr != nil {
-			_ = r.projectStore.FailBrainLearning(context.Background(), job, impactErr)
-			return
-		}
-	}
-	if err := r.projectStore.CompleteBrainLearning(context.Background(), job.ID, result.Provider, result.Model); err != nil {
-		slog.Error("project brain learning completion persist failed", "job_id", util.UUIDToString(job.ID), "error", err)
-	}
+	r.runControlPlaneWorkers(ctx)
+	<-ctx.Done()
 }
 
 func decodeBrainMemories(output string) ([]projectorchestration.MemoryCandidate, error) {
