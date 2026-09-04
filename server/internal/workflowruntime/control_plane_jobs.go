@@ -26,9 +26,9 @@ const (
 	controlPlaneJobImpactAnalysis = "impact_analysis"
 	controlPlaneJobPlanMutation   = "plan_mutation"
 
-	controlPlaneWorkerCount       = 4
-	controlPlaneLease             = 45 * time.Second
-	controlPlaneJobTimeout        = 6 * time.Minute
+	controlPlaneWorkerCount        = 4
+	controlPlaneLease              = 45 * time.Second
+	controlPlaneJobTimeout         = 6 * time.Minute
 	controlPlaneQualityResumeEvent = "control-plane:quality-gate-passed"
 )
 
@@ -55,8 +55,8 @@ type teamReplanJobPayload struct {
 }
 
 type brainLearningJobPayload struct {
-	TaskID   string         `json:"task_id"`
-	Evidence map[string]any `json:"evidence"`
+	TaskID   string          `json:"task_id"`
+	Evidence json.RawMessage `json:"evidence"`
 }
 
 type qualityGateJobPayload struct {
@@ -72,10 +72,10 @@ type impactAnalysisJobPayload struct {
 }
 
 type planMutationJobPayload struct {
-	ChangeRequestID string                                      `json:"change_request_id"`
+	ChangeRequestID string                                        `json:"change_request_id"`
 	Operations      []projectorchestration.PlanMutationOperation `json:"operations"`
-	PlannerName     string                                      `json:"planner_name"`
-	PlannerModel    string                                      `json:"planner_model"`
+	PlannerName     string                                        `json:"planner_name"`
+	PlannerModel    string                                        `json:"planner_model"`
 }
 
 func (r *Runtime) enqueueControlPlaneJob(
@@ -523,9 +523,9 @@ func (r *Runtime) executeQualityGateJob(ctx context.Context, job controlPlaneJob
 		return nil, err
 	}
 	if err := r.handleTaskCompleted(ctx, events.Event{
-		Type: controlPlaneQualityResumeEvent,
+		Type:        controlPlaneQualityResumeEvent,
 		WorkspaceID: util.UUIDToString(job.WorkspaceID),
-		TaskID: payload.TaskID,
+		TaskID:      payload.TaskID,
 	}); err != nil {
 		return nil, fmt.Errorf("resume task after quality gate: %w", err)
 	}
