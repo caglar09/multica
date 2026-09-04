@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS autonomous_project_brain_state (
 );
 
 INSERT INTO autonomous_project_brain_state (project_id, workspace_id, revision)
-SELECT project_id, min(workspace_id), GREATEST(COALESCE(MAX(revision), 0), 1)
+SELECT project_id, MIN(workspace_id::text)::uuid, GREATEST(COALESCE(MAX(revision), 0), 1)
 FROM autonomous_project_brain_entry
 GROUP BY project_id
 ON CONFLICT (project_id) DO NOTHING;
