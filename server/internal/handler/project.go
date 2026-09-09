@@ -54,6 +54,7 @@ type ProjectWorkingDirectoryResponse struct {
 	Path         string `json:"path"`
 	RelativePath string `json:"relative_path"`
 	DaemonID     string `json:"daemon_id"`
+	HealthPort   int    `json:"health_port,omitempty"`
 	RuntimeID    string `json:"runtime_id"`
 	TaskID       string `json:"task_id"`
 	Status       string `json:"status"`
@@ -130,6 +131,10 @@ func (h *Handler) loadProjectWorkingDirectories(ctx context.Context, workspaceID
 			atq.id::text,
 			atq.runtime_id::text,
 			ar.daemon_id,
+			CASE
+				WHEN ar.metadata->>'health_port' ~ '^[0-9]+$' THEN (ar.metadata->>'health_port')::int
+				ELSE 0
+			END AS health_port,
 			atq.status,
 			COALESCE(NULLIF(atq.durable_work_dir, ''), NULLIF(atq.work_dir, '')) AS work_path,
 			(NULLIF(atq.durable_work_dir, '') IS NOT NULL) AS is_durable
@@ -153,8 +158,9 @@ func (h *Handler) loadProjectWorkingDirectories(ctx context.Context, workspaceID
 	locations := make([]ProjectWorkingDirectoryResponse, 0, 2)
 	for rows.Next() {
 		var taskID, runtimeID, daemonID, status, path string
+		var healthPort int
 		var durable bool
-		if err := rows.Scan(&taskID, &runtimeID, &daemonID, &status, &path, &durable); err != nil {
+		if err := rows.Scan(&taskID, &runtimeID, &daemonID, &healthPort, &status, &path, &durable); err != nil {
 			return nil
 		}
 		if _, exists := seenDaemon[daemonID]; exists {
@@ -172,6 +178,7 @@ func (h *Handler) loadProjectWorkingDirectories(ctx context.Context, workspaceID
 			Path:         path,
 			RelativePath: relativeWorkDir(path, workspaceKey, taskKey),
 			DaemonID:     daemonID,
+			HealthPort:   healthPort,
 			RuntimeID:    runtimeID,
 			TaskID:       taskID,
 			Status:       status,

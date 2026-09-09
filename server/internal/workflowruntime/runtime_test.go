@@ -108,6 +108,22 @@ func TestBlockedRetryCompletionEvent(t *testing.T) {
 	}
 }
 
+func TestWorkflowRetryBoardState(t *testing.T) {
+	ownerID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	reviewerID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
+	otherID := pgtype.UUID{Bytes: [16]byte{3}, Valid: true}
+
+	if got := workflowRetryBoardState(ownerID, ownerID, reviewerID); got != issuestatus.InProgress {
+		t.Fatalf("owner retry board state = %q, want %q", got, issuestatus.InProgress)
+	}
+	if got := workflowRetryBoardState(reviewerID, ownerID, reviewerID); got != issuestatus.InReview {
+		t.Fatalf("reviewer retry board state = %q, want %q", got, issuestatus.InReview)
+	}
+	if got := workflowRetryBoardState(otherID, ownerID, reviewerID); got != "" {
+		t.Fatalf("unrelated retry board state = %q, want empty", got)
+	}
+}
+
 func TestSystemStatusProjection(t *testing.T) {
 	if !isSystemStatusProjection(events.Event{ActorType: "system"}) {
 		t.Fatal("server-owned status write was not recognized as a system projection")

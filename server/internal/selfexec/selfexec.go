@@ -20,7 +20,14 @@ func Resolve() (string, error) {
 func resolveWith(osExecutable func() (string, error), args []string) (string, error) {
 	exePath, err := osExecutable()
 	if err == nil {
-		return exePath, nil
+		info, statErr := os.Stat(exePath)
+		if statErr == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return exePath, nil
+		}
+		if statErr == nil {
+			statErr = fmt.Errorf("%s is not an executable regular file", exePath)
+		}
+		err = statErr
 	}
 	osExecutableErr := fmt.Errorf("os.Executable: %w", err)
 
@@ -28,16 +35,24 @@ func resolveWith(osExecutable func() (string, error), args []string) (string, er
 		return "", errors.Join(osExecutableErr, errors.New("argv[0] is empty"))
 	}
 
-	candidate, fallbackErr := exec.LookPath(args[0])
-	if fallbackErr == nil {
-		candidate, fallbackErr = filepath.Abs(candidate)
-	}
-	if fallbackErr == nil {
-		var info os.FileInfo
-		info, fallbackErr = os.Stat(candidate)
-		if fallbackErr == nil && !info.Mode().IsRegular() {
-			fallbackErr = fmt.Errorf("%s is not a regular file", candidate)
+	resolveCandidate := func(argv0 string) (string, error) {
+		candidate, candidateErr := exec.LookPath(argv0)
+		if candidateErr == nil {
+			candidate, candidateErr = filepath.Abs(candidate)
 		}
+		if candidateErr == nil {
+			var info os.FileInfo
+			info, candidateErr = os.Stat(candidate)
+			if candidateErr == nil && (!info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0) {
+				candidateErr = fmt.Errorf("%s is not an executable regular file", candidate)
+			}
+		}
+		return candidate, candidateErr
+	}
+
+	candidate, fallbackErr := resolveCandidate(args[0])
+	if fallbackErr != nil && filepath.Base(args[0]) != args[0] {
+		candidate, fallbackErr = resolveCandidate(filepath.Base(args[0]))
 	}
 	if fallbackErr != nil {
 		return "", errors.Join(

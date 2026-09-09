@@ -92,12 +92,12 @@ func (p *Provisioner) PrepareProject(ctx context.Context, workspaceID, projectID
 		return TeamDraft{}, err
 	} else if ok {
 		return TeamDraft{
-			WorkspaceID: workspaceID,
-			ProjectID: projectID,
-			Plan: team.Plan,
-			PlannerName: team.Plan.PlannerName,
+			WorkspaceID:  workspaceID,
+			ProjectID:    projectID,
+			Plan:         team.Plan,
+			PlannerName:  team.Plan.PlannerName,
 			PlannerModel: team.Plan.PlannerModel,
-			Status: "applied",
+			Status:       "applied",
 		}, nil
 	}
 	if draft, ok, err := p.FindDraft(ctx, workspaceID, projectID); err != nil {
@@ -107,7 +107,7 @@ func (p *Provisioner) PrepareProject(ctx context.Context, workspaceID, projectID
 	}
 
 	project, err := p.queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
-		ID: projectID,
+		ID:          projectID,
 		WorkspaceID: workspaceID,
 	})
 	if err != nil {
@@ -209,9 +209,9 @@ func selectionJSON(assignments []RoleRuntimeSelection) []byte {
 		}
 		payload[assignment.Role] = map[string]any{
 			"runtime_id": util.UUIDToString(assignment.RuntimeID),
-			"model": strings.TrimSpace(assignment.Model),
+			"model":      strings.TrimSpace(assignment.Model),
 			"skill_mode": skillMode,
-			"skill_ids": skills,
+			"skill_ids":  skills,
 		}
 	}
 	raw, _ := json.Marshal(payload)
@@ -280,7 +280,7 @@ func (p *Provisioner) ProvisionDraft(
 	}
 
 	project, err := qtx.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
-		ID: projectID,
+		ID:          projectID,
 		WorkspaceID: workspaceID,
 	})
 	if err != nil {
@@ -288,7 +288,7 @@ func (p *Provisioner) ProvisionDraft(
 	}
 	mika, err := qtx.GetAgentBySystemKey(ctx, db.GetAgentBySystemKeyParams{
 		WorkspaceID: workspaceID,
-		SystemKey: pgtype.Text{String: service.MikaSystemKey, Valid: true},
+		SystemKey:   pgtype.Text{String: service.MikaSystemKey, Valid: true},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Team{}, ErrMikaUnavailable
@@ -383,34 +383,34 @@ func (p *Provisioner) ProvisionDraft(
 		}
 
 		agent, err := qtx.CreateAgent(ctx, db.CreateAgentParams{
-			WorkspaceID: workspaceID,
-			Name: generatedAgentName(project, role),
-			Description: role.Description,
-			AvatarUrl: pgtype.Text{},
-			RuntimeMode: runtimeMode,
-			RuntimeConfig: []byte("{}"),
-			RuntimeID: runtimeID,
-			Visibility: "workspace",
-			MaxConcurrentTasks: 2,
-			OwnerID: mika.OwnerID,
-			Instructions: role.Instructions,
-			CustomEnv: []byte("{}"),
-			CustomArgs: []byte("[]"),
-			McpConfig: nil,
-			Model: model,
-			ThinkingLevel: thinking,
-			ServiceTier: serviceTier,
+			WorkspaceID:          workspaceID,
+			Name:                 generatedAgentName(project, role),
+			Description:          role.Description,
+			AvatarUrl:            pgtype.Text{},
+			RuntimeMode:          runtimeMode,
+			RuntimeConfig:        []byte("{}"),
+			RuntimeID:            runtimeID,
+			Visibility:           "workspace",
+			MaxConcurrentTasks:   2,
+			OwnerID:              mika.OwnerID,
+			Instructions:         role.Instructions,
+			CustomEnv:            []byte("{}"),
+			CustomArgs:           []byte("[]"),
+			McpConfig:            nil,
+			Model:                model,
+			ThinkingLevel:        thinking,
+			ServiceTier:          serviceTier,
 			ConversationStarters: []byte("[]"),
-			PermissionMode: "public_to",
+			PermissionMode:       "public_to",
 		})
 		if err != nil {
 			return Team{}, fmt.Errorf("create %s agent: %w", role.Role, err)
 		}
 		if err := qtx.CreateAgentInvocationTarget(ctx, db.CreateAgentInvocationTargetParams{
-			AgentID: agent.ID,
+			AgentID:    agent.ID,
 			TargetType: "workspace",
-			TargetID: workspaceID,
-			CreatedBy: mika.OwnerID,
+			TargetID:   workspaceID,
+			CreatedBy:  mika.OwnerID,
 		}); err != nil {
 			return Team{}, fmt.Errorf("grant workspace access to %s agent: %w", role.Role, err)
 		}
@@ -429,7 +429,7 @@ func (p *Provisioner) ProvisionDraft(
 			}
 			seenSkills[skillID] = struct{}{}
 			if _, err := qtx.GetSkillInWorkspace(ctx, db.GetSkillInWorkspaceParams{
-				ID: skillID,
+				ID:          skillID,
 				WorkspaceID: workspaceID,
 			}); err != nil {
 				return Team{}, fmt.Errorf("validate workspace skill for role %s: %w", role.Role, err)
@@ -452,30 +452,30 @@ func (p *Provisioner) ProvisionDraft(
 	}
 	squad, err := qtx.CreateSquad(ctx, db.CreateSquadParams{
 		WorkspaceID: workspaceID,
-		Name: generatedSquadName(project),
+		Name:        generatedSquadName(project),
 		Description: "Autonomously provisioned technology team for " + project.Title,
-		LeaderID: leaderID,
-		CreatorID: mika.OwnerID,
-		AvatarUrl: pgtype.Text{},
+		LeaderID:    leaderID,
+		CreatorID:   mika.OwnerID,
+		AvatarUrl:   pgtype.Text{},
 	})
 	if err != nil {
 		return Team{}, fmt.Errorf("create autonomous project squad: %w", err)
 	}
 	for _, role := range plan.Roles {
 		if _, err := qtx.AddSquadMember(ctx, db.AddSquadMemberParams{
-			SquadID: squad.ID,
+			SquadID:    squad.ID,
 			MemberType: "agent",
-			MemberID: members[role.Role],
-			Role: role.Role,
+			MemberID:   members[role.Role],
+			Role:       role.Role,
 		}); err != nil {
 			return Team{}, fmt.Errorf("add %s to project squad: %w", role.Role, err)
 		}
 	}
 	if _, err := qtx.AddSquadMember(ctx, db.AddSquadMemberParams{
-		SquadID: squad.ID,
+		SquadID:    squad.ID,
 		MemberType: "agent",
-		MemberID: mika.ID,
-		Role: "chief_of_staff",
+		MemberID:   mika.ID,
+		Role:       "chief_of_staff",
 	}); err != nil {
 		return Team{}, fmt.Errorf("add Mika to project squad: %w", err)
 	}
@@ -554,12 +554,12 @@ func (p *Provisioner) ProvisionDraft(
 	}
 
 	return Team{
-		ID: teamID,
+		ID:          teamID,
 		WorkspaceID: workspaceID,
-		ProjectID: projectID,
-		SquadID: squad.ID,
-		Intent: plan.Intent,
-		Plan: plan,
-		Members: members,
+		ProjectID:   projectID,
+		SquadID:     squad.ID,
+		Intent:      plan.Intent,
+		Plan:        plan,
+		Members:     members,
 	}, nil
 }

@@ -212,18 +212,18 @@ const (
 // reportTerminalTask gives the durable outbox one insertion point without
 // revisiting every task exit when it is added.
 type terminalTaskReport struct {
-	kind           terminalTaskReportKind
-	taskID         string
-	output         string
-	branchName     string
-	worktreeBaseSHA string
-	worktreeCommitSHA string
+	kind                 terminalTaskReportKind
+	taskID               string
+	output               string
+	branchName           string
+	worktreeBaseSHA      string
+	worktreeCommitSHA    string
 	worktreeChangedFiles []string
-	errorMessage   string
-	sessionID      string
-	workDir        string
-	durableWorkDir string
-	failureReason  string
+	errorMessage         string
+	sessionID            string
+	workDir              string
+	durableWorkDir       string
+	failureReason        string
 	// sessionRolloutMissing is true when the daemon withheld this task's Codex
 	// session because its rollout was not in the store (MUL-5305). The server
 	// clears the resume pointer and flags the continuity gap for the next claim.
@@ -375,11 +375,12 @@ type repoCacheBackend interface {
 
 // Daemon is the local agent runtime that polls for and executes tasks.
 type Daemon struct {
-	cfg        Config
-	client     *Client
-	repoCache  repoCacheBackend
-	skillCache *SkillBundleCache
-	logger     *slog.Logger
+	cfg            Config
+	client         *Client
+	terminalOutbox *terminalOutbox
+	repoCache      repoCacheBackend
+	skillCache     *SkillBundleCache
+	logger         *slog.Logger
 
 	mu           sync.Mutex
 	workspaces   map[string]*workspaceState
@@ -645,6 +646,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	d := &Daemon{
 		cfg:                       cfg,
 		client:                    client,
+		terminalOutbox:            newTerminalOutbox(filepath.Join(cfg.WorkspacesRoot, ".terminal-outbox")),
 		repoCache:                 repocache.New(cacheRoot, logger),
 		skillCache:                NewSkillBundleCache(skillCacheRoot),
 		logger:                    logger,
@@ -2053,6 +2055,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
+	go d.terminalOutboxLoop(ctx)
 
 	// Preflight succeeded and the background loops are up: the daemon has
 	// registered its runtimes and can now claim and run tasks. Flip /health
@@ -2060,7 +2063,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// readiness wait blocks on, so success is reported only after startup
 	// actually completed, not merely because the health port came up.
 	d.ready.Store(true)
-	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal); health now reporting ready")
+	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal, terminal-outbox); health now reporting ready")
 	err = d.pollLoop(ctx, taskWakeups)
 	d.logger.Debug("daemon main loop returning", "error", err)
 	return err
@@ -2684,6 +2687,7 @@ func (d *Daemon) registerRuntimesForWorkspaceBatchLocked(ctx context.Context, wo
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
+		"health_port":       d.cfg.HealthPort,
 		"runtimes":          runtimes,
 		"failed_profiles":   failedProfiles,
 	}
@@ -2729,6 +2733,7 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
+		"health_port":       d.cfg.HealthPort,
 		"runtimes":          runtimes,
 		// Deliberately empty: this call carries no profiles, so it must not
 		// report profile failures either.
@@ -5796,9 +5801,9 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			taskID:                taskID,
 			output:                result.Comment,
 			branchName:            result.BranchName,
-			worktreeBaseSHA:      result.WorktreeBaseSHA,
-			worktreeCommitSHA:    result.WorktreeCommitSHA,
-			worktreeChangedFiles: append([]string(nil), result.WorktreeChangedFiles...),
+			worktreeBaseSHA:       result.WorktreeBaseSHA,
+			worktreeCommitSHA:     result.WorktreeCommitSHA,
+			worktreeChangedFiles:  append([]string(nil), result.WorktreeChangedFiles...),
 			sessionID:             result.SessionID,
 			workDir:               result.WorkDir,
 			durableWorkDir:        result.DurableWorkDir,
@@ -5808,19 +5813,13 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 		if err == nil {
 			return
 		}
-		// CompleteTask retries transient errors internally. A transient
-		// error reaching us here means the schedule was exhausted while
-		// the upstream was still 5xx / unreachable. Converting that into
-		// a fail would lose the agent's actual result and surface a
-		// misleading red badge in the UI — leave the task in running
-		// instead so a future fix (server-side stuck-task reaper, or a
-		// daemon-side persistent pending queue) can recover it. Only
-		// permanent server-side rejections (4xx other than 408/429)
-		// warrant the legacy fallback, because at that point the server
-		// has already refused this task and the only useful UI signal
-		// left is a concrete failure.
-		if isTransientError(err) {
-			taskLog.Error("complete task failed after retries; leaving task in running rather than falling back to fail", "error", err)
+		// A completed result stays completed when delivery is interrupted.
+		// reportTerminalTask has already persisted it to the durable outbox;
+		// retry it after a server restart or token renewal rather than replacing
+		// a successful run with a failure. A 401 is recoverable here because a
+		// daemon may finish exactly while the server rotates its runtime token.
+		if isTransientError(err) || isUnauthorizedError(err) {
+			taskLog.Error("complete task delivery deferred to terminal outbox", "error", err)
 			return
 		}
 		taskLog.Error("complete task rejected by server, falling back to fail", "error", err)
@@ -5841,9 +5840,9 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			// rejected. Its branch is real and already committed, so it must
 			// survive the downgrade to a failure report.
 			branchName:            result.BranchName,
-			worktreeBaseSHA:      result.WorktreeBaseSHA,
-			worktreeCommitSHA:    result.WorktreeCommitSHA,
-			worktreeChangedFiles: append([]string(nil), result.WorktreeChangedFiles...),
+			worktreeBaseSHA:       result.WorktreeBaseSHA,
+			worktreeCommitSHA:     result.WorktreeCommitSHA,
+			worktreeChangedFiles:  append([]string(nil), result.WorktreeChangedFiles...),
 			sessionID:             result.SessionID,
 			workDir:               result.WorkDir,
 			durableWorkDir:        result.DurableWorkDir,
@@ -5902,7 +5901,18 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTaskReport) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), terminalTaskReportTimeout)
 	defer cancel()
+	if err := d.sendTerminalTaskReport(ctx, report); err != nil {
+		if d.terminalOutbox != nil {
+			if outboxErr := d.terminalOutbox.Put(report); outboxErr != nil {
+				d.logger.Error("persist terminal task report failed", "task", shortID(report.taskID), "error", outboxErr)
+			}
+		}
+		return err
+	}
+	return nil
+}
 
+func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTaskReport) error {
 	switch report.kind {
 	case terminalTaskReportComplete:
 		return d.client.CompleteTask(ctx, report.taskID, report.output, report.branchName,

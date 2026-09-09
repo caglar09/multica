@@ -708,7 +708,16 @@ func broadcastFailedTasks(ctx context.Context, queries *db.Queries, taskSvc *ser
 				if effectiveStatus == "in_progress" && !processedIssues[issueKey] {
 					processedIssues[issueKey] = true
 					if hasActive, herr := queries.HasActiveTaskForIssue(ctx, t.IssueID); herr == nil && !hasActive {
-						queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: t.IssueID, Status: "todo", WorkspaceID: issue.WorkspaceID})
+						// Keep the fallback path subject to the same atomic
+						// workflow-state guard as TaskService.HandleFailedTasks.
+						// A terminal autonomous run must never be projected back
+						// to Todo by stale-task cleanup.
+						if _, updateErr := queries.ResetIssueToTodoAfterTaskFailure(ctx, db.ResetIssueToTodoAfterTaskFailureParams{
+							ID:          t.IssueID,
+							WorkspaceID: issue.WorkspaceID,
+						}); updateErr != nil && !errors.Is(updateErr, pgx.ErrNoRows) {
+							slog.Warn("fallback failed-task reset failed", "issue_id", issueKey, "error", updateErr)
+						}
 					}
 				}
 			}

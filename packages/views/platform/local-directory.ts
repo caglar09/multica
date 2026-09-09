@@ -4,7 +4,8 @@
 // SSR-render on web (where `window.desktopAPI` is undefined) and degrade
 // gracefully to no-op promises instead of crashing.
 
-const LOCAL_DAEMON_OPEN_DIRECTORY_URL = "http://127.0.0.1:19514/open-directory";
+const DEFAULT_LOCAL_DAEMON_HEALTH_PORT = 19514;
+const MAX_LOCAL_DAEMON_HEALTH_PORT = 20514;
 
 export type PickDirectoryResult = {
   ok: boolean;
@@ -42,6 +43,11 @@ export type OpenLocalDirectoryResult = {
     | "error"
     | "unsupported";
   error?: string;
+};
+
+export type OpenLocalDirectoryOptions = {
+  daemonId?: string;
+  healthPort?: number;
 };
 
 interface DesktopLocalDirectoryAPI {
@@ -85,6 +91,7 @@ export async function validateLocalDirectory(
 
 export async function openLocalDirectory(
   path: string,
+  options?: OpenLocalDirectoryOptions,
 ): Promise<OpenLocalDirectoryResult> {
   const api = readDesktopAPI();
   if (api?.openLocalDirectory) return api.openLocalDirectory(path);
@@ -95,7 +102,38 @@ export async function openLocalDirectory(
   // browser-to-filesystem bridge.
   if (typeof window !== "undefined") {
     try {
-      const response = await fetch(LOCAL_DAEMON_OPEN_DIRECTORY_URL, {
+      const healthPort = options?.healthPort ?? DEFAULT_LOCAL_DAEMON_HEALTH_PORT;
+      if (
+        !Number.isInteger(healthPort) ||
+        healthPort < DEFAULT_LOCAL_DAEMON_HEALTH_PORT ||
+        healthPort > MAX_LOCAL_DAEMON_HEALTH_PORT
+      ) {
+        return {
+          ok: false,
+          reason: "unsupported",
+          error: `Invalid local daemon health port: ${healthPort}`,
+        };
+      }
+
+      const daemonBaseURL = `http://127.0.0.1:${healthPort}`;
+      if (options?.daemonId) {
+        const healthResponse = await fetch(`${daemonBaseURL}/health`, {
+          cache: "no-store",
+        });
+        if (!healthResponse.ok) {
+          throw new Error(`Local daemon health check failed (HTTP ${healthResponse.status})`);
+        }
+        const health = (await healthResponse.json()) as { daemon_id?: string };
+        if (health.daemon_id !== options.daemonId) {
+          return {
+            ok: false,
+            reason: "unsupported",
+            error: "Local daemon identity does not match this project folder",
+          };
+        }
+      }
+
+      const response = await fetch(`${daemonBaseURL}/open-directory`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path }),

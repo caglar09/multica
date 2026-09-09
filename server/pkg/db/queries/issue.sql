@@ -274,6 +274,35 @@ UPDATE issue AS i SET
 WHERE i.id = $1 AND i.workspace_id = $3
 RETURNING *;
 
+-- name: ResetIssueToTodoAfterTaskFailure :one
+-- A stale failure may only reset an issue when no autonomous workflow has
+-- already advanced beyond implementation. The workflow-state predicate is
+-- part of the UPDATE so completion and failure cleanup cannot race into Todo.
+UPDATE issue AS i SET
+    status = 'todo',
+    position = CASE WHEN i.status IS DISTINCT FROM 'todo' THEN (
+        SELECT COALESCE(MIN(target.position), 0) - 1
+        FROM issue AS target
+        WHERE target.workspace_id = i.workspace_id
+          AND target.status = 'todo'
+    ) ELSE i.position END,
+    revision = i.revision + CASE WHEN i.status IS DISTINCT FROM 'todo' THEN 1 ELSE 0 END,
+    last_activity_at = CASE WHEN i.status IS DISTINCT FROM 'todo'
+        THEN GREATEST(COALESCE(i.last_activity_at, i.updated_at), now())
+        ELSE i.last_activity_at
+    END,
+    updated_at = now()
+WHERE i.id = sqlc.arg('id')::uuid
+  AND i.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND i.status = 'in_progress'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM autonomous_workflow_run AS wr
+      WHERE wr.issue_id = i.id
+        AND wr.state <> 'in_progress'
+  )
+RETURNING *;
+
 -- name: CreateIssueWithOrigin :one
 INSERT INTO issue (
     workspace_id, title, description, status, priority,

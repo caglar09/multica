@@ -26,6 +26,8 @@ export interface AutonomousTeamMember {
 export interface AutonomousTeam {
   id: string;
   squad_id: string;
+  leader_agent_id: string;
+  leader_name: string;
   intent: string;
   status: string;
   planner_name: string;

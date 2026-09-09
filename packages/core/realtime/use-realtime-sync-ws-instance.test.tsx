@@ -366,6 +366,22 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
     });
   });
 
+  it("does not refetch workspace projections for task progress frames", () => {
+    vi.useFakeTimers();
+    const ws = createMockWs();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    renderHook(() => useRealtimeSync(ws, stores), {
+      wrapper: createWrapper(qc),
+    });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]?.[0];
+    expect(onAny).toBeDefined();
+
+    onAny!({ type: "task:progress", payload: {} } as never);
+    vi.advanceTimersByTime(100);
+
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
   it("invalidates Table queries after a property definition changes", () => {
     const ws = createMockWs();
     const invalidate = vi.spyOn(qc, "invalidateQueries");

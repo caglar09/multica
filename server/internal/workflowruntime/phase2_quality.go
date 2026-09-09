@@ -89,8 +89,8 @@ func (r *Runtime) ensureNodeQualityPolicy(ctx context.Context, workspaceID, proj
 	for _, req := range projectorchestration.RequiredQualityGates(q.Policy, q.Kind, q.Risk) {
 		evidence, _ := json.Marshal(map[string]any{
 			"policy_requirement": true,
-			"deterministic": req.Deterministic,
-			"autonomy": q.Policy.Autonomy,
+			"deterministic":      req.Deterministic,
+			"autonomy":           q.Policy.Autonomy,
 		})
 		if _, err := r.pool.Exec(ctx, `
 			INSERT INTO autonomous_project_quality_gate_run (
@@ -242,27 +242,121 @@ func (r *Runtime) runTaskQualityIfRequired(ctx context.Context, task db.AgentTas
 	if err != nil {
 		return false, err
 	}
-	gateType := projectQualityGateType(q.Kind)
-	if gateType == "" {
-		return false, nil
+	return r.applyTaskQualityEvidence(ctx, q, util.UUIDToString(task.ID), artifactType, artifact)
+}
+
+func (r *Runtime) applyTaskQualityEvidence(ctx context.Context, q nodeQualityContext, taskID, artifactType string, artifact map[string]any) (bool, error) {
+	for _, requirement := range projectorchestration.RequiredQualityGates(q.Policy, q.Kind, q.Risk) {
+		var status string
+		err := r.pool.QueryRow(ctx, `
+			SELECT status
+			FROM autonomous_project_quality_gate_run
+			WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
+			  AND gate_type=$4 AND required=TRUE
+			  AND evidence ->> 'policy_requirement' = 'true'
+			ORDER BY created_at DESC
+			LIMIT 1
+		`, q.WorkspaceID, q.ProjectID, q.NodeID, requirement.GateType).Scan(&status)
+		if errors.Is(err, pgx.ErrNoRows) || status == "passed" {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+
+		var gateErr error
+		if requirement.Deterministic {
+			if artifactType == "review" {
+				continue
+			}
+			if r.qualityGateRunner != nil {
+				gateErr = r.runDeterministicGate(ctx, q, requirement.GateType, artifact)
+			} else if testCount, passed := structuredTestsPassed(requirement.GateType, artifact); passed {
+				gateErr = r.recordPolicyGate(ctx, q, requirement.GateType, "passed", "", map[string]any{
+					"mode": "structured_test_evidence", "task_id": taskID,
+					"artifact_type": artifactType, "reported_test_count": testCount,
+				})
+			} else {
+				gateErr = fmt.Errorf("%w: gate=%s has no all-passing structured test evidence", projectorchestration.ErrQualityGateUnavailable, requirement.GateType)
+			}
+		} else {
+			if requirement.GateType != "review" || artifactType != "review" || !reviewApproved(artifact) {
+				continue
+			}
+			gateErr = r.passSemanticGate(ctx, q, requirement.GateType, map[string]any{
+				"task_id": taskID, "artifact_type": artifactType,
+			})
+		}
+		if gateErr == nil {
+			continue
+		}
+		if err := r.blockForQualityFailure(ctx, q, requirement.GateType, gateErr); err != nil {
+			return true, err
+		}
+		return true, nil
 	}
-	required, deterministic, err := r.requiredGate(ctx, q, gateType)
-	if err != nil || !required {
-		return false, err
+	return false, nil
+}
+
+func structuredTestsPassed(gateType string, artifact map[string]any) (int, bool) {
+	switch gateType {
+	case "unit_test", "integration_test", "acceptance":
+	default:
+		return 0, false
 	}
-	var gateErr error
-	if deterministic {
-		gateErr = r.runDeterministicGate(ctx, q, gateType, artifact)
-	} else {
-		gateErr = r.passSemanticGate(ctx, q, gateType, map[string]any{
-			"task_id": util.UUIDToString(task.ID), "artifact_type": artifactType,
-		})
+	result, _ := artifact["result"].(map[string]any)
+	tests, _ := result["tests"].([]any)
+	if len(tests) == 0 {
+		return 0, false
 	}
-	if gateErr == nil {
-		return false, nil
+	for _, item := range tests {
+		test, _ := item.(map[string]any)
+		if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(test["status"])), "passed") {
+			return len(tests), false
+		}
 	}
-	if err := r.blockForQualityFailure(ctx, q, gateType, gateErr); err != nil {
-		return true, err
+	return len(tests), true
+}
+
+func reviewApproved(artifact map[string]any) bool {
+	result, _ := artifact["result"].(map[string]any)
+	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(result["verdict"])), "approved")
+}
+
+func (r *Runtime) reconcileCompletedProjectQuality(ctx context.Context, issue db.Issue) error {
+	q, err := r.loadNodeQualityByIssue(ctx, issue.WorkspaceID, issue.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
 	}
-	return true, nil
+	if err != nil {
+		return err
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT artifact_type, content
+		FROM autonomous_project_artifact
+		WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
+		  AND status='active' AND valid=TRUE
+		ORDER BY CASE WHEN artifact_type='review' THEN 1 ELSE 0 END, created_at ASC
+	`, q.WorkspaceID, q.ProjectID, q.NodeID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var artifactType string
+		var raw []byte
+		if err := rows.Scan(&artifactType, &raw); err != nil {
+			return err
+		}
+		var artifact map[string]any
+		if err := json.Unmarshal(raw, &artifact); err != nil {
+			return err
+		}
+		taskID, _ := artifact["task_id"].(string)
+		blocked, err := r.applyTaskQualityEvidence(ctx, q, taskID, artifactType, artifact)
+		if err != nil || blocked {
+			return err
+		}
+	}
+	return rows.Err()
 }

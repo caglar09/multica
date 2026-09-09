@@ -17,6 +17,16 @@ func TestStructuredReviewVerdictRejectsFreeText(t *testing.T) {
 	}
 }
 
+func TestExtractEmbeddedContractJSONObject(t *testing.T) {
+	candidate := extractEmbeddedContractJSONObject(`review finished: {"verdict":"approved","summary":"ok","findings":[]}`)
+	if string(candidate) != `{"verdict":"approved","summary":"ok","findings":[]}` {
+		t.Fatalf("candidate = %s", candidate)
+	}
+	if candidate := extractEmbeddedContractJSONObject("review finished without a contract"); candidate != nil {
+		t.Fatalf("unexpected candidate = %s", candidate)
+	}
+}
+
 func TestStructuredReviewVerdictRequiresBlockingFindingForChanges(t *testing.T) {
 	raw := `{"verdict":"changes_requested","summary":"needs work","findings":[{"id":"F-1","severity":"medium","category":"correctness","description":"wrong result","evidence":"test fails","blocking":false}]}`
 	if _, err := parseReviewVerdict(wrappedOutput(raw)); err == nil {

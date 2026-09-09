@@ -5914,12 +5914,14 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							"error", checkErr,
 						)
 					} else if !hasActive {
-						updatedIssue, updateErr := s.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+						updatedIssue, updateErr := s.Queries.ResetIssueToTodoAfterTaskFailure(ctx, db.ResetIssueToTodoAfterTaskFailureParams{
 							ID:          t.IssueID,
-							Status:      "todo",
 							WorkspaceID: issue.WorkspaceID,
 						})
-						if updateErr != nil {
+						if errors.Is(updateErr, pgx.ErrNoRows) {
+							// A concurrent autonomous workflow transition won the
+							// race, so the stale failure must not project Todo.
+						} else if updateErr != nil {
 							slog.Warn("handle failed tasks: reset stuck issue failed",
 								"issue_id", issueKey,
 								"error", updateErr,

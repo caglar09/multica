@@ -49,6 +49,8 @@ export interface ProjectWorkingDirectory {
   relative_path: string;
   /** Machine identity: absolute paths are only valid on this daemon's host. */
   daemon_id: string;
+  /** Loopback health/open-directory port reported by this daemon. */
+  health_port?: number;
   runtime_id: string;
   task_id: string;
   status: string;

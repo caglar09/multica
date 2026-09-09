@@ -8,10 +8,10 @@ import (
 func validPlan() Plan {
 	return Plan{
 		Version: CurrentPlanVersion,
-		Goal: "Ship authentication",
+		Goal:    "Ship authentication",
 		Specification: Specification{
-			Summary: "Users can register and sign in.",
-			Requirements: []string{"Registration", "Login"},
+			Summary:          "Users can register and sign in.",
+			Requirements:     []string{"Registration", "Login"},
 			DefinitionOfDone: []string{"Acceptance tests pass"},
 		},
 		Policy: DefaultPolicy(),
@@ -30,6 +30,17 @@ func validPlan() Plan {
 func TestValidatePlanAcceptsAcyclicLifecycle(t *testing.T) {
 	if err := ValidatePlan(validPlan(), 20); err != nil {
 		t.Fatalf("ValidatePlan() error = %v", err)
+	}
+}
+
+func TestNormalizePlanArtifactEdgesUsesSourceNodeArtifact(t *testing.T) {
+	plan := validPlan()
+	plan.Edges = []EdgeSpec{{
+		From: "arch", To: "impl", Type: DependencyArtifact, RequiredArtifactType: "api_contract",
+	}}
+	normalizePlanArtifactEdges(&plan)
+	if got := plan.Edges[0].RequiredArtifactType; got != "architecture" {
+		t.Fatalf("required artifact type = %q; want architecture", got)
 	}
 }
 
@@ -61,25 +72,24 @@ func TestValidatePlanRequiresClosedLoopForObserve(t *testing.T) {
 	}
 }
 
-
 func TestEnsureLifecycleAddsSecurityAndReviewForAuthImplementation(t *testing.T) {
 	plan := Plan{
 		Version: CurrentPlanVersion,
-		Goal: "Ship authenticated application",
+		Goal:    "Ship authenticated application",
 		Specification: Specification{
-			Summary: "Authenticated application is usable.",
-			Requirements: []string{"Authentication"},
+			Summary:          "Authenticated application is usable.",
+			Requirements:     []string{"Authentication"},
 			DefinitionOfDone: []string{"Security and review gates pass"},
 		},
 		Policy: DefaultPolicy(),
 		Nodes: []NodeSpec{
 			{
-				Key: "integrate_application",
-				Kind: NodeImplementation,
-				Title: "Integrate application authentication",
-				Description: "Connect authentication and session token handling.",
-				Risk: RiskMedium,
-				MaxAttempts: 3,
+				Key:                "integrate_application",
+				Kind:               NodeImplementation,
+				Title:              "Integrate application authentication",
+				Description:        "Connect authentication and session token handling.",
+				Risk:               RiskMedium,
+				MaxAttempts:        3,
 				AcceptanceCriteria: []string{"Authentication works end to end"},
 			},
 		},
@@ -107,21 +117,21 @@ func TestEnsureLifecycleAddsSecurityAndReviewForAuthImplementation(t *testing.T)
 func TestEnsureLifecycleAddsMigrationIntegrationAndReview(t *testing.T) {
 	plan := Plan{
 		Version: CurrentPlanVersion,
-		Goal: "Apply schema migration safely",
+		Goal:    "Apply schema migration safely",
 		Specification: Specification{
-			Summary: "Schema is migrated without regressions.",
-			Requirements: []string{"Schema migration"},
+			Summary:          "Schema is migrated without regressions.",
+			Requirements:     []string{"Schema migration"},
 			DefinitionOfDone: []string{"Migration and integration checks pass"},
 		},
 		Policy: DefaultPolicy(),
 		Nodes: []NodeSpec{
 			{
-				Key: "migrate_schema",
-				Kind: NodeMigration,
-				Title: "Migrate SQLite schema",
-				Description: "Add required schema changes.",
-				Risk: RiskMedium,
-				MaxAttempts: 3,
+				Key:                "migrate_schema",
+				Kind:               NodeMigration,
+				Title:              "Migrate SQLite schema",
+				Description:        "Add required schema changes.",
+				Risk:               RiskMedium,
+				MaxAttempts:        3,
 				AcceptanceCriteria: []string{"Migration is reversible and data remains valid"},
 			},
 		},

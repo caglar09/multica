@@ -15,6 +15,7 @@ import {
   GitBranch,
   Gauge,
   CheckCircle2,
+  LoaderCircle,
   Users,
   Workflow,
 } from "lucide-react";
@@ -122,6 +123,99 @@ function statusDotClass(status: string): string {
     default:
       return "bg-muted-foreground/60";
   }
+}
+
+function isRunningActivity(item: AutonomousActivityItem): boolean {
+  return item.type.endsWith(".running") || item.type.endsWith(".dispatched");
+}
+
+function BootstrapProgress({
+  snapshot,
+  onOpenAgent,
+}: {
+  snapshot: AutonomousProjectSnapshot;
+  onOpenAgent: (agentID: string) => void;
+}) {
+  const teamPlanned = snapshot.activity.some((item) => item.type === "team.planned");
+  const teamConfirmed = snapshot.activity.some((item) => item.type === "team.confirmed");
+  const taskCreation = snapshot.activity.find((item) => item.type.startsWith("backlog."));
+  const planningActivity = snapshot.activity.find((item) => item.type.startsWith("planning."));
+  const liveActivity = snapshot.activity.find(isRunningActivity);
+  const steps = [
+    ["Project brief", Boolean(snapshot.bootstrap)],
+    ["Team planned", teamPlanned],
+    ["Team approved", teamConfirmed],
+    ["Team provisioned", Boolean(snapshot.team)],
+    ["Project tasks", Boolean(taskCreation || snapshot.plan?.nodes.length)],
+    ["Work started", Boolean(liveActivity || snapshot.workflows.length)],
+  ] as const;
+  const current = steps.findIndex(([, complete]) => !complete);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          {liveActivity ? (
+            <LoaderCircle className="size-4 animate-spin text-emerald-500" />
+          ) : (
+            <CircleDot className="size-4" />
+          )}
+          Project bootstrap
+        </CardTitle>
+        <CardDescription>
+          The autonomous team is turning the approved brief into runnable project work.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <ol className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3" aria-label="Project bootstrap progress">
+          {steps.map(([label, complete], index) => {
+            const active = index === current || (index === steps.length - 1 && Boolean(liveActivity));
+            return (
+              <li
+                key={label}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg border px-3 py-2 text-caption",
+                  active && "border-emerald-500/40 bg-emerald-500/5 text-foreground",
+                )}
+              >
+                {active ? (
+                  <span className="relative flex size-3" aria-hidden="true">
+                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/70" />
+                    <span className="relative inline-flex size-3 rounded-full bg-emerald-500" />
+                  </span>
+                ) : complete ? (
+                  <CheckCircle2 className="size-3.5 text-emerald-500" aria-hidden="true" />
+                ) : (
+                  <span className="size-3 rounded-full border border-muted-foreground/40" aria-hidden="true" />
+                )}
+                <span>{label}</span>
+                {label === "Project tasks" && planningActivity?.agent_id ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenAgent(planningActivity.agent_id as string)}
+                    className="ml-auto text-caption text-primary hover:underline"
+                  >
+                    Open planner logs
+                  </button>
+                ) : active ? <span className="ml-auto text-emerald-600 dark:text-emerald-400">Live</span> : null}
+              </li>
+            );
+          })}
+        </ol>
+        {liveActivity ? (
+          <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3" role="status">
+            <div className="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-300">
+              <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+              {liveActivity.title}
+            </div>
+            {liveActivity.detail ? (
+              <div className="mt-1 text-caption text-muted-foreground">{liveActivity.detail}</div>
+            ) : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
 }
 
 function autonomousControlErrorMessage(error: unknown, fallback: string): string {
@@ -880,13 +974,29 @@ function ActivityRow({
   onOpenIssue?: () => void;
   onOpenAgent?: () => void;
 }) {
+  const live = isRunningActivity(item);
   return (
-    <div className="relative grid grid-cols-[18px_1fr_auto] gap-3 py-3">
+    <div
+      className={cn(
+        "relative grid grid-cols-[18px_1fr_auto] gap-3 py-3",
+        live && "-mx-2 rounded-md bg-emerald-500/5 px-2",
+      )}
+    >
       <div className="relative flex justify-center">
-        <span className="mt-1.5 size-2 rounded-full bg-foreground/60" />
+        {live ? (
+          <span className="relative mt-1.5 flex size-2" aria-hidden="true">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/75" />
+            <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+          </span>
+        ) : (
+          <span className="mt-1.5 size-2 rounded-full bg-foreground/60" />
+        )}
       </div>
       <div className="min-w-0">
-        <div className="font-medium">{item.title}</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="font-medium">{item.title}</div>
+          {live ? <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">Live</Badge> : null}
+        </div>
         {item.detail ? (
           <div className="mt-0.5 text-caption text-muted-foreground">
             {item.detail}
@@ -1286,6 +1396,9 @@ export function AutonomousControlCenter({
     restartWorkflow.isPending ||
     confirmTeam.isPending ||
     updateBrain.isPending;
+  const latestActivity = data.activity[0];
+  const latestIssueID = latestActivity?.issue_id;
+  const latestAgentID = latestActivity?.agent_id;
 
   const handlePauseResume = () => {
     const mutation = data.control.paused ? resume : pause;
@@ -1556,20 +1669,21 @@ export function AutonomousControlCenter({
                 icon={<AlertTriangle className="size-4" />}
               />
               <MetricCard
-                title="Last planned"
-                value={
-                  data.team?.last_planned_at
-                    ? formatRelative(data.team.last_planned_at)
-                    : "—"
-                }
+                title="Project lead"
+                value={data.team?.leader_name ?? "—"}
                 description={
-                  data.team?.planner_model ??
-                  data.team?.planner_name ??
-                  "No plan"
+                  data.team ? "Autonomous team leader" : "Team is still being prepared"
                 }
-                icon={<Brain className="size-4" />}
+                icon={<Users className="size-4" />}
               />
             </div>
+
+            {data.bootstrap || data.draft || data.team ? (
+              <BootstrapProgress
+                snapshot={data}
+                onOpenAgent={(agentID) => router.push(wsPaths.agentDetail(agentID))}
+              />
+            ) : null}
 
             {data.bootstrap ? (
               <Card>
@@ -1705,6 +1819,35 @@ export function AutonomousControlCenter({
                     </span>
                     <span>{formatTime(data.control.replan_completed_at)}</span>
                   </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Current progress</CardTitle>
+                  <CardDescription>
+                    The latest durable orchestration event. This refreshes automatically.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {latestActivity ? (
+                    <ActivityRow
+                      item={latestActivity}
+                      onOpenIssue={
+                        latestIssueID
+                          ? () => router.push(wsPaths.issueDetail(latestIssueID))
+                          : undefined
+                      }
+                      onOpenAgent={
+                        latestAgentID
+                          ? () => router.push(wsPaths.agentDetail(latestAgentID))
+                          : undefined
+                      }
+                    />
+                  ) : (
+                    <div className="py-6 text-center text-muted-foreground">
+                      Waiting for autonomous work to start.
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>

@@ -61,7 +61,7 @@ func (e *MikaProjectPlanExecutor) ExecuteProjectPlan(
 		AgentID:     carrier.ID,
 		CreatorID:   carrier.OwnerID,
 		Title:       "Autonomous Project Planning",
-		ProjectID:   pgtype.UUID{},
+		ProjectID:   input.ProjectID,
 	})
 	if err != nil {
 		return projectorchestration.RuntimeExecution{}, fmt.Errorf("create hidden project planner session: %w", err)

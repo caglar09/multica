@@ -72,10 +72,10 @@ type impactAnalysisJobPayload struct {
 }
 
 type planMutationJobPayload struct {
-	ChangeRequestID string                                        `json:"change_request_id"`
+	ChangeRequestID string                                       `json:"change_request_id"`
 	Operations      []projectorchestration.PlanMutationOperation `json:"operations"`
-	PlannerName     string                                        `json:"planner_name"`
-	PlannerModel    string                                        `json:"planner_model"`
+	PlannerName     string                                       `json:"planner_name"`
+	PlannerModel    string                                       `json:"planner_model"`
 }
 
 func (r *Runtime) enqueueControlPlaneJob(
@@ -283,7 +283,13 @@ func (r *Runtime) executeControlPlaneJob(parent context.Context, job controlPlan
 		slog.Warn("control-plane job could not start", "job_id", util.UUIDToString(job.ID), "error", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, controlPlaneJobTimeout)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if job.Type == controlPlaneJobProjectPlanner {
+		ctx, cancel = context.WithCancel(parent)
+	} else {
+		ctx, cancel = context.WithTimeout(parent, controlPlaneJobTimeout)
+	}
 	defer cancel()
 
 	heartbeatDone := make(chan struct{})

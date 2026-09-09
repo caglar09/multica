@@ -169,7 +169,10 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 
   const handleOpenProjectDirectory = useCallback(async () => {
     if (!localProjectDirectory) return;
-    const result = await openLocalDirectory(localProjectDirectory.path);
+    const result = await openLocalDirectory(localProjectDirectory.path, {
+      daemonId: localProjectDirectory.daemon_id,
+      healthPort: localProjectDirectory.health_port,
+    });
     if (!result.ok) {
       toast.error(
         result.error ?? t(($) => $.resources.toast_local_open_failed),

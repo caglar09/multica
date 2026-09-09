@@ -110,6 +110,25 @@ func contractTaskOutput(raw json.RawMessage) (string, error) {
 	return "", errors.New("task result does not contain a structured output")
 }
 
+func extractEmbeddedContractJSONObject(value string) json.RawMessage {
+	for start := strings.IndexByte(value, '{'); start >= 0; {
+		decoder := json.NewDecoder(strings.NewReader(value[start:]))
+		var candidate json.RawMessage
+		if err := decoder.Decode(&candidate); err == nil {
+			var extra any
+			if errors.Is(decoder.Decode(&extra), io.EOF) {
+				return candidate
+			}
+		}
+		next := strings.IndexByte(value[start+1:], '{')
+		if next < 0 {
+			break
+		}
+		start += next + 1
+	}
+	return nil
+}
+
 func normalizeContractJSONObject(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if strings.HasPrefix(value, "```") {
@@ -696,11 +715,11 @@ func (r *Runtime) recordContractViolation(
 		return nil
 	}
 	contextJSON, _ := json.Marshal(map[string]any{
-		"task_id":   util.UUIDToString(task.ID),
-		"issue_id":  util.UUIDToString(issue.ID),
-		"agent_id":  util.UUIDToString(task.AgentID),
-		"contract":  contract,
-		"error":     cause.Error(),
+		"task_id":  util.UUIDToString(task.ID),
+		"issue_id": util.UUIDToString(issue.ID),
+		"agent_id": util.UUIDToString(task.AgentID),
+		"contract": contract,
+		"error":    cause.Error(),
 	})
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO autonomous_project_escalation (

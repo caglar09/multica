@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -1032,6 +1033,78 @@ func TestSweepDoesNotResetIssueAlreadyInReview(t *testing.T) {
 	}
 	if issueStatus != "in_review" {
 		t.Fatalf("expected issue status 'in_review' to be preserved, got '%s'", issueStatus)
+	}
+}
+
+// TestSweepDoesNotResetIssueAfterAutonomousWorkflowCompletes covers the race
+// between the terminal workflow projection and cleanup of an older failed task.
+func TestSweepDoesNotResetIssueAfterAutonomousWorkflowCompletes(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	ctx := context.Background()
+	var agentID, runtimeID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT a.id, a.runtime_id FROM agent a
+		JOIN member m ON m.workspace_id = a.workspace_id
+		JOIN "user" u ON u.id = m.user_id
+		WHERE u.email = $1
+		LIMIT 1
+	`, integrationTestEmail).Scan(&agentID, &runtimeID); err != nil {
+		t.Fatalf("failed to find test agent: %v", err)
+	}
+
+	var issueID, runID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, assignee_type, assignee_id)
+		SELECT $1, 'Completed workflow issue', 'in_progress', 'none', 'member', m.user_id, 'agent', $2
+		FROM member m WHERE m.workspace_id = $1 LIMIT 1
+		RETURNING id
+	`, testWorkspaceID, agentID).Scan(&issueID); err != nil {
+		t.Fatalf("failed to create test issue: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM autonomous_workflow_run WHERE id = $1`, runID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO autonomous_workflow_run (workflow_name, workflow_version, workspace_id, issue_id, state)
+		SELECT 'software-development', 2, workspace_id, id, 'done'
+		FROM issue WHERE id = $1
+		RETURNING id
+	`, issueID).Scan(&runID); err != nil {
+		t.Fatalf("failed to create completed workflow run: %v", err)
+	}
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, dispatched_at, started_at)
+		VALUES ($1, $2, $3, 'failed', 0, now() - interval '3 hours', now() - interval '3 hours')
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("failed to create stale failed task: %v", err)
+	}
+
+	var failed []db.AgentTaskQueue
+	task, err := db.New(testPool).GetAgentTask(ctx, pgtype.UUID{Bytes: parseUUIDBytes(taskID), Valid: true})
+	if err != nil {
+		t.Fatalf("load failed task: %v", err)
+	}
+	failed = append(failed, task)
+
+	queries := db.New(testPool)
+	taskSvc := service.NewTaskService(queries, testPool, nil, events.New())
+	broadcastFailedTasks(ctx, queries, taskSvc, events.New(), failed)
+
+	var issueStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&issueStatus); err != nil {
+		t.Fatalf("failed to query issue status: %v", err)
+	}
+	if issueStatus != "in_progress" {
+		t.Fatalf("completed workflow issue was reset to %q, want in_progress", issueStatus)
 	}
 }
 

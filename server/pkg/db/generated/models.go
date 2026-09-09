@@ -212,19 +212,47 @@ type AutonomousAgentPerformance struct {
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
 
+type AutonomousControlPlaneJob struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ProjectID      pgtype.UUID        `json:"project_id"`
+	JobType        string             `json:"job_type"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	Payload        []byte             `json:"payload"`
+	Result         []byte             `json:"result"`
+	Status         string             `json:"status"`
+	Attempts       int32              `json:"attempts"`
+	MaxAttempts    int32              `json:"max_attempts"`
+	Priority       int32              `json:"priority"`
+	AvailableAt    pgtype.Timestamptz `json:"available_at"`
+	LeaseOwner     pgtype.Text        `json:"lease_owner"`
+	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
+	ClaimedAt      pgtype.Timestamptz `json:"claimed_at"`
+	StartedAt      pgtype.Timestamptz `json:"started_at"`
+	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
+	LastError      pgtype.Text        `json:"last_error"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AutonomousProjectArtifact struct {
-	ID              pgtype.UUID        `json:"id"`
-	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
-	ProjectID       pgtype.UUID        `json:"project_id"`
-	PlanID          pgtype.UUID        `json:"plan_id"`
-	NodeID          pgtype.UUID        `json:"node_id"`
-	ArtifactType    string             `json:"artifact_type"`
-	Name            string             `json:"name"`
-	SchemaVersion   int32              `json:"schema_version"`
-	Content         []byte             `json:"content"`
-	ProducerAgentID pgtype.UUID        `json:"producer_agent_id"`
-	Immutable       bool               `json:"immutable"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	ProjectID        pgtype.UUID        `json:"project_id"`
+	PlanID           pgtype.UUID        `json:"plan_id"`
+	NodeID           pgtype.UUID        `json:"node_id"`
+	ArtifactType     string             `json:"artifact_type"`
+	Name             string             `json:"name"`
+	SchemaVersion    int32              `json:"schema_version"`
+	Content          []byte             `json:"content"`
+	ProducerAgentID  pgtype.UUID        `json:"producer_agent_id"`
+	Immutable        bool               `json:"immutable"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	Status           string             `json:"status"`
+	Valid            bool               `json:"valid"`
+	ValidationError  pgtype.Text        `json:"validation_error"`
+	ArtifactRevision int64              `json:"artifact_revision"`
+	SupersededBy     pgtype.UUID        `json:"superseded_by"`
 }
 
 type AutonomousProjectBootstrap struct {
@@ -258,29 +286,55 @@ type AutonomousProjectBrainConfig struct {
 }
 
 type AutonomousProjectBrainEntry struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	ProjectID           pgtype.UUID        `json:"project_id"`
+	PlanID              pgtype.UUID        `json:"plan_id"`
+	NodeID              pgtype.UUID        `json:"node_id"`
+	EntryType           string             `json:"entry_type"`
+	Subject             string             `json:"subject"`
+	Content             []byte             `json:"content"`
+	SourceType          string             `json:"source_type"`
+	SourceID            pgtype.Text        `json:"source_id"`
+	Confidence          pgtype.Float8      `json:"confidence"`
+	Revision            int64              `json:"revision"`
+	SupersededBy        pgtype.UUID        `json:"superseded_by"`
+	CreatedByType       string             `json:"created_by_type"`
+	CreatedByID         pgtype.UUID        `json:"created_by_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	CanonicalKey        pgtype.Text        `json:"canonical_key"`
+	Status              string             `json:"status"`
+	Importance          float64            `json:"importance"`
+	ConfirmationCount   int32              `json:"confirmation_count"`
+	UsefulCount         int32              `json:"useful_count"`
+	HarmfulCount        int32              `json:"harmful_count"`
+	LastConfirmedAt     pgtype.Timestamptz `json:"last_confirmed_at"`
+	Authority           string             `json:"authority"`
+	Evidence            []byte             `json:"evidence"`
+	ObservedAt          pgtype.Timestamptz `json:"observed_at"`
+	ExpiresAt           pgtype.Timestamptz `json:"expires_at"`
+	RepositoryRevision  pgtype.Text        `json:"repository_revision"`
+	SemanticFingerprint pgtype.Text        `json:"semantic_fingerprint"`
+	GovernanceState     string             `json:"governance_state"`
+	ConflictGroupID     pgtype.UUID        `json:"conflict_group_id"`
+	BrainRevision       int64              `json:"brain_revision"`
+}
+
+type AutonomousProjectBrainImpactProposal struct {
 	ID                pgtype.UUID        `json:"id"`
 	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
 	ProjectID         pgtype.UUID        `json:"project_id"`
 	PlanID            pgtype.UUID        `json:"plan_id"`
-	NodeID            pgtype.UUID        `json:"node_id"`
-	EntryType         string             `json:"entry_type"`
-	Subject           string             `json:"subject"`
-	Content           []byte             `json:"content"`
-	SourceType        string             `json:"source_type"`
-	SourceID          pgtype.Text        `json:"source_id"`
-	Confidence        pgtype.Float8      `json:"confidence"`
-	Revision          int64              `json:"revision"`
-	SupersededBy      pgtype.UUID        `json:"superseded_by"`
-	CreatedByType     string             `json:"created_by_type"`
-	CreatedByID       pgtype.UUID        `json:"created_by_id"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	CanonicalKey      pgtype.Text        `json:"canonical_key"`
+	BrainEntryID      pgtype.UUID        `json:"brain_entry_id"`
+	Classification    string             `json:"classification"`
+	AffectedNodeKeys  []byte             `json:"affected_node_keys"`
+	Rationale         string             `json:"rationale"`
+	Evidence          []byte             `json:"evidence"`
+	ProposedPlanDelta []byte             `json:"proposed_plan_delta"`
 	Status            string             `json:"status"`
-	Importance        float64            `json:"importance"`
-	ConfirmationCount int32              `json:"confirmation_count"`
-	UsefulCount       int32              `json:"useful_count"`
-	HarmfulCount      int32              `json:"harmful_count"`
-	LastConfirmedAt   pgtype.Timestamptz `json:"last_confirmed_at"`
+	Analyzer          string             `json:"analyzer"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	ReviewedAt        pgtype.Timestamptz `json:"reviewed_at"`
 }
 
 type AutonomousProjectBrainLearningJob struct {
@@ -303,6 +357,24 @@ type AutonomousProjectBrainLearningJob struct {
 	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
 }
 
+type AutonomousProjectBrainSnapshot struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ProjectID     pgtype.UUID        `json:"project_id"`
+	PlanID        pgtype.UUID        `json:"plan_id"`
+	PlanRevision  pgtype.Int8        `json:"plan_revision"`
+	BrainRevision int64              `json:"brain_revision"`
+	EntryIds      []byte             `json:"entry_ids"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type AutonomousProjectBrainState struct {
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Revision    int64              `json:"revision"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AutonomousProjectBudget struct {
 	ProjectID           pgtype.UUID        `json:"project_id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
@@ -316,6 +388,89 @@ type AutonomousProjectBudget struct {
 	CostMicrounitsUsed  int64              `json:"cost_microunits_used"`
 	TotalAttempts       int32              `json:"total_attempts"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AutonomousProjectChangeRequest struct {
+	ID                              pgtype.UUID        `json:"id"`
+	WorkspaceID                     pgtype.UUID        `json:"workspace_id"`
+	ProjectID                       pgtype.UUID        `json:"project_id"`
+	RequestKey                      string             `json:"request_key"`
+	RequestType                     string             `json:"request_type"`
+	State                           string             `json:"state"`
+	Source                          string             `json:"source"`
+	SourceRef                       pgtype.Text        `json:"source_ref"`
+	RequestText                     string             `json:"request_text"`
+	Proposal                        []byte             `json:"proposal"`
+	Impact                          []byte             `json:"impact"`
+	BaseSpecificationRevisionID     pgtype.UUID        `json:"base_specification_revision_id"`
+	ProposedSpecificationRevisionID pgtype.UUID        `json:"proposed_specification_revision_id"`
+	BasePlanID                      pgtype.UUID        `json:"base_plan_id"`
+	AppliedPlanID                   pgtype.UUID        `json:"applied_plan_id"`
+	ApprovalEscalationID            pgtype.UUID        `json:"approval_escalation_id"`
+	Error                           pgtype.Text        `json:"error"`
+	ReceivedAt                      pgtype.Timestamptz `json:"received_at"`
+	AppliedAt                       pgtype.Timestamptz `json:"applied_at"`
+	CreatedAt                       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AutonomousProjectChangeRequestEvent struct {
+	ID              pgtype.UUID        `json:"id"`
+	ChangeRequestID pgtype.UUID        `json:"change_request_id"`
+	FromState       pgtype.Text        `json:"from_state"`
+	ToState         string             `json:"to_state"`
+	ActorType       string             `json:"actor_type"`
+	ActorRef        pgtype.Text        `json:"actor_ref"`
+	Details         []byte             `json:"details"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type AutonomousProjectChangeSet struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	ProjectID            pgtype.UUID        `json:"project_id"`
+	PlanID               pgtype.UUID        `json:"plan_id"`
+	NodeID               pgtype.UUID        `json:"node_id"`
+	IssueID              pgtype.UUID        `json:"issue_id"`
+	SourceTaskID         pgtype.UUID        `json:"source_task_id"`
+	SourceAgentID        pgtype.UUID        `json:"source_agent_id"`
+	RuntimeID            pgtype.UUID        `json:"runtime_id"`
+	DaemonID             pgtype.Text        `json:"daemon_id"`
+	BaseSha              string             `json:"base_sha"`
+	BranchName           string             `json:"branch_name"`
+	WorktreePath         pgtype.Text        `json:"worktree_path"`
+	RepoPath             pgtype.Text        `json:"repo_path"`
+	ChangedFiles         []byte             `json:"changed_files"`
+	CommitSha            string             `json:"commit_sha"`
+	MergeStatus          string             `json:"merge_status"`
+	MergeOrder           pgtype.Int8        `json:"merge_order"`
+	IntegrationBranch    pgtype.Text        `json:"integration_branch"`
+	MergedSha            pgtype.Text        `json:"merged_sha"`
+	ApprovedReviewTaskID pgtype.UUID        `json:"approved_review_task_id"`
+	MergeEvidence        []byte             `json:"merge_evidence"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	ReadyAt              pgtype.Timestamptz `json:"ready_at"`
+	QueuedAt             pgtype.Timestamptz `json:"queued_at"`
+	MergedAt             pgtype.Timestamptz `json:"merged_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AutonomousProjectContextCompilation struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	ProjectID        pgtype.UUID        `json:"project_id"`
+	PlanID           pgtype.UUID        `json:"plan_id"`
+	NodeID           pgtype.UUID        `json:"node_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	WorkflowActionID pgtype.UUID        `json:"workflow_action_id"`
+	TaskID           pgtype.UUID        `json:"task_id"`
+	RoleFamily       pgtype.Text        `json:"role_family"`
+	TotalTokenBudget int32              `json:"total_token_budget"`
+	UsedTokens       int32              `json:"used_tokens"`
+	SectionUsage     []byte             `json:"section_usage"`
+	ContextPackage   []byte             `json:"context_package"`
+	BrainSnapshotID  pgtype.UUID        `json:"brain_snapshot_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type AutonomousProjectControl struct {
@@ -399,31 +554,65 @@ type AutonomousProjectIncident struct {
 	ResolvedAt   pgtype.Timestamptz `json:"resolved_at"`
 }
 
+type AutonomousProjectNodeRetirement struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	ProjectID           pgtype.UUID        `json:"project_id"`
+	ChangeRequestID     pgtype.UUID        `json:"change_request_id"`
+	LogicalNodeID       pgtype.UUID        `json:"logical_node_id"`
+	PriorPlanNodeID     pgtype.UUID        `json:"prior_plan_node_id"`
+	MaterializedIssueID pgtype.UUID        `json:"materialized_issue_id"`
+	Reason              string             `json:"reason"`
+	Status              string             `json:"status"`
+	Attempt             int32              `json:"attempt"`
+	ClaimedAt           pgtype.Timestamptz `json:"claimed_at"`
+	RetiredAt           pgtype.Timestamptz `json:"retired_at"`
+	Error               pgtype.Text        `json:"error"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AutonomousProjectPlan struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	ProjectID      pgtype.UUID        `json:"project_id"`
-	Revision       int64              `json:"revision"`
-	SourceRevision string             `json:"source_revision"`
-	PlannerName    string             `json:"planner_name"`
-	PlannerModel   pgtype.Text        `json:"planner_model"`
-	Goal           string             `json:"goal"`
-	Specification  []byte             `json:"specification"`
-	Policy         []byte             `json:"policy"`
-	Status         string             `json:"status"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	ProjectID               pgtype.UUID        `json:"project_id"`
+	Revision                int64              `json:"revision"`
+	SourceRevision          string             `json:"source_revision"`
+	PlannerName             string             `json:"planner_name"`
+	PlannerModel            pgtype.Text        `json:"planner_model"`
+	Goal                    string             `json:"goal"`
+	Specification           []byte             `json:"specification"`
+	Policy                  []byte             `json:"policy"`
+	Status                  string             `json:"status"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	SpecificationRevisionID pgtype.UUID        `json:"specification_revision_id"`
 }
 
 type AutonomousProjectPlanEdge struct {
-	ID             pgtype.UUID        `json:"id"`
-	PlanID         pgtype.UUID        `json:"plan_id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	ProjectID      pgtype.UUID        `json:"project_id"`
-	FromNodeKey    string             `json:"from_node_key"`
-	ToNodeKey      string             `json:"to_node_key"`
-	DependencyType string             `json:"dependency_type"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ID                   pgtype.UUID        `json:"id"`
+	PlanID               pgtype.UUID        `json:"plan_id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	ProjectID            pgtype.UUID        `json:"project_id"`
+	FromNodeKey          string             `json:"from_node_key"`
+	ToNodeKey            string             `json:"to_node_key"`
+	DependencyType       string             `json:"dependency_type"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	RequiredArtifactType pgtype.Text        `json:"required_artifact_type"`
+}
+
+type AutonomousProjectPlanMutation struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ProjectID       pgtype.UUID        `json:"project_id"`
+	ChangeRequestID pgtype.UUID        `json:"change_request_id"`
+	BasePlanID      pgtype.UUID        `json:"base_plan_id"`
+	AppliedPlanID   pgtype.UUID        `json:"applied_plan_id"`
+	Operations      []byte             `json:"operations"`
+	ValidationState string             `json:"validation_state"`
+	ValidationError pgtype.Text        `json:"validation_error"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	AppliedAt       pgtype.Timestamptz `json:"applied_at"`
 }
 
 type AutonomousProjectPlanNode struct {
@@ -454,6 +643,7 @@ type AutonomousProjectPlanNode struct {
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 	BlockedCategory      pgtype.Text        `json:"blocked_category"`
+	LogicalNodeID        pgtype.UUID        `json:"logical_node_id"`
 }
 
 type AutonomousProjectQualityGateRun struct {
@@ -505,6 +695,26 @@ type AutonomousProjectReviewVerdict struct {
 	Summary         string             `json:"summary"`
 	Artifact        []byte             `json:"artifact"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type AutonomousProjectSpecificationHead struct {
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	ProjectID               pgtype.UUID        `json:"project_id"`
+	SpecificationRevisionID pgtype.UUID        `json:"specification_revision_id"`
+	Revision                int64              `json:"revision"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AutonomousProjectSpecificationRevision struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ProjectID     pgtype.UUID        `json:"project_id"`
+	Revision      int64              `json:"revision"`
+	SourceKind    string             `json:"source_kind"`
+	SourceRef     pgtype.Text        `json:"source_ref"`
+	Goal          string             `json:"goal"`
+	Specification []byte             `json:"specification"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type AutonomousProjectTeam struct {

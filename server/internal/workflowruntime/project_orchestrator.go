@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -19,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/workflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func (r *Runtime) processProjectBootstrap(ctx context.Context) error {
@@ -216,7 +218,7 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 	rows.Close()
 
 	for _, item := range items {
-		planCtx, cancel := context.WithTimeout(ctx, autonomousPlanningTimeout)
+		planCtx, cancel := context.WithCancel(ctx)
 		err := r.planProjectRevision(planCtx, item.workspaceID, item.projectID, item.confirmedAt.UTC().Format(time.RFC3339Nano))
 		cancel()
 		if err != nil {
@@ -256,13 +258,13 @@ func (r *Runtime) refreshRepositoryIntelligence(
 		return err
 	}
 	content, _ := json.Marshal(map[string]any{
-		"revision": snapshot.Revision,
-		"modules": snapshot.Modules,
+		"revision":     snapshot.Revision,
+		"modules":      snapshot.Modules,
 		"test_targets": snapshot.TestTargets,
 		"api_surfaces": snapshot.APISurfaces,
-		"data_stores": snapshot.DataStores,
+		"data_stores":  snapshot.DataStores,
 		"dependencies": snapshot.Dependencies,
-		"evidence": snapshot.Evidence,
+		"evidence":     snapshot.Evidence,
 	})
 	sourceID := strings.TrimSpace(snapshot.Revision)
 	if sourceID == "" {
@@ -324,10 +326,10 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 				continue
 			}
 			contextItems = append(contextItems, projectorchestration.PlanningContextItem{
-				Type: strings.TrimSpace(item.Kind),
-				Title: strings.TrimSpace(item.Title),
+				Type:    strings.TrimSpace(item.Kind),
+				Title:   strings.TrimSpace(item.Title),
 				Content: strings.TrimSpace(item.Content),
-				Source: "bootstrap",
+				Source:  "bootstrap",
 			})
 		}
 	}
@@ -368,10 +370,10 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 		}
 		brainContextChars += len(content)
 		contextItems = append(contextItems, projectorchestration.PlanningContextItem{
-			Type: entryType,
-			Title: subject,
+			Type:    entryType,
+			Title:   subject,
 			Content: content,
-			Source: "brain",
+			Source:  "brain",
 		})
 	}
 	if err := brainRows.Err(); err != nil {
@@ -399,7 +401,7 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 		}
 		resources = append(resources, projectorchestration.PlanningResource{
 			Type: resourceType,
-			Ref: append(json.RawMessage(nil), ref...),
+			Ref:  append(json.RawMessage(nil), ref...),
 		})
 	}
 	if err := resourceRows.Err(); err != nil {
@@ -461,16 +463,16 @@ func (r *Runtime) planProjectRevision(
 		return fmt.Errorf("load autonomous project bootstrap context: %w", err)
 	}
 	plan, execution, err := r.projectPlanner.Plan(ctx, projectorchestration.PlanningInput{
-		WorkspaceID: workspaceID,
-		ProjectID: projectID,
-		ProjectTitle: project.Title,
+		WorkspaceID:        workspaceID,
+		ProjectID:          projectID,
+		ProjectTitle:       project.Title,
 		ProjectDescription: description,
-		BootstrapBrief: brief,
-		Context: planningContext,
-		Resources: resources,
-		Team: roles,
-		CurrentPlan: currentPlan,
-		Policy: requestedPolicy,
+		BootstrapBrief:     brief,
+		Context:            planningContext,
+		Resources:          resources,
+		Team:               roles,
+		CurrentPlan:        currentPlan,
+		Policy:             requestedPolicy,
 	})
 	if err != nil {
 		return err
@@ -638,17 +640,17 @@ func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issu
 		description = "Runtime-discovered project work: " + issue.Title
 	}
 	node := projectorchestration.NodeSpec{
-		Key: nodeKey,
-		Kind: kind,
-		Title: issue.Title,
-		Description: description,
-		Priority: discoveredProjectPriority(issue.Priority),
-		RequiredRoleFamily: family,
+		Key:                  nodeKey,
+		Kind:                 kind,
+		Title:                issue.Title,
+		Description:          description,
+		Priority:             discoveredProjectPriority(issue.Priority),
+		RequiredRoleFamily:   family,
 		RequiredCapabilities: append([]string(nil), roleSpec.Capabilities...),
 		AcceptanceCriteria: []string{
 			"Requested runtime-discovered work is completed and its result is recorded on the issue.",
 		},
-		Risk: projectorchestration.RiskMedium,
+		Risk:        projectorchestration.RiskMedium,
 		MaxAttempts: 3,
 	}
 
@@ -684,7 +686,7 @@ func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issu
 		if sourceBlocked {
 			plan.Edges = append(plan.Edges, projectorchestration.EdgeSpec{
 				From: nodeKey,
-				To: sourceKey,
+				To:   sourceKey,
 				Type: projectorchestration.DependencyHard,
 			})
 			blockSourceKey = sourceKey
@@ -693,7 +695,7 @@ func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issu
 			// parallel unless an explicit blocker/dependency says otherwise.
 			plan.Edges = append(plan.Edges, projectorchestration.EdgeSpec{
 				From: sourceKey,
-				To: nodeKey,
+				To:   nodeKey,
 				Type: projectorchestration.DependencySoft,
 			})
 		}
@@ -719,13 +721,13 @@ func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issu
 		}
 	}
 	brainContent := map[string]any{
-		"issue_id": util.UUIDToString(issue.ID),
-		"title": issue.Title,
-		"description": description,
-		"origin_task_id": util.UUIDToString(issue.OriginID),
-		"source_node_key": sourceKey,
-		"source_blocked": blockSourceKey != "",
-		"assigned_role": role,
+		"issue_id":             util.UUIDToString(issue.ID),
+		"title":                issue.Title,
+		"description":          description,
+		"origin_task_id":       util.UUIDToString(issue.OriginID),
+		"source_node_key":      sourceKey,
+		"source_blocked":       blockSourceKey != "",
+		"assigned_role":        role,
 		"required_role_family": family,
 	}
 	if err := r.projectStore.AppendPlanDelta(
@@ -833,7 +835,7 @@ func discoveredProjectPriority(priority string) int {
 
 // reconcileSupersededProjectIssues enforces the board/plan ownership invariant:
 //
-//   every open issue materialized by Project OS is owned by the latest plan.
+//	every open issue materialized by Project OS is owned by the latest plan.
 //
 // Stable node keys are carried forward by PersistPlan. Any remaining open issue
 // that is referenced only by superseded revisions is therefore stale: either
@@ -878,8 +880,8 @@ func (r *Runtime) reconcileSupersededProjectIssues(
 		return fmt.Errorf("query terminal project issue projections: %w", err)
 	}
 	type terminalProjection struct {
-		issueID   pgtype.UUID
-		nodeState string
+		issueID    pgtype.UUID
+		nodeState  string
 		issueState string
 	}
 	terminal := make([]terminalProjection, 0, 16)
@@ -1290,21 +1292,21 @@ func (r *Runtime) ensureProjectNodeIssue(
 		node.Key, node.Kind, node.Risk, role, family, node.Description, criteria,
 	)
 	res, err := r.issueSvc.Create(ctx, service.IssueCreateParams{
-		WorkspaceID: workspaceID,
-		Title: node.Title,
-		Description: pgtype.Text{String: description, Valid: true},
-		Status: issuestatus.Backlog,
-		Priority: projectNodePriority(node.Priority),
-		AssigneeType: pgtype.Text{String: "agent", Valid: true},
-		AssigneeID: agentID,
-		CreatorType: "member",
-		CreatorID: ownerUserID,
-		ProjectID: projectID,
+		WorkspaceID:    workspaceID,
+		Title:          node.Title,
+		Description:    pgtype.Text{String: description, Valid: true},
+		Status:         issuestatus.Backlog,
+		Priority:       projectNodePriority(node.Priority),
+		AssigneeType:   pgtype.Text{String: "agent", Valid: true},
+		AssigneeID:     agentID,
+		CreatorType:    "member",
+		CreatorID:      ownerUserID,
+		ProjectID:      projectID,
 		AllowDuplicate: false,
 	}, service.IssueCreateOpts{
-		ActorID: util.UUIDToString(ownerUserID),
+		ActorID:          util.UUIDToString(ownerUserID),
 		AnalyticsAgentID: util.UUIDToString(agentID),
-		Platform: "autonomous",
+		Platform:         "autonomous",
 	})
 	var issue db.Issue
 	switch {
@@ -1352,7 +1354,24 @@ func (r *Runtime) syncProjectNodeBoardState(
 	case "pending":
 		target = issuestatus.Backlog
 	case "ready":
-		if issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) != issuestatus.Blocked {
+		if projectNodeUsesIssueWorkflow(node.Kind) {
+			run, exists, runErr := r.store.FindRun(
+				ctx,
+				softwareDevelopmentWorkflow,
+				util.UUIDToString(workspaceID),
+				node.MaterializedIssueID,
+			)
+			if runErr != nil {
+				return fmt.Errorf("resolve workflow-owned ready node status: %w", runErr)
+			}
+			if exists {
+				switch run.State {
+				case issuestatus.InProgress, issuestatus.InReview, issuestatus.Done, issuestatus.Blocked:
+					target = run.State
+				}
+			}
+		}
+		if target == "" && issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) != issuestatus.Blocked {
 			target = issuestatus.Todo
 		}
 	case "running":
@@ -1374,8 +1393,22 @@ func (r *Runtime) syncProjectNodeBoardState(
 			}
 			if exists {
 				switch run.State {
-				case issuestatus.InProgress, issuestatus.InReview, issuestatus.Done, issuestatus.Blocked:
+				case issuestatus.InProgress, issuestatus.InReview, issuestatus.Done:
 					target = run.State
+				case issuestatus.Blocked:
+					// A task-level retry can be running while the durable workflow
+					// still waits in Blocked for that retry's structured result. Once
+					// Project OS has re-attached the node, preserve the execution phase
+					// instead of projecting Blocked back over the live retry.
+					retryStatus, retryBoardState, _, retryErr := r.projectWorkflowRetry(ctx, workspaceID, issueID)
+					if retryErr != nil {
+						return fmt.Errorf("resolve workflow retry board state: %w", retryErr)
+					}
+					if retryStatus != "completed" && retryBoardState != "" {
+						target = retryBoardState
+					} else {
+						target = issuestatus.Blocked
+					}
 				}
 			}
 		}
@@ -1389,6 +1422,48 @@ func (r *Runtime) syncProjectNodeBoardState(
 	}
 	_, err = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, target)
 	return err
+}
+
+func (r *Runtime) projectWorkflowRetry(
+	ctx context.Context,
+	workspaceID, issueID pgtype.UUID,
+) (string, string, pgtype.UUID, error) {
+	var status string
+	var taskID, agentID, ownerID, reviewerID pgtype.UUID
+	err := r.pool.QueryRow(ctx, `
+		SELECT t.status, t.id, t.agent_id, wr.owner_agent_id, wr.reviewer_agent_id
+		FROM agent_task_queue t
+		JOIN autonomous_workflow_run wr
+		  ON wr.workspace_id = $1
+		 AND wr.issue_id = t.issue_id
+		 AND wr.workflow_name = $3
+		WHERE t.issue_id = $2
+		  AND wr.state = 'blocked'
+		  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'completed')
+		  AND (t.retry_of_task_id IS NOT NULL OR t.rerun_of_task_id IS NOT NULL)
+		  AND (t.agent_id = wr.owner_agent_id OR t.agent_id = wr.reviewer_agent_id)
+		  AND COALESCE(t.completed_at, t.started_at, t.created_at) > wr.updated_at
+		ORDER BY COALESCE(t.completed_at, t.started_at, t.created_at) DESC, t.created_at DESC, t.id DESC
+		LIMIT 1
+	`, workspaceID, issueID, softwareDevelopmentWorkflow).Scan(&status, &taskID, &agentID, &ownerID, &reviewerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", pgtype.UUID{}, nil
+	}
+	if err != nil {
+		return "", "", pgtype.UUID{}, err
+	}
+	return status, workflowRetryBoardState(agentID, ownerID, reviewerID), taskID, nil
+}
+
+func workflowRetryBoardState(agentID, ownerID, reviewerID pgtype.UUID) string {
+	switch util.UUIDToString(agentID) {
+	case util.UUIDToString(ownerID):
+		return issuestatus.InProgress
+	case util.UUIDToString(reviewerID):
+		return issuestatus.InReview
+	default:
+		return ""
+	}
 }
 
 func (r *Runtime) startReadyProjectNode(
@@ -1448,6 +1523,15 @@ func (r *Runtime) startReadyProjectNode(
 			return err
 		}
 	}
+	if !projectNodeUsesIssueWorkflow(node.Kind) {
+		recovered, recoverErr := r.recoverCompletedDirectProjectRetry(ctx, workspaceID, issue.ID, agentID)
+		if recoverErr != nil {
+			return recoverErr
+		}
+		if recovered {
+			return nil
+		}
+	}
 
 	var ownerUserID pgtype.UUID
 	if err := r.pool.QueryRow(ctx, `
@@ -1468,6 +1552,63 @@ func (r *Runtime) startReadyProjectNode(
 	}
 	_ = assignedRole // retained for durable assignment/debug projection.
 	return nil
+}
+
+func (r *Runtime) recoverCompletedDirectProjectRetry(
+	ctx context.Context,
+	workspaceID, issueID, agentID pgtype.UUID,
+) (bool, error) {
+	var taskID pgtype.UUID
+	err := r.pool.QueryRow(ctx, `
+		SELECT t.id
+		FROM agent_task_queue t
+		WHERE t.issue_id = $1
+		  AND t.agent_id = $2
+		  AND t.status = 'completed'
+		  AND (t.retry_of_task_id IS NOT NULL OR t.rerun_of_task_id IS NOT NULL)
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM agent_task_queue newer
+			WHERE newer.issue_id = t.issue_id
+			  AND newer.id <> t.id
+			  AND newer.created_at > t.created_at
+		  )
+		ORDER BY COALESCE(t.completed_at, t.created_at) DESC, t.created_at DESC, t.id DESC
+		LIMIT 1
+	`, issueID, agentID).Scan(&taskID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if err := r.handleTaskCompleted(ctx, events.Event{
+		Type:        protocol.EventTaskCompleted,
+		WorkspaceID: util.UUIDToString(workspaceID),
+		TaskID:      util.UUIDToString(taskID),
+	}); err != nil {
+		return false, fmt.Errorf("recover completed direct project retry: %w", err)
+	}
+
+	var status string
+	err = r.pool.QueryRow(ctx, `
+		SELECT n.status
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.workspace_id = $1
+		  AND n.materialized_issue_id = $2
+		  AND p.status IN ('active', 'blocked')
+		ORDER BY p.revision DESC, n.updated_at DESC
+		LIMIT 1
+	`, workspaceID, issueID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return status != "ready", nil
 }
 
 func (r *Runtime) blockProjectNodeForSchedulingCause(
@@ -1596,6 +1737,26 @@ blockedNodeLoop:
 			} else if err != nil {
 				return err
 			}
+		case "quality_policy":
+			// Repair & continue is an explicit request to rerun a failed
+			// contract/quality check. The node itself must be released; merely
+			// resolving the escalation leaves it permanently blocked.
+			if node.ID != "" {
+				var nodeID pgtype.UUID
+				if parsed, parseErr := util.ParseUUID(node.ID); parseErr == nil {
+					nodeID = parsed
+					if err := r.pool.QueryRow(ctx, `
+						SELECT EXISTS (
+							SELECT 1 FROM autonomous_project_escalation
+							WHERE workspace_id=$1 AND project_id=$2
+							  AND node_id=$3 AND status='resolved'
+							  AND category IN ('contract_violation','quality_policy','technical_failure')
+						)
+					`, workspaceID, projectID, nodeID).Scan(&resolved); err != nil {
+						return err
+					}
+				}
+			}
 		case "technical_failure", "manual":
 			if node.MaterializedIssueID != "" {
 				issueID, parseErr := util.ParseUUID(node.MaterializedIssueID)
@@ -1628,38 +1789,47 @@ blockedNodeLoop:
 					if resolved && projectNodeUsesIssueWorkflow(node.Kind) {
 						// A task-level retry may already be executing while the
 						// Project OS node still carries the old technical block.
-						// Attach that retry to the node instead of converting the
-						// node to Ready and projecting Todo over the live task.
-						var activeRetry bool
-						if err := r.pool.QueryRow(ctx, `
-							SELECT EXISTS (
-								SELECT 1
-								FROM agent_task_queue t
-								JOIN autonomous_workflow_run wr
-								  ON wr.workspace_id = $1
-								 AND wr.issue_id = t.issue_id
-								 AND wr.workflow_name = $3
-								WHERE t.issue_id = $2
-								  AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
-								  AND (t.retry_of_task_id IS NOT NULL OR t.rerun_of_task_id IS NOT NULL)
-								  AND (t.agent_id = wr.owner_agent_id OR t.agent_id = wr.reviewer_agent_id)
-							)
-						`, workspaceID, issueID, softwareDevelopmentWorkflow).Scan(&activeRetry); err != nil {
-							return err
+						// A just-completed retry is also owned by the blocked workflow:
+						// leave the node blocked until handleTaskCompleted validates its
+						// contract. Otherwise the conductor can win the completion-event
+						// race, move the node to Ready, and overwrite the issue with Todo.
+						retryStatus, retryBoardState, retryTaskID, retryErr := r.projectWorkflowRetry(ctx, workspaceID, issueID)
+						if retryErr != nil {
+							return retryErr
 						}
-						if activeRetry {
+						if retryStatus == "completed" {
+							// Completion events are in-process notifications and can be lost
+							// across a backend restart. The conductor already has durable proof
+							// of the completed retry here, so feed it through the same idempotent
+							// completion path instead of waiting forever for an event that will
+							// never be replayed.
+							if err := r.handleTaskCompleted(ctx, events.Event{
+								Type:        protocol.EventTaskCompleted,
+								WorkspaceID: util.UUIDToString(workspaceID),
+								TaskID:      util.UUIDToString(retryTaskID),
+							}); err != nil {
+								return fmt.Errorf("recover completed project workflow retry: %w", err)
+							}
+							continue blockedNodeLoop
+						}
+						if retryStatus != "" {
 							attached, err := r.projectStore.ResumeNodeForWorkflowRetry(ctx, workspaceID, issueID)
 							if err != nil {
 								return err
 							}
 							if attached {
+								if retryBoardState != "" && effective != retryBoardState {
+									if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, retryBoardState); err != nil {
+										return err
+									}
+								}
 								slog.Info("project conductor attached active task retry to blocked node",
 									"project_id", util.UUIDToString(projectID),
 									"node", node.Key,
 									"issue_id", node.MaterializedIssueID,
 								)
-								continue
 							}
+							continue blockedNodeLoop
 						}
 					}
 				}
@@ -1756,11 +1926,11 @@ func (r *Runtime) executeDeploymentNode(
 
 	result, err := r.deploymentAdapter.Deploy(ctx, projectorchestration.DeploymentRequest{
 		WorkspaceID: workspaceID,
-		ProjectID: projectID,
-		PlanID: planID,
+		ProjectID:   projectID,
+		PlanID:      planID,
 		Environment: "production",
-		ReleaseRef: sourceRevision,
-		Policy: policy,
+		ReleaseRef:  sourceRevision,
+		Policy:      policy,
 	})
 	if err != nil {
 		_, _ = r.pool.Exec(ctx, `
@@ -1795,11 +1965,11 @@ func (r *Runtime) executeDeploymentNode(
 
 	artifactContent, _ := json.Marshal(map[string]any{
 		"deployment_id": util.UUIDToString(deploymentID),
-		"provider": result.Provider,
-		"external_ref": result.ExternalRef,
-		"environment": "production",
-		"release_ref": sourceRevision,
-		"evidence": result.Evidence,
+		"provider":      result.Provider,
+		"external_ref":  result.ExternalRef,
+		"environment":   "production",
+		"release_ref":   sourceRevision,
+		"evidence":      result.Evidence,
 	})
 	if _, err := r.pool.Exec(ctx, `
 		INSERT INTO autonomous_project_artifact (
@@ -1846,9 +2016,9 @@ func (r *Runtime) executeObservationNode(
 	}
 
 	result, err := r.observationAdapter.Observe(ctx, projectorchestration.ObservationRequest{
-		WorkspaceID: workspaceID,
-		ProjectID: projectID,
-		DeploymentID: deploymentID,
+		WorkspaceID:   workspaceID,
+		ProjectID:     projectID,
+		DeploymentID:  deploymentID,
 		WindowSeconds: 300,
 	})
 	if err != nil {
@@ -1857,11 +2027,11 @@ func (r *Runtime) executeObservationNode(
 
 	content, _ := json.Marshal(map[string]any{
 		"deployment_id": util.UUIDToString(deploymentID),
-		"healthy": result.Healthy,
-		"error_rate": result.ErrorRate,
-		"latency_p95": result.LatencyP95,
-		"signals": result.Signals,
-		"evidence": result.Evidence,
+		"healthy":       result.Healthy,
+		"error_rate":    result.ErrorRate,
+		"latency_p95":   result.LatencyP95,
+		"signals":       result.Signals,
+		"evidence":      result.Evidence,
 	})
 	if _, err := r.pool.Exec(ctx, `
 		INSERT INTO autonomous_project_artifact (
@@ -1907,7 +2077,7 @@ func (r *Runtime) startMaterializedNode(
 	handoff := fmt.Sprintf(
 		"Autonomous project stage %s (%s). Complete the stage against the issue acceptance criteria. "+
 			"Do not create or dispatch follow-up work and do not manage dependency state; the Project OS scheduler owns orchestration. "+
-			"Finish this task normally when the stage output is ready.",
+			"Your FINAL response must be exactly one JSON object with keys: summary (string), decisions (string[]), artifacts ({type,ref,description}[]), changed_files (string[]), commit_sha (string), diff (string), tests ({name,status,evidence}[] where status is passed|failed|skipped|not_run), findings ({id,severity,category,description,evidence,blocking}[]), risks (string[]), blockers (string[]). No markdown fence or surrounding prose.",
 		node.Kind, node.Key,
 	)
 	_, err = r.taskSvc.EnqueueTaskForWorkflow(ctx, updated, agentID, accountableID, handoff)
@@ -1966,19 +2136,25 @@ func (r *Runtime) selectProjectNodeAgent(
 	case projectorchestration.NodeArchitecture:
 		addFamily("architecture")
 	case projectorchestration.NodeDesign:
-		addFamily("design"); addFamily("frontend")
+		addFamily("design")
+		addFamily("frontend")
 	case projectorchestration.NodeReview:
 		addFamily("review")
 	case projectorchestration.NodeQA:
-		addFamily("qa"); addFamily("review")
+		addFamily("qa")
+		addFamily("review")
 	case projectorchestration.NodeSecurity:
 		addFamily("security")
 	case projectorchestration.NodeRelease:
-		addFamily("release"); addFamily("devops")
+		addFamily("release")
+		addFamily("devops")
 	case projectorchestration.NodeDeploy:
-		addFamily("devops"); addFamily("release"); addFamily("sre")
+		addFamily("devops")
+		addFamily("release")
+		addFamily("sre")
 	case projectorchestration.NodeObserve, projectorchestration.NodeIncident:
-		addFamily("sre"); addFamily("devops")
+		addFamily("sre")
+		addFamily("devops")
 	case projectorchestration.NodeImplementation, projectorchestration.NodeMigration, projectorchestration.NodeIntegration:
 		// When the planner omitted a family, implementation-capable roles are
 		// considered below. RequiredCapabilities remains a hard filter.
@@ -2011,7 +2187,10 @@ func (r *Runtime) selectProjectNodeAgent(
 					JOIN agent_runtime ar ON ar.id = a.runtime_id
 					WHERE a.id = $1
 					  AND a.archived_at IS NULL
-					  AND a.status = 'active'
+					  -- agent.status is a task-presence projection (idle, working,
+					  -- blocked, error, or offline); it has no "active" value.
+					  -- Dispatch eligibility is determined by the bound runtime's
+					  -- current liveness below.
 					  AND ar.status = 'online'
 					  AND ar.last_seen_at > now() - interval '2 minutes'
 				)
@@ -2063,7 +2242,7 @@ func (r *Runtime) selectProjectNodeAgent(
 				SELECT EXISTS (
 					SELECT 1 FROM agent a
 					JOIN agent_runtime ar ON ar.id = a.runtime_id
-					WHERE a.id = $1 AND a.archived_at IS NULL AND a.status = 'active'
+					WHERE a.id = $1 AND a.archived_at IS NULL
 					  AND ar.status = 'online'
 					  AND ar.last_seen_at > now() - interval '2 minutes'
 				)
@@ -2187,14 +2366,14 @@ func (r *Runtime) openProjectEscalation(
 		summary = "No eligible online agent can execute: " + node.Title
 	}
 	contextJSON, _ := json.Marshal(map[string]any{
-		"node_key": node.Key,
-		"kind": node.Kind,
-		"required_role_family": node.RequiredRoleFamily,
+		"node_key":              node.Key,
+		"kind":                  node.Kind,
+		"required_role_family":  node.RequiredRoleFamily,
 		"required_capabilities": node.RequiredCapabilities,
-		"error": cause.Error(),
+		"error":                 cause.Error(),
 		"suggested_team_delta": map[string]any{
-			"mode": "add_only",
-			"required_role_family": node.RequiredRoleFamily,
+			"mode":                  "add_only",
+			"required_role_family":  node.RequiredRoleFamily,
 			"required_capabilities": node.RequiredCapabilities,
 		},
 	})
@@ -2217,7 +2396,6 @@ func (r *Runtime) openProjectEscalation(
 		summary, contextJSON, node.Key, category)
 	return err
 }
-
 
 func (r *Runtime) recordAgentPerformance(
 	ctx context.Context,
@@ -2318,12 +2496,12 @@ func (r *Runtime) accountProjectTaskUsage(
 		issue.ProjectID,
 		task.ID,
 		projectorchestration.UsageAttribution{
-			Category:         category,
-			InputTokens:      usage.InputTokens,
-			OutputTokens:     usage.OutputTokens,
-			CacheReadTokens:  usage.CacheReadTokens,
-			CacheWriteTokens: usage.CacheWriteTokens,
-			RuntimeSeconds:   usage.RuntimeSeconds,
+			Category:              category,
+			InputTokens:           usage.InputTokens,
+			OutputTokens:          usage.OutputTokens,
+			CacheReadTokens:       usage.CacheReadTokens,
+			CacheWriteTokens:      usage.CacheWriteTokens,
+			RuntimeSeconds:        usage.RuntimeSeconds,
 			CostUsdTicks:          usage.CostUsdTicks,
 			CostComplete:          usage.CostComplete,
 			BrainContextTokens:    brainContextTokens,
@@ -2366,10 +2544,10 @@ func (r *Runtime) accountProjectTaskUsage(
 		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
 	`, issue.WorkspaceID, issue.ProjectID)
 	contextJSON, _ := json.Marshal(map[string]any{
-		"node_key": nodeKey,
-		"task_id": util.UUIDToString(task.ID),
-		"usage_category": category,
-		"tokens": tokens,
+		"node_key":        nodeKey,
+		"task_id":         util.UUIDToString(task.ID),
+		"usage_category":  category,
+		"tokens":          tokens,
 		"runtime_seconds": runtimeSeconds,
 		"cost_microunits": costMicrounits,
 	})
@@ -2471,11 +2649,11 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 	}
 
 	artifactPayload := map[string]any{
-		"task_id": util.UUIDToString(task.ID),
-		"agent_id": util.UUIDToString(task.AgentID),
-		"issue_id": util.UUIDToString(issue.ID),
+		"task_id":       util.UUIDToString(task.ID),
+		"agent_id":      util.UUIDToString(task.AgentID),
+		"issue_id":      util.UUIDToString(issue.ID),
 		"spec_revision": specRevision,
-		"result": taskResult,
+		"result":        taskResult,
 	}
 	content, _ := json.Marshal(artifactPayload)
 
@@ -2630,7 +2808,6 @@ func projectQualityGateType(kind projectorchestration.NodeKind) string {
 	}
 }
 
-
 func (r *Runtime) failProjectNodeTask(
 	ctx context.Context,
 	task db.AgentTaskQueue,
@@ -2684,8 +2861,8 @@ func (r *Runtime) failProjectNodeTask(
 		contextJSON, _ := json.Marshal(map[string]any{
 			"node_key": nodeKey,
 			"issue_id": util.UUIDToString(issue.ID),
-			"task_id": util.UUIDToString(task.ID),
-			"error": reason,
+			"task_id":  util.UUIDToString(task.ID),
+			"error":    reason,
 		})
 		_, escErr := r.pool.Exec(ctx, `
 			INSERT INTO autonomous_project_escalation (
@@ -2763,16 +2940,16 @@ func (r *Runtime) completeNonImplementationProjectNode(ctx context.Context, task
 	if r.projectStore == nil {
 		return false, nil
 	}
-	var kind string
+	var kind, status string
 	err := r.pool.QueryRow(ctx, `
-		SELECT kind
+		SELECT kind, status
 		FROM autonomous_project_plan_node
 		WHERE workspace_id = $1
 		  AND materialized_issue_id = $2
-		  AND status IN ('running', 'verification')
+		  AND status IN ('running', 'verification', 'ready', 'blocked')
 		ORDER BY updated_at DESC
 		LIMIT 1
-	`, issue.WorkspaceID, issue.ID).Scan(&kind)
+	`, issue.WorkspaceID, issue.ID).Scan(&kind, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -2781,6 +2958,35 @@ func (r *Runtime) completeNonImplementationProjectNode(ctx context.Context, task
 	}
 	if projectNodeUsesIssueWorkflow(projectorchestration.NodeKind(kind)) {
 		return false, nil
+	}
+	if status != "running" && status != "verification" {
+		if !task.RetryOfTaskID.Valid && !task.RerunOfTaskID.Valid {
+			return false, nil
+		}
+		var latest bool
+		if err := r.pool.QueryRow(ctx, `
+			SELECT NOT EXISTS (
+				SELECT 1
+				FROM agent_task_queue newer
+				WHERE newer.issue_id = $1
+				  AND newer.id <> $2
+				  AND newer.created_at > (
+					SELECT created_at FROM agent_task_queue WHERE id = $2
+				  )
+			)
+		`, issue.ID, task.ID).Scan(&latest); err != nil {
+			return true, err
+		}
+		if !latest {
+			return true, nil
+		}
+		resumed, err := r.projectStore.ResumeNodeForWorkflowRetry(ctx, issue.WorkspaceID, issue.ID)
+		if err != nil {
+			return true, err
+		}
+		if !resumed {
+			return true, nil
+		}
 	}
 
 	if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Done); err != nil {

@@ -966,11 +966,11 @@ export function useRealtimeSync(
       // Chat events are handled explicitly below; do not double-invalidate.
       "chat:message", "chat:done", "chat:quick_actions", "chat:cancel_finalized", "chat:session_read",
       "chat:session_created", "chat:session_deleted", "chat:session_updated",
-      // task:message stays out of the prefix path because it fires per
-      // streamed message during a long run — invalidating the snapshot on
-      // every message would flood the network. Specific chat handlers below
-      // still receive it via ws.on() (a separate subscription channel).
-      "task:message",
+      // Per-frame task events stay out of the prefix path because they fire
+      // continuously during a long run. Invalidating the workspace task
+      // projections for every message/progress update can starve the UI.
+      // Specific handlers below still receive task:message via ws.on().
+      "task:message", "task:progress",
       // task:completed / task:failed deliberately NOT here. They go through
       // both the task-prefix invalidate (refreshes the agent-task-snapshot
       // cache) AND the chat-specific ws.on() handlers below. The two

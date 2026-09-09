@@ -223,7 +223,7 @@ func loadContextPlanState(ctx context.Context, tx pgx.Tx, issue db.Issue) (conte
 		       n.id,n.node_key,n.kind,n.title,n.description,n.required_role_family
 		FROM autonomous_project_plan p
 		LEFT JOIN autonomous_project_plan_node n
-		  ON n.plan_id=p.id AND n.materialized_issue_id=$3
+		  ON n.plan_id=p.id AND n.materialized_issue_id=$3::uuid
 		WHERE p.workspace_id=$1 AND p.project_id=$2
 		  AND p.status IN ('active','blocked')
 		ORDER BY p.revision DESC
@@ -319,7 +319,7 @@ func recallContextMemories(ctx context.Context, tx pgx.Tx, workspaceID, projectI
 	load := func(search string) ([]rankedContextMemory, error) {
 		rows, err := tx.Query(ctx, `
 			WITH q AS (
-				SELECT CASE WHEN btrim($3)='' THEN NULL ELSE websearch_to_tsquery('simple'::regconfig,$3) END AS tsq
+				SELECT CASE WHEN btrim($3::text)='' THEN NULL ELSE websearch_to_tsquery('simple'::regconfig,$3::text) END AS tsq
 			)
 			SELECT b.id,COALESCE(b.canonical_key,''),b.entry_type,b.subject,
 			       left(b.content::text,6000),b.authority
@@ -329,7 +329,7 @@ func recallContextMemories(ctx context.Context, tx pgx.Tx, workspaceID, projectI
 			  AND b.status='active' AND b.superseded_by IS NULL
 			  AND b.governance_state='current'
 			  AND (b.expires_at IS NULL OR b.expires_at>now())
-			  AND ($5='' OR b.repository_revision IS NULL OR b.repository_revision=$5)
+			  AND ($5::text='' OR b.repository_revision IS NULL OR b.repository_revision=$5::text)
 			  AND (q.tsq IS NULL OR to_tsvector('simple'::regconfig,
 			      COALESCE(b.subject,'') || ' ' || COALESCE(b.canonical_key,'') || ' ' || COALESCE(b.content::text,'')) @@ q.tsq)
 			ORDER BY (
@@ -339,11 +339,11 @@ func recallContextMemories(ctx context.Context, tx pgx.Tx, workspaceID, projectI
 			  + CASE b.authority WHEN 'user_decision' THEN 2.0 WHEN 'authoritative_spec' THEN 1.8
 			    WHEN 'deterministic_observation' THEN 1.6 WHEN 'trusted_external' THEN 1.3
 			    WHEN 'system_derived' THEN 1.0 ELSE 0.6 END
-			  + CASE WHEN $4 IN ('qa','review') AND b.entry_type IN ('requirement','risk','lesson') THEN 0.8
-			    WHEN $4='security' AND b.entry_type IN ('risk','constraint','architecture_decision') THEN 0.8
-			    WHEN $4 IN ('frontend','design') AND b.entry_type IN ('product_decision','requirement','architecture_decision') THEN 0.8
-			    WHEN $4 IN ('backend','implementation','architecture') AND b.entry_type IN ('architecture_decision','repository_fact','constraint','dependency') THEN 0.8
-			    WHEN $4='product' AND b.entry_type IN ('requirement','product_decision','constraint') THEN 0.8 ELSE 0 END
+			  + CASE WHEN $4::text IN ('qa','review') AND b.entry_type IN ('requirement','risk','lesson') THEN 0.8
+			    WHEN $4::text='security' AND b.entry_type IN ('risk','constraint','architecture_decision') THEN 0.8
+			    WHEN $4::text IN ('frontend','design') AND b.entry_type IN ('product_decision','requirement','architecture_decision') THEN 0.8
+			    WHEN $4::text IN ('backend','implementation','architecture') AND b.entry_type IN ('architecture_decision','repository_fact','constraint','dependency') THEN 0.8
+			    WHEN $4::text='product' AND b.entry_type IN ('requirement','product_decision','constraint') THEN 0.8 ELSE 0 END
 			  + (1.0/(1.0+GREATEST(EXTRACT(EPOCH FROM (now()-b.observed_at)),0)/2592000.0))
 			) DESC,b.brain_revision DESC,b.id
 			LIMIT 60
@@ -403,7 +403,7 @@ func contextStructuredHandoffs(ctx context.Context, tx pgx.Tx, issue db.Issue, p
 		FROM autonomous_project_handoff h
 		WHERE h.workspace_id=$1 AND h.project_id=$2
 		  AND (h.workflow_action_id IS NULL OR h.workflow_action_id<>$4)
-		  AND (h.issue_id=$3 OR h.issue_id IN (
+		  AND (h.issue_id=$3::uuid OR h.issue_id IN (
 		    SELECT pred.materialized_issue_id
 		    FROM autonomous_project_plan_edge e
 		    JOIN autonomous_project_plan_node pred ON pred.plan_id=e.plan_id AND pred.node_key=e.from_node_key
@@ -477,8 +477,8 @@ func attachContextToHandoff(ctx context.Context,tx pgx.Tx,actionID pgtype.UUID,p
 	_,err=tx.Exec(ctx,`
 		UPDATE autonomous_project_handoff
 		SET envelope=jsonb_set(envelope,'{context_package}',$2::jsonb,true),
-		    brain_context_tokens=$3,
-		    brain_context_estimated=($3>0)
+		    brain_context_tokens=$3::bigint,
+		    brain_context_estimated=($3::bigint>0)
 		WHERE workflow_action_id=$1
 	`,actionID,raw,brainTokens)
 	return err

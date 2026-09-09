@@ -1,11 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Download, RefreshCw, ScrollText, ShieldAlert } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "@multica/core/api";
-import type { DiagnosticLogEntry, DiagnosticLogQuery } from "@multica/core/types";
+import type {
+  DiagnosticLogEntry,
+  DiagnosticLogLevel,
+  DiagnosticLogQuery,
+} from "@multica/core/types";
 import { useDiagnosticsLogsEnabled } from "@multica/core/diagnostics";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -17,6 +21,13 @@ import { useT } from "../i18n";
 
 const TAIL_OPTIONS = [200, 1000, 5000] as const;
 const WINDOW_OPTIONS = [0, 300, 3600, 21600, 86400] as const;
+const LOG_LEVEL_OPTIONS: readonly DiagnosticLogLevel[] = [
+  "debug",
+  "info",
+  "warn",
+  "error",
+];
+type LogSortOrder = "newest" | "oldest";
 
 function severityClass(level: DiagnosticLogEntry["level"]) {
   switch (level) {
@@ -31,6 +42,23 @@ function severityClass(level: DiagnosticLogEntry["level"]) {
   }
 }
 
+function sortEntries(
+  entries: DiagnosticLogEntry[],
+  order: LogSortOrder,
+): DiagnosticLogEntry[] {
+  return [...entries].sort((a, b) => {
+    const aTime = a.timestamp ? Date.parse(a.timestamp) : Number.NaN;
+    const bTime = b.timestamp ? Date.parse(b.timestamp) : Number.NaN;
+
+    if (Number.isNaN(aTime) || Number.isNaN(bTime)) {
+      if (Number.isNaN(aTime) && Number.isNaN(bTime)) return 0;
+      return Number.isNaN(aTime) ? 1 : -1;
+    }
+
+    return order === "newest" ? bTime - aTime : aTime - bTime;
+  });
+}
+
 export function LogsPage() {
   const { t } = useT("settings");
   const enabled = useDiagnosticsLogsEnabled();
@@ -38,6 +66,8 @@ export function LogsPage() {
   const [search, setSearch] = useState("");
   const [tail, setTail] = useState<number>(1000);
   const [windowSeconds, setWindowSeconds] = useState(3600);
+  const [sortOrder, setSortOrder] = useState<LogSortOrder>("newest");
+  const [levelFilter, setLevelFilter] = useState<DiagnosticLogLevel | "">("");
   const [live, setLive] = useState(true);
   const [exporting, setExporting] = useState(false);
 
@@ -57,6 +87,17 @@ export function LogsPage() {
     refetchInterval: live ? 2500 : false,
     refetchIntervalInBackground: false,
   });
+  const entries = logs.data?.entries ?? [];
+  const sortedEntries = useMemo(
+    () =>
+      sortEntries(
+        levelFilter
+          ? entries.filter((entry) => entry.level === levelFilter)
+          : entries,
+        sortOrder,
+      ),
+    [entries, levelFilter, sortOrder],
+  );
 
   const windowLabel = (seconds: number): string => {
     switch (seconds) {
@@ -107,14 +148,13 @@ export function LogsPage() {
   };
 
   const apiError = logs.error instanceof ApiError ? logs.error : null;
-  const entries = logs.data?.entries ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <CollectionPageHeader
         icon={ScrollText}
         title={t(($) => $.labs.logs_page.title)}
-        count={entries.length}
+        count={sortedEntries.length}
         description={t(($) => $.labs.logs_page.description)}
         actions={
           <>
@@ -185,6 +225,40 @@ export function LogsPage() {
               </option>
             ))}
           </select>
+          <select
+            aria-label={t(($) => $.labs.logs_page.sort_aria)}
+            className="h-8 rounded-md border bg-background px-2 text-body"
+            value={sortOrder}
+            onChange={(e) =>
+              setSortOrder(e.target.value === "oldest" ? "oldest" : "newest")
+            }
+          >
+            <option value="newest">
+              {t(($) => $.labs.logs_page.sort_newest)}
+            </option>
+            <option value="oldest">
+              {t(($) => $.labs.logs_page.sort_oldest)}
+            </option>
+          </select>
+          <select
+            aria-label={t(($) => $.labs.logs_page.level_aria)}
+            className="h-8 rounded-md border bg-background px-2 text-body"
+            value={levelFilter}
+            onChange={(e) =>
+              setLevelFilter(
+                LOG_LEVEL_OPTIONS.includes(e.target.value as DiagnosticLogLevel)
+                  ? (e.target.value as DiagnosticLogLevel)
+                  : "",
+              )
+            }
+          >
+            <option value="">{t(($) => $.labs.logs_page.all_levels)}</option>
+            {LOG_LEVEL_OPTIONS.map((level) => (
+              <option key={level} value={level}>
+                {t(($) => $.labs.logs_page[`level_${level}`])}
+              </option>
+            ))}
+          </select>
           <Input
             className="h-8 min-w-52 flex-1 md:max-w-sm"
             value={search}
@@ -214,13 +288,13 @@ export function LogsPage() {
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-background">
-            {entries.length === 0 && !logs.isPending ? (
+            {sortedEntries.length === 0 && !logs.isPending ? (
               <div className="p-6 text-center text-body text-muted-foreground">
                 {t(($) => $.labs.logs_page.empty)}
               </div>
             ) : (
               <div className="min-w-max py-1 font-mono text-micro leading-5">
-                {entries.map((entry, index) => (
+                {sortedEntries.map((entry, index) => (
                   <div
                     key={[
                       entry.timestamp ?? "none",

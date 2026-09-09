@@ -21,11 +21,11 @@ import (
 )
 
 type AutonomousControlResponse struct {
-	Paused              bool    `json:"paused"`
-	PausedAt            *string `json:"paused_at"`
-	ReplanRequestedAt   *string `json:"replan_requested_at"`
-	ReplanCompletedAt   *string `json:"replan_completed_at"`
-	LastError           *string `json:"last_error"`
+	Paused            bool    `json:"paused"`
+	PausedAt          *string `json:"paused_at"`
+	ReplanRequestedAt *string `json:"replan_requested_at"`
+	ReplanCompletedAt *string `json:"replan_completed_at"`
+	LastError         *string `json:"last_error"`
 }
 
 type AutonomousProjectBootstrapResponse struct {
@@ -65,23 +65,25 @@ type AutonomousSkillOptionResponse struct {
 }
 
 type AutonomousTeamMemberResponse struct {
-	Role             string          `json:"role"`
-	Family           string          `json:"family"`
-	AgentID          string          `json:"agent_id"`
-	AgentName        string          `json:"agent_name"`
-	Capabilities     json.RawMessage `json:"capabilities"`
-	Responsibilities json.RawMessage `json:"responsibilities"`
-	Reason           string          `json:"reason"`
-	Active           bool            `json:"active"`
-	CurrentTaskID    *string         `json:"current_task_id"`
-	CurrentTaskTitle *string         `json:"current_task_title"`
-	CurrentTaskStatus *string        `json:"current_task_status"`
-	CreatedAt        string          `json:"created_at"`
+	Role              string          `json:"role"`
+	Family            string          `json:"family"`
+	AgentID           string          `json:"agent_id"`
+	AgentName         string          `json:"agent_name"`
+	Capabilities      json.RawMessage `json:"capabilities"`
+	Responsibilities  json.RawMessage `json:"responsibilities"`
+	Reason            string          `json:"reason"`
+	Active            bool            `json:"active"`
+	CurrentTaskID     *string         `json:"current_task_id"`
+	CurrentTaskTitle  *string         `json:"current_task_title"`
+	CurrentTaskStatus *string         `json:"current_task_status"`
+	CreatedAt         string          `json:"created_at"`
 }
 
 type AutonomousTeamResponse struct {
 	ID            string                         `json:"id"`
 	SquadID       string                         `json:"squad_id"`
+	LeaderAgentID string                         `json:"leader_agent_id"`
+	LeaderName    string                         `json:"leader_name"`
 	Intent        string                         `json:"intent"`
 	Status        string                         `json:"status"`
 	PlannerName   string                         `json:"planner_name"`
@@ -168,38 +170,38 @@ type AutonomousDiagnosticResponse struct {
 }
 
 type AutonomousBrainResponse struct {
-	Enabled             bool    `json:"enabled"`
-	RuntimeMode         string  `json:"runtime_mode"`
-	RuntimeID           *string `json:"runtime_id"`
-	Model               *string `json:"model"`
-	ThinkingLevel       *string `json:"thinking_level"`
-	ServiceTier         *string `json:"service_tier"`
-	LearningMode        string  `json:"learning_mode"`
-	ActiveMemories      int64   `json:"active_memories"`
-	SupersededMemories  int64   `json:"superseded_memories"`
-	PendingLearningJobs int64   `json:"pending_learning_jobs"`
-	DeferredLearningJobs int64  `json:"deferred_learning_jobs"`
+	Enabled              bool    `json:"enabled"`
+	RuntimeMode          string  `json:"runtime_mode"`
+	RuntimeID            *string `json:"runtime_id"`
+	Model                *string `json:"model"`
+	ThinkingLevel        *string `json:"thinking_level"`
+	ServiceTier          *string `json:"service_tier"`
+	LearningMode         string  `json:"learning_mode"`
+	ActiveMemories       int64   `json:"active_memories"`
+	SupersededMemories   int64   `json:"superseded_memories"`
+	PendingLearningJobs  int64   `json:"pending_learning_jobs"`
+	DeferredLearningJobs int64   `json:"deferred_learning_jobs"`
 }
 
 type AutonomousProjectResponse struct {
-	Enabled   bool                              `json:"enabled"`
-	Control   AutonomousControlResponse         `json:"control"`
-	Health    AutonomousProjectHealthResponse   `json:"health"`
-	Bootstrap *AutonomousProjectBootstrapResponse `json:"bootstrap"`
-	Draft     *AutonomousTeamDraftResponse       `json:"draft"`
-	Runtimes  []AutonomousRuntimeOptionResponse  `json:"runtimes"`
-	Skills    []AutonomousSkillOptionResponse    `json:"skills"`
-	Team      *AutonomousTeamResponse            `json:"team"`
-	Workflows []AutonomousWorkflowResponse       `json:"workflows"`
-	Actions   []AutonomousActionResponse         `json:"actions"`
-	Activity  []AutonomousActivityResponse       `json:"activity"`
-	Decisions    []AutonomousDecisionResponse       `json:"decisions"`
+	Enabled      bool                                `json:"enabled"`
+	Control      AutonomousControlResponse           `json:"control"`
+	Health       AutonomousProjectHealthResponse     `json:"health"`
+	Bootstrap    *AutonomousProjectBootstrapResponse `json:"bootstrap"`
+	Draft        *AutonomousTeamDraftResponse        `json:"draft"`
+	Runtimes     []AutonomousRuntimeOptionResponse   `json:"runtimes"`
+	Skills       []AutonomousSkillOptionResponse     `json:"skills"`
+	Team         *AutonomousTeamResponse             `json:"team"`
+	Workflows    []AutonomousWorkflowResponse        `json:"workflows"`
+	Actions      []AutonomousActionResponse          `json:"actions"`
+	Activity     []AutonomousActivityResponse        `json:"activity"`
+	Decisions    []AutonomousDecisionResponse        `json:"decisions"`
 	Plan         *AutonomousProjectPlanResponse      `json:"plan"`
 	QualityGates []AutonomousQualityGateResponse     `json:"quality_gates"`
 	Escalations  []AutonomousEscalationResponse      `json:"escalations"`
-	Diagnostics  []AutonomousDiagnosticResponse       `json:"diagnostics"`
-	Budget       *AutonomousBudgetResponse            `json:"budget"`
-	Brain        *AutonomousBrainResponse             `json:"brain"`
+	Diagnostics  []AutonomousDiagnosticResponse      `json:"diagnostics"`
+	Budget       *AutonomousBudgetResponse           `json:"budget"`
+	Brain        *AutonomousBrainResponse            `json:"brain"`
 }
 
 type AutonomousProjectPlanNodeResponse struct {
@@ -269,15 +271,15 @@ type AutonomousEscalationResponse struct {
 }
 
 type AutonomousBudgetResponse struct {
-	TokenLimit         *int64 `json:"token_limit"`
+	TokenLimit          *int64 `json:"token_limit"`
 	RuntimeSecondsLimit *int64 `json:"runtime_seconds_limit"`
 	CostMicrounitsLimit *int64 `json:"cost_microunits_limit"`
-	MaxParallelNodes   int    `json:"max_parallel_nodes"`
-	MaxTotalAttempts   int    `json:"max_total_attempts"`
-	TokensUsed         int64  `json:"tokens_used"`
-	RuntimeSecondsUsed int64  `json:"runtime_seconds_used"`
-	CostMicrounitsUsed int64  `json:"cost_microunits_used"`
-	TotalAttempts      int    `json:"total_attempts"`
+	MaxParallelNodes    int    `json:"max_parallel_nodes"`
+	MaxTotalAttempts    int    `json:"max_total_attempts"`
+	TokensUsed          int64  `json:"tokens_used"`
+	RuntimeSecondsUsed  int64  `json:"runtime_seconds_used"`
+	CostMicrounitsUsed  int64  `json:"cost_microunits_used"`
+	TotalAttempts       int    `json:"total_attempts"`
 }
 
 type autonomousActivitySortable struct {
@@ -327,16 +329,16 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	}
 
 	resp := AutonomousProjectResponse{
-		Runtimes:  []AutonomousRuntimeOptionResponse{},
-		Skills:    []AutonomousSkillOptionResponse{},
-		Workflows: []AutonomousWorkflowResponse{},
-		Actions:   []AutonomousActionResponse{},
-		Activity:  []AutonomousActivityResponse{},
-		Decisions: []AutonomousDecisionResponse{},
+		Runtimes:     []AutonomousRuntimeOptionResponse{},
+		Skills:       []AutonomousSkillOptionResponse{},
+		Workflows:    []AutonomousWorkflowResponse{},
+		Actions:      []AutonomousActionResponse{},
+		Activity:     []AutonomousActivityResponse{},
+		Decisions:    []AutonomousDecisionResponse{},
 		QualityGates: []AutonomousQualityGateResponse{},
-		Escalations: []AutonomousEscalationResponse{},
-		Diagnostics: []AutonomousDiagnosticResponse{},
-		Health: AutonomousProjectHealthResponse{Status: "idle"},
+		Escalations:  []AutonomousEscalationResponse{},
+		Diagnostics:  []AutonomousDiagnosticResponse{},
+		Health:       AutonomousProjectHealthResponse{Status: "idle"},
 	}
 
 	var pausedAt, replanRequestedAt, replanCompletedAt pgtype.Timestamptz
@@ -358,8 +360,8 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	resp.Control.LastError = nullableTextString(lastError)
 
 	brain := AutonomousBrainResponse{
-		Enabled: true,
-		RuntimeMode: "inherit_mika",
+		Enabled:      true,
+		RuntimeMode:  "inherit_mika",
 		LearningMode: "adaptive",
 	}
 	var brainRuntimeID pgtype.UUID
@@ -445,7 +447,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	var mikaRuntimeID pgtype.UUID
 	mika, mikaErr := h.Queries.GetAgentBySystemKey(r.Context(), db.GetAgentBySystemKeyParams{
 		WorkspaceID: workspaceID,
-		SystemKey: pgtype.Text{String: service.MikaSystemKey, Valid: true},
+		SystemKey:   pgtype.Text{String: service.MikaSystemKey, Valid: true},
 	})
 	if mikaErr == nil && mika.RuntimeID.Valid {
 		mikaRuntimeID = mika.RuntimeID
@@ -514,11 +516,14 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	var draftPlannerName, draftStatus string
 	var draftPlannerModel pgtype.Text
 	var draftCreatedAt, draftUpdatedAt time.Time
+	var draftConfirmedAt pgtype.Timestamptz
+	var continuationTaskID pgtype.UUID
+	var continuationCompletedAt pgtype.Timestamptz
 	draftErr := h.DB.QueryRow(r.Context(), `
-		SELECT plan, planner_name, planner_model, status, created_at, updated_at
+		SELECT plan, planner_name, planner_model, status, created_at, updated_at,
+		       confirmed_at, continuation_task_id, continuation_completed_at
 		FROM autonomous_project_team_draft
 		WHERE workspace_id = $1 AND project_id = $2
-		  AND status IN ('awaiting_configuration', 'provisioning')
 	`, workspaceID, projectID).Scan(
 		&draftPlan,
 		&draftPlannerName,
@@ -526,26 +531,29 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		&draftStatus,
 		&draftCreatedAt,
 		&draftUpdatedAt,
+		&draftConfirmedAt,
+		&continuationTaskID,
+		&continuationCompletedAt,
 	)
 	if draftErr != nil && !errors.Is(draftErr, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to load autonomous team draft")
 		return
 	}
-	if draftErr == nil {
+	if draftErr == nil && (draftStatus == "awaiting_configuration" || draftStatus == "provisioning") {
 		defaultSkillIDs := make([]string, 0, len(resp.Skills))
 		for _, skill := range resp.Skills {
 			defaultSkillIDs = append(defaultSkillIDs, skill.ID)
 		}
 		resp.Enabled = true
 		resp.Draft = &AutonomousTeamDraftResponse{
-			Status: draftStatus,
-			PlannerName: draftPlannerName,
-			PlannerModel: nullableTextString(draftPlannerModel),
-			Plan: append(json.RawMessage(nil), draftPlan...),
+			Status:           draftStatus,
+			PlannerName:      draftPlannerName,
+			PlannerModel:     nullableTextString(draftPlannerModel),
+			Plan:             append(json.RawMessage(nil), draftPlan...),
 			DefaultRuntimeID: nullableUUIDString(mikaRuntimeID),
-			DefaultSkillIDs: defaultSkillIDs,
-			CreatedAt: draftCreatedAt.UTC().Format(time.RFC3339Nano),
-			UpdatedAt: draftUpdatedAt.UTC().Format(time.RFC3339Nano),
+			DefaultSkillIDs:  defaultSkillIDs,
+			CreatedAt:        draftCreatedAt.UTC().Format(time.RFC3339Nano),
+			UpdatedAt:        draftUpdatedAt.UTC().Format(time.RFC3339Nano),
 		}
 	}
 
@@ -567,6 +575,17 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		resp.Enabled = true
 		team.ID = uuidToString(teamID)
 		team.SquadID = uuidToString(squadID)
+		var leaderID pgtype.UUID
+		if err := h.DB.QueryRow(r.Context(), `
+			SELECT s.leader_id, a.name
+			FROM squad s
+			JOIN agent a ON a.id = s.leader_id
+			WHERE s.id = $1 AND s.workspace_id = $2
+		`, squadID, workspaceID).Scan(&leaderID, &team.LeaderName); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load autonomous project team leader")
+			return
+		}
+		team.LeaderAgentID = uuidToString(leaderID)
 		team.PlannerModel = nullableTextString(plannerModel)
 		team.LastPlannedAt = nullableTimestampString(lastPlannedAt)
 		team.UpdatedAt = teamUpdatedAt.UTC().Format(time.RFC3339Nano)
@@ -807,9 +826,18 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		&budget.CostMicrounitsUsed, &budget.TotalAttempts,
 	)
 	if budgetErr == nil {
-		if tokenLimit.Valid { v := tokenLimit.Int64; budget.TokenLimit = &v }
-		if runtimeLimit.Valid { v := runtimeLimit.Int64; budget.RuntimeSecondsLimit = &v }
-		if costLimit.Valid { v := costLimit.Int64; budget.CostMicrounitsLimit = &v }
+		if tokenLimit.Valid {
+			v := tokenLimit.Int64
+			budget.TokenLimit = &v
+		}
+		if runtimeLimit.Valid {
+			v := runtimeLimit.Int64
+			budget.RuntimeSecondsLimit = &v
+		}
+		if costLimit.Valid {
+			v := costLimit.Int64
+			budget.CostMicrounitsLimit = &v
+		}
 		resp.Budget = &budget
 	} else if !errors.Is(budgetErr, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to load autonomous project budget")
@@ -957,6 +985,133 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 			},
 		})
 	}
+	if draftErr == nil {
+		sortable = append(sortable, autonomousActivitySortable{
+			At: draftCreatedAt,
+			Item: AutonomousActivityResponse{
+				ID:        "team-draft:" + uuidToString(projectID),
+				Type:      "team.planned",
+				Title:     "Autonomous team plan prepared",
+				Detail:    draftPlannerName,
+				CreatedAt: draftCreatedAt.UTC().Format(time.RFC3339Nano),
+			},
+		})
+		if draftConfirmedAt.Valid {
+			sortable = append(sortable, autonomousActivitySortable{
+				At: draftConfirmedAt.Time,
+				Item: AutonomousActivityResponse{
+					ID:        "team-confirmed:" + uuidToString(projectID),
+					Type:      "team.confirmed",
+					Title:     "Team configuration approved",
+					Detail:    "Creating the autonomous team.",
+					CreatedAt: draftConfirmedAt.Time.UTC().Format(time.RFC3339Nano),
+				},
+			})
+		}
+		if draftStatus == "provisioning" {
+			sortable = append(sortable, autonomousActivitySortable{
+				At: draftUpdatedAt,
+				Item: AutonomousActivityResponse{
+					ID:        "team-provisioning:" + uuidToString(projectID),
+					Type:      "team.provisioning",
+					Title:     "Autonomous team is being created",
+					Detail:    "Agents, their runtimes and the project leader are being configured.",
+					CreatedAt: draftUpdatedAt.UTC().Format(time.RFC3339Nano),
+				},
+			})
+		}
+		if continuationTaskID.Valid {
+			var status, agentName string
+			var taskError pgtype.Text
+			var createdAt time.Time
+			var completedAt pgtype.Timestamptz
+			if err := h.DB.QueryRow(r.Context(), `
+				SELECT t.status, a.name, t.error, t.created_at, t.completed_at
+				FROM agent_task_queue t
+				JOIN agent a ON a.id = t.agent_id
+				WHERE t.id = $1
+			`, continuationTaskID).Scan(&status, &agentName, &taskError, &createdAt, &completedAt); err == nil {
+				at := createdAt
+				if completedAt.Valid {
+					at = completedAt.Time
+				}
+				detail := agentName
+				if taskError.Valid && strings.TrimSpace(taskError.String) != "" {
+					detail += " · " + taskError.String
+				}
+				sortable = append(sortable, autonomousActivitySortable{
+					At: at,
+					Item: AutonomousActivityResponse{
+						ID:        "backlog-creation:" + uuidToString(continuationTaskID) + ":" + status,
+						Type:      "backlog." + status,
+						Title:     "Project task creation · " + status,
+						Detail:    detail,
+						CreatedAt: at.UTC().Format(time.RFC3339Nano),
+					},
+				})
+			}
+		}
+		if continuationCompletedAt.Valid && !continuationTaskID.Valid {
+			sortable = append(sortable, autonomousActivitySortable{
+				At: continuationCompletedAt.Time,
+				Item: AutonomousActivityResponse{
+					ID:        "backlog-created:" + uuidToString(projectID),
+					Type:      "backlog.completed",
+					Title:     "Project task creation completed",
+					CreatedAt: continuationCompletedAt.Time.UTC().Format(time.RFC3339Nano),
+				},
+			})
+		}
+	}
+	var plannerTaskID, plannerAgentID pgtype.UUID
+	var plannerStatus, plannerAgentName string
+	var plannerTaskError pgtype.Text
+	var plannerCreatedAt time.Time
+	var plannerStartedAt, plannerCompletedAt pgtype.Timestamptz
+	if err := h.DB.QueryRow(r.Context(), `
+		SELECT t.id, t.status, a.id, a.name, t.error, t.created_at, t.started_at, t.completed_at
+		FROM agent_task_queue t
+		JOIN chat_session s ON s.id = t.chat_session_id
+		JOIN agent a ON a.id = t.agent_id
+		WHERE s.workspace_id = $1
+		  AND s.project_id = $2
+		  AND a.system_key = 'autonomous_project_planner'
+		ORDER BY t.created_at DESC
+		LIMIT 1
+	`, workspaceID, projectID).Scan(
+		&plannerTaskID,
+		&plannerStatus,
+		&plannerAgentID,
+		&plannerAgentName,
+		&plannerTaskError,
+		&plannerCreatedAt,
+		&plannerStartedAt,
+		&plannerCompletedAt,
+	); err == nil {
+		at := plannerCreatedAt
+		if plannerCompletedAt.Valid {
+			at = plannerCompletedAt.Time
+		} else if plannerStartedAt.Valid {
+			at = plannerStartedAt.Time
+		}
+		detail := plannerAgentName
+		if plannerTaskError.Valid && strings.TrimSpace(plannerTaskError.String) != "" {
+			detail += " · " + plannerTaskError.String
+		}
+		plannerAgentIDString := uuidToString(plannerAgentID)
+		sortable = append(sortable, autonomousActivitySortable{
+			At: at,
+			Item: AutonomousActivityResponse{
+				ID:        "project-planning:" + uuidToString(plannerTaskID) + ":" + plannerStatus,
+				Type:      "planning." + plannerStatus,
+				Title:     "Project planning · " + plannerStatus,
+				Detail:    detail,
+				AgentID:   &plannerAgentIDString,
+				Metadata:  map[string]any{"task_id": uuidToString(plannerTaskID)},
+				CreatedAt: at.UTC().Format(time.RFC3339Nano),
+			},
+		})
+	}
 	if teamID.Valid && !teamCreatedAt.IsZero() {
 		sortable = append(sortable, autonomousActivitySortable{
 			At: teamCreatedAt,
@@ -990,12 +1145,12 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 					sortable = append(sortable, autonomousActivitySortable{
 						At: createdAt,
 						Item: AutonomousActivityResponse{
-							ID: "team-member:" + agentIDString,
-							Type: "team.member.added",
-							Title: name + " added to Technology Team",
-							Detail: reason,
-							AgentID: &agentIDString,
-							Metadata: map[string]any{"role": role, "family": family},
+							ID:        "team-member:" + agentIDString,
+							Type:      "team.member.added",
+							Title:     name + " added to Technology Team",
+							Detail:    reason,
+							AgentID:   &agentIDString,
+							Metadata:  map[string]any{"role": role, "family": family},
 							CreatedAt: createdAt.UTC().Format(time.RFC3339Nano),
 						},
 					})
@@ -1037,13 +1192,13 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 					sortable = append(sortable, autonomousActivitySortable{
 						At: createdAt,
 						Item: AutonomousActivityResponse{
-							ID: "decision:" + decision.ID,
-							Type: "team.planned",
-							Title: "LLM team plan evaluated",
+							ID:     "decision:" + decision.ID,
+							Type:   "team.planned",
+							Title:  "LLM team plan evaluated",
 							Detail: detail,
 							Metadata: map[string]any{
-								"source_type": decision.SourceType,
-								"source_id": decision.SourceID,
+								"source_type":     decision.SourceType,
+								"source_id":       decision.SourceID,
 								"source_revision": decision.SourceRevision,
 							},
 							CreatedAt: decision.CreatedAt,
@@ -1074,11 +1229,11 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 				sortable = append(sortable, autonomousActivitySortable{
 					At: createdAt,
 					Item: AutonomousActivityResponse{
-						ID: "workflow-event:" + eventID,
-						Type: eventType,
-						Title: strings.ReplaceAll(eventType, ".", " "),
-						Detail: issueTitle,
-						IssueID: &issueIDString,
+						ID:        "workflow-event:" + eventID,
+						Type:      eventType,
+						Title:     strings.ReplaceAll(eventType, ".", " "),
+						Detail:    issueTitle,
+						IssueID:   &issueIDString,
 						CreatedAt: createdAt.UTC().Format(time.RFC3339Nano),
 					},
 				})
@@ -1140,13 +1295,13 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 				sortable = append(sortable, autonomousActivitySortable{
 					At: at,
 					Item: AutonomousActivityResponse{
-						ID: "task:" + taskIDString + ":" + status,
-						Type: "task." + status,
-						Title: agentName + " · " + status,
-						Detail: detail,
-						IssueID: &issueIDString,
-						AgentID: &agentIDString,
-						Metadata: metadata,
+						ID:        "task:" + taskIDString + ":" + status,
+						Type:      "task." + status,
+						Title:     agentName + " · " + status,
+						Detail:    detail,
+						IssueID:   &issueIDString,
+						AgentID:   &agentIDString,
+						Metadata:  metadata,
 						CreatedAt: at.UTC().Format(time.RFC3339Nano),
 					},
 				})
@@ -1188,8 +1343,8 @@ func (h *Handler) loadAutonomousDiagnostics(
 	if paused {
 		add(AutonomousDiagnosticResponse{
 			Code: "project_paused", Severity: "info",
-			Title: "Autonomous project is paused",
-			Detail: "Scheduling is intentionally stopped. Resume the project to continue from durable state.",
+			Title:     "Autonomous project is paused",
+			Detail:    "Scheduling is intentionally stopped. Resume the project to continue from durable state.",
 			CanResume: true, ResumeAction: "resume_project",
 		})
 	}
@@ -1298,7 +1453,7 @@ func (h *Handler) loadAutonomousDiagnostics(
 					Code: "retry_scheduled", Severity: "info", Title: title,
 					Detail: detail, NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
 					CanResume: canResume, ResumeAction: action,
-					Metadata: map[string]any{"fire_at": latest.FireAt.Format(time.RFC3339Nano), "failure_reason": latest.FailureReason},
+					Metadata:  map[string]any{"fire_at": latest.FireAt.Format(time.RFC3339Nano), "failure_reason": latest.FailureReason},
 					UpdatedAt: latest.At.UTC().Format(time.RFC3339Nano),
 				})
 				continue
@@ -1309,14 +1464,14 @@ func (h *Handler) loadAutonomousDiagnostics(
 				if deps := blockers[node.Key]; len(deps) > 0 {
 					add(AutonomousDiagnosticResponse{
 						Code: "dependency_wait", Severity: "info", Title: title,
-						Detail: "Waiting for: " + strings.Join(deps, ", "),
+						Detail:  "Waiting for: " + strings.Join(deps, ", "),
 						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
 						Metadata: map[string]any{"blockers": deps}, UpdatedAt: node.UpdatedAt,
 					})
 				} else if age > 30*time.Second && plan.Status != "completed" {
 					add(AutonomousDiagnosticResponse{
 						Code: "scheduler_stall", Severity: "warning", Title: title,
-						Detail: "Node is pending with no unresolved hard dependency, but it was not promoted to ready.",
+						Detail:  "Node is pending with no unresolved hard dependency, but it was not promoted to ready.",
 						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
 						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
 					})
@@ -1325,7 +1480,7 @@ func (h *Handler) loadAutonomousDiagnostics(
 				if !paused && age > 30*time.Second {
 					add(AutonomousDiagnosticResponse{
 						Code: "scheduler_stall", Severity: "warning", Title: title,
-						Detail: "Node is ready and eligible but has not been dispatched by the project conductor.",
+						Detail:  "Node is ready and eligible but has not been dispatched by the project conductor.",
 						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
 						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
 					})
@@ -1371,8 +1526,8 @@ func (h *Handler) loadAutonomousDiagnostics(
 					CanResume: canResume, ResumeAction: action, TaskID: taskID,
 					Metadata: map[string]any{
 						"failure_reason": latest.FailureReason,
-						"attempt": latest.Attempt,
-						"max_attempts": latest.MaxAttempts,
+						"attempt":        latest.Attempt,
+						"max_attempts":   latest.MaxAttempts,
 					},
 					UpdatedAt: node.UpdatedAt,
 				})
@@ -1381,7 +1536,7 @@ func (h *Handler) loadAutonomousDiagnostics(
 					if age > time.Minute {
 						add(AutonomousDiagnosticResponse{
 							Code: "state_mismatch", Severity: "error", Title: title,
-							Detail: "Node is active but has no materialized issue.",
+							Detail:  "Node is active but has no materialized issue.",
 							NodeKey: &nodeKey, IssueTitle: &title,
 							CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
 						})
@@ -1400,7 +1555,7 @@ func (h *Handler) loadAutonomousDiagnostics(
 					}
 					add(AutonomousDiagnosticResponse{
 						Code: "workflow_blocked", Severity: "warning", Title: title,
-						Detail: "Issue workflow is blocked and requires recovery before Project OS can advance.",
+						Detail:  "Issue workflow is blocked and requires recovery before Project OS can advance.",
 						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
 						TaskID: taskID, CanResume: true, ResumeAction: action, UpdatedAt: run.UpdatedAt,
 					})
@@ -1408,7 +1563,7 @@ func (h *Handler) loadAutonomousDiagnostics(
 					(latest.Status == "" || latest.Status == "failed" || latest.Status == "completed" || latest.Status == "cancelled") {
 					add(AutonomousDiagnosticResponse{
 						Code: "workflow_stall", Severity: "warning", Title: title,
-						Detail: "Node is active but there is no runnable agent task making progress.",
+						Detail:  "Node is active but there is no runnable agent task making progress.",
 						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
 						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
 					})
@@ -1417,7 +1572,7 @@ func (h *Handler) loadAutonomousDiagnostics(
 				if node.IssueStatus != nil && *node.IssueStatus != "done" && *node.IssueStatus != "cancelled" {
 					add(AutonomousDiagnosticResponse{
 						Code: "state_mismatch", Severity: "warning", Title: title,
-						Detail: "Project node is completed but its issue is still " + *node.IssueStatus + ".",
+						Detail:  "Project node is completed but its issue is still " + *node.IssueStatus + ".",
 						NodeKey: &nodeKey, IssueID: issueID, IssueTitle: &title,
 						CanResume: true, ResumeAction: "restart_workflow", UpdatedAt: node.UpdatedAt,
 					})
@@ -1459,8 +1614,8 @@ func (h *Handler) loadAutonomousDiagnostics(
 		}
 		add(AutonomousDiagnosticResponse{
 			Code: code, Severity: "warning",
-			Title: escalation.Summary,
-			Detail: "Open escalation: " + escalation.Category,
+			Title:     escalation.Summary,
+			Detail:    "Open escalation: " + escalation.Category,
 			CanResume: canResume, ResumeAction: action,
 			UpdatedAt: escalation.OpenedAt,
 		})
@@ -1506,10 +1661,10 @@ func (h *Handler) loadAutonomousDiagnostics(
 				titleCopy := issueTitle
 				add(AutonomousDiagnosticResponse{
 					Code: "stale_after_replan", Severity: "error", Title: issueTitle,
-					Detail: fmt.Sprintf("Issue is %s but is owned only by superseded plan revision %d; the current plan cannot schedule it.", issueStatus, revision),
+					Detail:  fmt.Sprintf("Issue is %s but is owned only by superseded plan revision %d; the current plan cannot schedule it.", issueStatus, revision),
 					NodeKey: &nodeKeyCopy, IssueID: &issueIDString, IssueTitle: &titleCopy,
 					CanResume: true, ResumeAction: "restart_workflow",
-					Metadata: map[string]any{"superseded_revision": revision, "issue_status": issueStatus},
+					Metadata:  map[string]any{"superseded_revision": revision, "issue_status": issueStatus},
 					UpdatedAt: updatedAt.UTC().Format(time.RFC3339Nano),
 				})
 			}
@@ -1524,9 +1679,12 @@ func (h *Handler) loadAutonomousDiagnostics(
 	sort.SliceStable(out, func(i, j int) bool {
 		rank := func(severity string) int {
 			switch severity {
-			case "error": return 0
-			case "warning": return 1
-			default: return 2
+			case "error":
+				return 0
+			case "warning":
+				return 1
+			default:
+				return 2
 			}
 		}
 		if rank(out[i].Severity) != rank(out[j].Severity) {
@@ -1553,7 +1711,7 @@ func (h *Handler) requireAutonomousControlAdmin(
 	member, err := h.Queries.GetMemberByUserAndWorkspace(
 		r.Context(),
 		db.GetMemberByUserAndWorkspaceParams{
-			UserID: userUUID,
+			UserID:      userUUID,
 			WorkspaceID: workspaceID,
 		},
 	)
@@ -1564,14 +1722,19 @@ func (h *Handler) requireAutonomousControlAdmin(
 	return userUUID, true
 }
 
-
 func (h *Handler) UpdateProjectAutonomousBrainConfig(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
-	if !ok { return }
+	if !ok {
+		return
+	}
 	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
-	if !ok { return }
+	if !ok {
+		return
+	}
 	userUUID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}); err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
@@ -1592,8 +1755,12 @@ func (h *Handler) UpdateProjectAutonomousBrainConfig(w http.ResponseWriter, r *h
 	}
 	req.RuntimeMode = strings.ToLower(strings.TrimSpace(req.RuntimeMode))
 	req.LearningMode = strings.ToLower(strings.TrimSpace(req.LearningMode))
-	if req.RuntimeMode == "" { req.RuntimeMode = "inherit_mika" }
-	if req.LearningMode == "" { req.LearningMode = "adaptive" }
+	if req.RuntimeMode == "" {
+		req.RuntimeMode = "inherit_mika"
+	}
+	if req.LearningMode == "" {
+		req.LearningMode = "adaptive"
+	}
 	if req.RuntimeMode != "inherit_mika" && req.RuntimeMode != "custom" {
 		writeError(w, http.StatusBadRequest, "brain runtime_mode must be inherit_mika or custom")
 		return
@@ -1611,7 +1778,9 @@ func (h *Handler) UpdateProjectAutonomousBrainConfig(w http.ResponseWriter, r *h
 		}
 		var parsed bool
 		runtimeID, parsed = parseUUIDOrBadRequest(w, req.RuntimeID, "runtime_id")
-		if !parsed { return }
+		if !parsed {
+			return
+		}
 		var status, visibility string
 		var ownerID pgtype.UUID
 		if err := h.DB.QueryRow(r.Context(), `
@@ -1635,7 +1804,10 @@ func (h *Handler) UpdateProjectAutonomousBrainConfig(w http.ResponseWriter, r *h
 			if catalog := h.cachedModelCatalog(r.Context(), uuidToString(runtimeID)); catalog != nil && catalog.Supported && len(catalog.Models) > 0 {
 				found := false
 				for _, candidate := range catalog.Models {
-					if candidate.ID == model { found = true; break }
+					if candidate.ID == model {
+						found = true
+						break
+					}
 				}
 				if !found {
 					writeError(w, http.StatusBadRequest, "selected brain model is not available on the selected runtime")
@@ -1753,7 +1925,7 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
-		ID: projectID,
+		ID:          projectID,
 		WorkspaceID: workspaceID,
 	}); err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
@@ -1905,9 +2077,9 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 		}
 		normalized[role] = storedAssignment{
 			RuntimeID: uuidToString(runtimeID),
-			Model: model,
+			Model:     model,
 			SkillMode: skillMode,
-			SkillIDs: skillIDs,
+			SkillIDs:  skillIDs,
 		}
 	}
 
@@ -2000,7 +2172,7 @@ func (h *Handler) RestartProjectAutonomousWorkflow(w http.ResponseWriter, r *htt
 		return
 	}
 	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
-		ID: projectID,
+		ID:          projectID,
 		WorkspaceID: workspaceID,
 	}); err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
@@ -2146,8 +2318,8 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 		return
 	}
 	resolution, _ := json.Marshal(map[string]any{
-		"decision": req.Decision,
-		"note": strings.TrimSpace(req.Note),
+		"decision":    req.Decision,
+		"note":        strings.TrimSpace(req.Note),
 		"resolved_by": uuidToString(userID),
 	})
 	tag, err := h.DB.Exec(r.Context(), `

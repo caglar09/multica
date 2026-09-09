@@ -10,11 +10,44 @@ import (
 )
 
 func TestResolveWithUsesOSExecutable(t *testing.T) {
-	want := filepath.Join(t.TempDir(), "does-not-need-to-exist")
+	want := writeTestExecutable(t, t.TempDir(), "multica")
 
 	got, err := resolveWith(func() (string, error) {
 		return want, nil
 	}, nil)
+	if err != nil {
+		t.Fatalf("resolveWith() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolveWith() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveWithFallsBackWhenOSExecutableIsStale(t *testing.T) {
+	dir := t.TempDir()
+	want := writeTestExecutable(t, dir, "multica")
+	stale := filepath.Join(dir, "stale-multica")
+
+	got, err := resolveWith(func() (string, error) {
+		return stale, nil
+	}, []string{want})
+	if err != nil {
+		t.Fatalf("resolveWith() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolveWith() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveWithFallsBackToPathWhenArgv0IsStale(t *testing.T) {
+	pathDir := t.TempDir()
+	want := writeTestExecutable(t, pathDir, "multica")
+	stale := filepath.Join(t.TempDir(), "go-build", "multica")
+	t.Setenv("PATH", pathDir)
+
+	got, err := resolveWith(func() (string, error) {
+		return stale, nil
+	}, []string{stale})
 	if err != nil {
 		t.Fatalf("resolveWith() error = %v", err)
 	}
@@ -103,6 +136,7 @@ func TestResolveWithRejectsInvalidFallback(t *testing.T) {
 			if err := os.WriteFile(path, []byte("not executable"), 0o644); err != nil {
 				t.Fatalf("write non-executable fixture: %v", err)
 			}
+			t.Setenv("PATH", t.TempDir())
 
 			_, err := resolveWith(failExecutable, []string{path})
 			if err == nil {

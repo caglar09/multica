@@ -306,6 +306,21 @@ func (s *PostgresStore) ListActiveRuns(ctx context.Context, limit int) ([]Run, e
 						)
 					  )
 				)
+				OR
+				-- A task may complete before its structured comment is visible. Keep
+				-- that narrow contract-race window reconcilable without reviving old
+				-- unrelated blocked runs.
+				EXISTS (
+					SELECT 1
+					FROM agent_task_queue t
+					WHERE t.issue_id = wr.issue_id
+					  AND t.status = 'completed'
+					  AND (t.agent_id = wr.owner_agent_id OR t.agent_id = wr.reviewer_agent_id)
+					  AND t.retry_of_task_id IS NULL
+					  AND t.rerun_of_task_id IS NULL
+					  AND COALESCE(t.completed_at, t.created_at) >= wr.updated_at - interval '1 minute'
+					  AND COALESCE(t.completed_at, t.created_at) <= wr.updated_at + interval '5 seconds'
+				)
 			)
 		   )
 		ORDER BY wr.updated_at ASC

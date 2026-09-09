@@ -39,6 +39,7 @@ func (s *Store) PersistPlan(
 	if strings.TrimSpace(sourceRevision) == "" {
 		return StoredPlan{}, errors.New("source revision is required")
 	}
+	normalizePlanArtifactEdges(&plan)
 	if err := ValidatePlan(plan, DefaultMaxNodes); err != nil {
 		return StoredPlan{}, err
 	}
@@ -553,6 +554,32 @@ func (s *Store) RefreshReady(ctx context.Context, workspaceID, projectID pgtype.
 }
 
 func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
+	// Agent task results are stored as one canonical artifact per source node.
+	// Normalize model-proposed aliases (for example api_contract from an
+	// architecture node) before evaluating readiness so a valid completed
+	// predecessor cannot leave the graph permanently pending.
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_edge e
+		SET required_artifact_type = CASE dep.kind
+			WHEN 'product' THEN 'product_spec'
+			WHEN 'architecture' THEN 'architecture'
+			WHEN 'review' THEN 'review'
+			WHEN 'qa' THEN 'qa_report'
+			WHEN 'security' THEN 'security_review'
+			WHEN 'integration' THEN 'integration_report'
+			WHEN 'release' THEN 'release_manifest'
+			WHEN 'deploy' THEN 'deployment_record'
+			WHEN 'incident' THEN 'incident_report'
+			ELSE 'implementation_handoff'
+		END
+		FROM autonomous_project_plan_node dep
+		WHERE e.plan_id = $1
+		  AND e.dependency_type = 'artifact'
+		  AND dep.plan_id = e.plan_id
+		  AND dep.node_key = e.from_node_key
+	`, planID); err != nil {
+		return fmt.Errorf("normalize project artifact dependencies: %w", err)
+	}
 	_, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node n
 		SET status = 'ready',
@@ -603,6 +630,46 @@ func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
 		return fmt.Errorf("refresh ready project plan nodes: %w", err)
 	}
 	return nil
+}
+
+func normalizePlanArtifactEdges(plan *Plan) {
+	if plan == nil {
+		return
+	}
+	kinds := make(map[string]NodeKind, len(plan.Nodes))
+	for _, node := range plan.Nodes {
+		kinds[node.Key] = node.Kind
+	}
+	for i := range plan.Edges {
+		if plan.Edges[i].Type == DependencyArtifact {
+			plan.Edges[i].RequiredArtifactType = canonicalNodeArtifactType(kinds[plan.Edges[i].From])
+		}
+	}
+}
+
+func canonicalNodeArtifactType(kind NodeKind) string {
+	switch kind {
+	case NodeProduct:
+		return "product_spec"
+	case NodeArchitecture:
+		return "architecture"
+	case NodeReview:
+		return "review"
+	case NodeQA:
+		return "qa_report"
+	case NodeSecurity:
+		return "security_review"
+	case NodeIntegration:
+		return "integration_report"
+	case NodeRelease:
+		return "release_manifest"
+	case NodeDeploy:
+		return "deployment_record"
+	case NodeIncident:
+		return "incident_report"
+	default:
+		return "implementation_handoff"
+	}
 }
 
 func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtype.UUID, limit int) ([]ReadyNode, error) {
@@ -1303,7 +1370,6 @@ func (s *Store) AddUsage(
 	}
 	return nil
 }
-
 
 type FailureDisposition string
 

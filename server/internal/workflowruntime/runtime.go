@@ -3,6 +3,7 @@
 package workflowruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -122,22 +123,22 @@ func ConfigFromEnv() Config {
 }
 
 type Runtime struct {
-	ctx            context.Context
-	pool           *pgxpool.Pool
-	taskSvc        *service.TaskService
-	issueSvc       *service.IssueService
-	store          *workflow.PostgresStore
-	engine         *workflow.Engine
-	team           *teamprovision.Provisioner
-	projectStore   *projectorchestration.Store
-	projectPlanner      *projectorchestration.Planner
-	brainExecutor       *BrainRuntimeExecutor
-	repositoryAnalyzer  projectorchestration.RepositoryAnalyzer
-	qualityGateRunner    projectorchestration.QualityGateRunner
-	deploymentAdapter   projectorchestration.DeploymentAdapter
-	observationAdapter  projectorchestration.ObservationAdapter
-	planningSem         chan struct{}
-	config              Config
+	ctx                context.Context
+	pool               *pgxpool.Pool
+	taskSvc            *service.TaskService
+	issueSvc           *service.IssueService
+	store              *workflow.PostgresStore
+	engine             *workflow.Engine
+	team               *teamprovision.Provisioner
+	projectStore       *projectorchestration.Store
+	projectPlanner     *projectorchestration.Planner
+	brainExecutor      *BrainRuntimeExecutor
+	repositoryAnalyzer projectorchestration.RepositoryAnalyzer
+	qualityGateRunner  projectorchestration.QualityGateRunner
+	deploymentAdapter  projectorchestration.DeploymentAdapter
+	observationAdapter projectorchestration.ObservationAdapter
+	planningSem        chan struct{}
+	config             Config
 }
 
 func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config) (*Runtime, error) {
@@ -164,8 +165,8 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		projectPolicy = projectorchestration.DefaultPolicy()
 	}
 	r := &Runtime{
-		ctx: ctx,
-		pool: pool,
+		ctx:     ctx,
+		pool:    pool,
 		taskSvc: taskSvc,
 		issueSvc: func() *service.IssueService {
 			svc := service.NewIssueService(taskSvc.Queries, taskSvc.TxStarter, taskSvc.Bus, taskSvc.Analytics, taskSvc)
@@ -173,14 +174,14 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 			svc.Metrics = taskSvc.Metrics
 			return svc
 		}(),
-		store: store,
-		engine: engine,
-		team: teamprovision.New(pool, taskSvc.Queries, planner),
-		projectStore: projectorchestration.NewStore(pool),
+		store:              store,
+		engine:             engine,
+		team:               teamprovision.New(pool, taskSvc.Queries, planner),
+		projectStore:       projectorchestration.NewStore(pool),
 		projectPlanner:     projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
 		brainExecutor:      NewBrainRuntimeExecutor(pool, taskSvc),
 		repositoryAnalyzer: projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
-		qualityGateRunner:   projectorchestration.NewWebhookQualityGateRunner(cfg.AdapterConfig),
+		qualityGateRunner:  projectorchestration.NewWebhookQualityGateRunner(cfg.AdapterConfig),
 		deploymentAdapter:  projectorchestration.NewWebhookDeploymentAdapter(cfg.AdapterConfig),
 		observationAdapter: projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
 		planningSem:        make(chan struct{}, 4),
@@ -230,9 +231,9 @@ func definition() workflow.Definition {
 					{
 						Type: "trigger_agent",
 						Params: map[string]string{
-							"selector":   "owner",
-							"when_state": issuestatus.InProgress,
-							"instructions": "Implement or revise the issue against its acceptance criteria and the structured handoff. Do not change issue status, route work, mention another agent, or encode workflow decisions in prose. Your FINAL response must be exactly one JSON object with keys: summary (string), decisions (string[]), artifacts ({type,ref,description}[]), changed_files (string[]), commit_sha (string), diff (string), tests ({name,status,evidence}[] where status is passed|failed|skipped|not_run), findings ({id,severity,category,description,evidence,blocking}[]), risks (string[]), blockers (string[]). No markdown fence or surrounding prose.",
+							"selector":     "owner",
+							"when_state":   issuestatus.InProgress,
+							"instructions": "Implement or revise the issue against its acceptance criteria and the structured handoff. Do not change issue status, post issue comments, route work, mention another agent, or encode workflow decisions in prose; the workflow consumes only your final response. Your FINAL response must be exactly one JSON object with keys: summary (string), decisions (string[]), artifacts ({type,ref,description}[]), changed_files (string[]), commit_sha (string), diff (string), tests ({name,status,evidence}[] where status is passed|failed|skipped|not_run), findings ({id,severity,category,description,evidence,blocking}[]), risks (string[]), blockers (string[]). No markdown fence or surrounding prose.",
 						},
 					},
 				},
@@ -243,22 +244,22 @@ func definition() workflow.Definition {
 					{
 						Type: "trigger_agent",
 						Params: map[string]string{
-							"selector":   "reviewer",
-							"when_state": issuestatus.InReview,
-							"instructions": "Independently review the structured implementation handoff, diff/artifacts, tests, acceptance criteria, and project standards. NEVER change issue status to communicate the result and never trigger another agent. Your FINAL response must be exactly one JSON object: {\"verdict\":\"approved|changes_requested\",\"summary\":\"...\",\"findings\":[{\"id\":\"F-001\",\"severity\":\"low|medium|high|critical\",\"category\":\"lower_snake_case\",\"description\":\"...\",\"evidence\":\"...\",\"blocking\":true}]}. changes_requested requires at least one blocking finding; approved may contain only non-blocking findings. No markdown fence or surrounding prose.",
+							"selector":     "reviewer",
+							"when_state":   issuestatus.InReview,
+							"instructions": "Independently review the structured implementation handoff, diff/artifacts, tests, acceptance criteria, and project standards. NEVER change issue status, post issue comments, or trigger another agent; the workflow consumes only your final response. Your FINAL response must be exactly one JSON object: {\"verdict\":\"approved|changes_requested\",\"summary\":\"...\",\"findings\":[{\"id\":\"F-001\",\"severity\":\"low|medium|high|critical\",\"category\":\"lower_snake_case\",\"description\":\"...\",\"evidence\":\"...\",\"blocking\":true}]}. changes_requested requires at least one blocking finding; approved may contain only non-blocking findings. No markdown fence or surrounding prose.",
 						},
 					},
 				},
 			},
 			issuestatus.Done: {
 				OnEnter: []workflow.Action{{
-					Type: "set_issue_status",
+					Type:   "set_issue_status",
 					Params: map[string]string{"status": issuestatus.Done, "when_state": issuestatus.Done},
 				}},
 			},
 			issuestatus.Blocked: {
 				OnEnter: []workflow.Action{{
-					Type: "set_issue_status",
+					Type:   "set_issue_status",
 					Params: map[string]string{"status": issuestatus.Blocked, "when_state": issuestatus.Blocked},
 				}},
 			},
@@ -445,10 +446,10 @@ func (r *Runtime) processTeamDraftProvisioning(ctx context.Context) error {
 				skillIDs = append(skillIDs, skillID)
 			}
 			assignments = append(assignments, teamprovision.RoleRuntimeSelection{
-				Role: role,
+				Role:      role,
 				RuntimeID: runtimeID,
-				Model: strings.TrimSpace(selected.Model),
-				SkillIDs: skillIDs,
+				Model:     strings.TrimSpace(selected.Model),
+				SkillIDs:  skillIDs,
 				SkillsSpecified: strings.EqualFold(strings.TrimSpace(selected.SkillMode), "custom") ||
 					(strings.TrimSpace(selected.SkillMode) == "" && len(skillIDs) > 0),
 			})
@@ -626,13 +627,41 @@ func (r *Runtime) RestartProjectWorkflow(
 		return fmt.Errorf("release expired autonomous workflow action leases: %w", err)
 	}
 
+	// Repair & continue is an explicit operator decision to retry a recoverable
+	// project failure. Without resolving these durable escalations, the blocked
+	// node reconciler correctly refuses to move the node back to Ready.
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_project_escalation
+		SET status = 'resolved',
+		    resolution = jsonb_build_object('decision', 'retry', 'note', 'repair and continue requested'),
+		    resolved_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND status IN ('open', 'acknowledged')
+		  AND category IN ('technical_failure', 'contract_violation')
+	`, workspaceID, projectID); err != nil {
+		return fmt.Errorf("resolve recoverable project escalations before restart: %w", err)
+	}
+
 	rows, err := r.pool.Query(ctx, `
 		SELECT issue_id
 		FROM autonomous_workflow_run
 		WHERE workspace_id = $1
 		  AND project_id = $2
 		  AND workflow_name = $3
-		  AND state NOT IN ('done', 'cancelled')
+		  AND (
+			state NOT IN ('done', 'cancelled')
+			OR EXISTS (
+				SELECT 1
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				WHERE n.workspace_id = autonomous_workflow_run.workspace_id
+				  AND n.project_id = autonomous_workflow_run.project_id
+				  AND n.materialized_issue_id = autonomous_workflow_run.issue_id
+				  AND n.status NOT IN ('completed', 'cancelled')
+				  AND p.status IN ('active', 'blocked')
+			)
+		  )
 		ORDER BY updated_at ASC
 		LIMIT 500
 	`, workspaceID, projectID, softwareDevelopmentWorkflow)
@@ -822,12 +851,12 @@ func (r *Runtime) reconcileUnstartedIssues(ctx context.Context) error {
 			continue
 		}
 		event := events.Event{
-			Type: protocol.EventIssueUpdated,
+			Type:        protocol.EventIssueUpdated,
 			WorkspaceID: util.UUIDToString(workspaceID),
 			Payload: map[string]any{
 				"issue": map[string]any{
-					"id": util.UUIDToString(issueID),
-					"status": status,
+					"id":       util.UUIDToString(issueID),
+					"status":   status,
 					"revision": revision,
 				},
 			},
@@ -909,6 +938,9 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 				)
 			}
 		}
+		if err := r.reconcileCompletedProjectQuality(ctx, issue); err != nil {
+			return fmt.Errorf("reconcile terminal project quality gates: %w", err)
+		}
 		if r.projectStore != nil {
 			if err := r.projectStore.CompleteNodeByIssue(ctx, issue.WorkspaceID, issue.ID); err != nil {
 				return fmt.Errorf("complete reconciled project node from terminal issue: %w", err)
@@ -968,6 +1000,79 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 			})
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		// A completed task can win the race with its structured comment. If the
+		// comment later becomes durable, recover only that recent owner/reviewer
+		// completion instead of leaving the run blocked forever.
+		var contractTaskID pgtype.UUID
+		recoverySince := run.UpdatedAt.Add(-blockedFailureRecoveryLookback)
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND status = 'completed'
+			  AND (
+				($2::uuid IS NOT NULL AND agent_id = $2)
+				OR ($3::uuid IS NOT NULL AND agent_id = $3)
+			  )
+			  AND retry_of_task_id IS NULL
+			  AND rerun_of_task_id IS NULL
+			  AND COALESCE(completed_at, created_at) >= $4
+			ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+			LIMIT 1
+		`, issueID, ownerID, reviewerID, recoverySince).Scan(&contractTaskID)
+		if err == nil {
+			contractTask, taskErr := r.taskSvc.Queries.GetAgentTask(ctx, contractTaskID)
+			if taskErr != nil {
+				return taskErr
+			}
+			contractTask, taskErr = r.normalizeTaskResultFromAgentComment(ctx, contractTask)
+			if taskErr != nil {
+				return taskErr
+			}
+			switch {
+			case util.UUIDToString(contractTask.AgentID) == run.ReviewerAgentID:
+				verdict, parseErr := parseReviewVerdict(contractTask.Result)
+				if parseErr == nil {
+					if err := r.persistReviewVerdict(ctx, run, contractTask, issue, verdict); err != nil {
+						return fmt.Errorf("persist recovered review verdict: %w", err)
+					}
+					eventType := "review.retry_completed"
+					if verdict.Verdict == "changes_requested" {
+						eventType = "review.retry_changes_requested"
+					}
+					_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+						ID:                eventType + ":" + util.UUIDToString(contractTask.ID),
+						Type:              eventType,
+						WorkspaceID:       run.WorkspaceID,
+						ProjectID:         util.UUIDToString(issue.ProjectID),
+						IssueID:           util.UUIDToString(issueID),
+						AccountableUserID: run.AccountableUserID,
+						Payload:           map[string]any{"task_id": util.UUIDToString(contractTask.ID), "recovered_from": "contract_race"},
+					})
+					return err
+				}
+			case util.UUIDToString(contractTask.AgentID) == run.OwnerAgentID:
+				output, parseErr := parseImplementationHandoff(contractTask.Result)
+				if parseErr == nil {
+					if err := r.persistImplementationHandoff(ctx, run, contractTask, issue, output); err != nil {
+						return fmt.Errorf("persist recovered implementation handoff: %w", err)
+					}
+					_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+						ID:                "implementation.retry_completed:" + util.UUIDToString(contractTask.ID),
+						Type:              "implementation.retry_completed",
+						WorkspaceID:       run.WorkspaceID,
+						ProjectID:         util.UUIDToString(issue.ProjectID),
+						IssueID:           util.UUIDToString(issueID),
+						AccountableUserID: run.AccountableUserID,
+						Payload:           map[string]any{"task_id": util.UUIDToString(contractTask.ID), "recovered_from": "contract_race"},
+					})
+					return err
+				}
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 
@@ -1194,33 +1299,6 @@ func (r *Runtime) onProjectDeleted(event events.Event) {
 		  AND system_key = $2
 	`, workspaceID, "autonomous_project_brain:"+projectIDValue); err != nil {
 		slog.Warn("project brain carrier archive failed",
-			"project_id", projectIDValue,
-			"workspace_id", event.WorkspaceID,
-			"error", err,
-		)
-	}
-	var continuationTaskID pgtype.UUID
-	if err := r.pool.QueryRow(ctx, `
-		SELECT continuation_task_id
-		FROM autonomous_project_team_draft
-		WHERE workspace_id = $1 AND project_id = $2
-	`, workspaceID, projectID).Scan(&continuationTaskID); err == nil && continuationTaskID.Valid {
-		if _, cancelErr := r.taskSvc.CancelTask(ctx, continuationTaskID); cancelErr != nil &&
-			!errors.Is(cancelErr, service.ErrTaskNoLongerQueued) {
-			slog.Warn("autonomous project continuation cancel failed",
-				"project_id", projectIDValue,
-				"task_id", util.UUIDToString(continuationTaskID),
-				"error", cancelErr,
-			)
-		}
-	}
-	if _, err := r.pool.Exec(ctx, `
-		DELETE FROM agent
-		WHERE workspace_id = $1
-		  AND kind = 'system'
-		  AND system_key = $2
-	`, workspaceID, autonomousCoordinatorSystemKeyPrefix+projectIDValue); err != nil {
-		slog.Warn("autonomous project coordinator cleanup failed",
 			"project_id", projectIDValue,
 			"workspace_id", event.WorkspaceID,
 			"error", err,
@@ -1462,6 +1540,30 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		if paused {
 			return nil
 		}
+		// Project issues are owned by the durable project plan. A legacy
+		// continuation or a manual status change must not start a second
+		// workflow/agent before the planner has materialized its node.
+		var materialized bool
+		if err := r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				WHERE n.workspace_id = $1
+				  AND n.project_id = $2
+				  AND n.materialized_issue_id = $3
+				  AND p.status IN ('active', 'blocked')
+			)
+		`, issue.WorkspaceID, issue.ProjectID, issue.ID).Scan(&materialized); err != nil {
+			return fmt.Errorf("check project issue workflow ownership: %w", err)
+		}
+		if !materialized {
+			slog.Info("autonomous workflow not started: issue is not materialized by an active project plan",
+				"issue_id", snapshot.ID,
+				"project_id", util.UUIDToString(issue.ProjectID),
+			)
+			return nil
+		}
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
 
@@ -1605,6 +1707,15 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 	task, issue, err := r.loadIssueTask(ctx, event)
 	if err != nil || !task.ID.Valid {
 		return err
+	}
+	// Some runtimes still mirror the structured handoff to the issue comment
+	// while returning a prose wrapper as the task result. Accept only an exact,
+	// task-linked JSON comment as a compatibility bridge; prose/comments remain
+	// non-authoritative.
+	if normalized, normalizeErr := r.normalizeTaskResultFromAgentComment(ctx, task); normalizeErr != nil {
+		return normalizeErr
+	} else {
+		task = normalized
 	}
 	if err := r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeCompleted); err != nil {
 		return fmt.Errorf("record autonomous agent completion: %w", err)
@@ -1823,6 +1934,43 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 		return err
 	}
 	return nil
+}
+
+func (r *Runtime) normalizeTaskResultFromAgentComment(ctx context.Context, task db.AgentTaskQueue) (db.AgentTaskQueue, error) {
+	var content []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT content
+		FROM comment
+		WHERE source_task_id = $1
+		  AND author_type = 'agent'
+		  AND author_id = $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, task.ID, task.AgentID).Scan(&content)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return task, nil
+	}
+	if err != nil {
+		return task, err
+	}
+	setCandidate := func(candidate json.RawMessage) bool {
+		if _, reviewErr := parseReviewVerdict(candidate); reviewErr == nil {
+			task.Result = candidate
+			return true
+		}
+		if _, handoffErr := parseImplementationHandoff(candidate); handoffErr == nil {
+			task.Result = candidate
+			return true
+		}
+		return false
+	}
+	if setCandidate(json.RawMessage(bytes.TrimSpace(content))) {
+		return task, nil
+	}
+	if output, outputErr := contractTaskOutput(task.Result); outputErr == nil {
+		_ = setCandidate(extractEmbeddedContractJSONObject(output))
+	}
+	return task, nil
 }
 
 func (r *Runtime) onTaskFailed(event events.Event) {
