@@ -72,6 +72,7 @@ import {
 } from "@multica/ui/components/ui/tabs";
 import { useNavigation } from "../../navigation";
 import { CreateSkillDialog } from "../../skills/components/create-skill-dialog";
+import { useT } from "../../i18n";
 import { ProjectManagerHub } from "./project-manager-hub";
 
 function formatTime(value: string | null | undefined): string {
@@ -1314,6 +1315,7 @@ export function AutonomousControlCenter({
   const wsId = useWorkspaceId();
   const wsPaths = useWorkspacePaths();
   const router = useNavigation();
+  const { t } = useT("projects");
   const { data, isLoading, isError, refetch, isFetching } = useQuery(
     autonomousProjectOptions(wsId, projectId),
   );
@@ -1708,7 +1710,7 @@ export function AutonomousControlCenter({
                 isApproving={approveLeaderChange.isPending}
                 isRejecting={rejectLeaderChange.isPending}
                 onOpenRuleModal={() => {
-                  toast.info("Proje bellek kuralları Proje OS ve Brain sekmesinden yapılandırılabilir.");
+                  toast.info(t(($) => $.hub.toast_rule_info));
                 }}
               />
             )}
