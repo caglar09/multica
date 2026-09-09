@@ -1,0 +1,109 @@
+{
+  "page": {
+    "title": "Gelen Kutusu",
+    "back": "Gelen Kutusu"
+  },
+  "menu": {
+    "mark_all_read": "Tümünü okundu olarak işaretle",
+    "archive_all": "Tümünü arşivle",
+    "archive_all_read": "Okunmuşların tümünü arşivle",
+    "archive_completed": "Tamamlananları arşivle"
+  },
+  "filters": {
+    "tooltip": "Gelen kutusunu filtrele",
+    "active_count_one": "{{count}} aktif filtre",
+    "active_count_other": "{{count}} aktif filtre",
+    "status": "Durum",
+    "priority": "Öncelik",
+    "from": "Kimden",
+    "unread_only": "Yalnızca okunmamışlar",
+    "notification_count_one": "{{count}} bildirim",
+    "notification_count_other": "{{count}} bildirim",
+    "clear": "Filtreleri temizle",
+    "empty": "Filtrelerinizle eşleşen bildirim yok"
+  },
+  "context_menu": {
+    "mark_read": "Okundu olarak işaretle",
+    "mark_unread": "Okunmadı olarak işaretle",
+    "archive": "Arşivle",
+    "unarchive": "Arşivden çıkar",
+    "open_in_new_tab": "Yeni sekmede aç"
+  },
+  "list": {
+    "empty": "Bildirim yok",
+    "mark_done_tooltip": "Tamamlandı olarak işaretle",
+    "archive_tooltip": "Arşivle",
+    "time": {
+      "just_now": "az önce",
+      "minutes": "{{count}}d",
+      "hours": "{{count}}s",
+      "days": "{{count}}g"
+    },
+    "archived_title": "Arşivlendi",
+    "archived_empty": "Arşivlenmiş bildirim yok",
+    "unarchive_tooltip": "Arşivden çıkar",
+    "actions_aria": "Bildirim eylemleri"
+  },
+  "detail": {
+    "select_prompt": "Ayrıntıları görüntülemek için bir bildirim seçin",
+    "empty": "Gelen kutunuz boş",
+    "original_input": "Orijinal girdi",
+    "retry_with_context": "Bağlamla yeniden dene",
+    "edit_advanced": "Gelişmiş form olarak düzenle",
+    "archive": "Arşivle",
+    "unarchive": "Arşivden çıkar"
+  },
+  "types": {
+    "issue_assigned": "Atandı",
+    "issue_subscribed": "Abone olundu",
+    "unassigned": "Atama kaldırıldı",
+    "assignee_changed": "Atanan kişi değiştirildi",
+    "status_changed": "Durum değiştirildi",
+    "priority_changed": "Öncelik değiştirildi",
+    "start_date_changed": "Başlangıç tarihi değiştirildi",
+    "due_date_changed": "Bitiş tarihi değiştirildi",
+    "new_comment": "Yeni yorum",
+    "mentioned": "Bahsedildi",
+    "review_requested": "İnceleme istendi",
+    "task_completed": "Görev tamamlandı",
+    "task_failed": "Görev başarısız oldu",
+    "agent_blocked": "Ajan engellendi",
+    "agent_completed": "Ajan tamamlandı",
+    "reaction_added": "Tepki verildi",
+    "quick_create_done": "Ajanla oluşturuldu",
+    "quick_create_failed": "Ajanla oluşturma başarısız oldu",
+    "quick_create_unconfirmed": "Ajanla oluşturma onaylanmadı"
+  },
+  "labels": {
+    "set_status_to": "Durumu şu şekilde ayarla:",
+    "set_priority_to": "Önceliği şu şekilde ayarla:",
+    "assigned_to": "{{name}} kişisine atandı",
+    "removed_assignee": "Atanan kişi kaldırıldı",
+    "set_start_date_to": "Başlangıç tarihi {{date}} olarak ayarlandı",
+    "removed_start_date": "Başlangıç tarihi kaldırıldı",
+    "set_due_date_to": "Bitiş tarihi {{date}} olarak ayarlandı",
+    "removed_due_date": "Bitiş tarihi kaldırıldı",
+    "reacted_to_comment": "Yorumunuza {{emoji}} tepkisi verildi",
+    "created_with_agent": "Ajanla oluşturuldu: {{identifier}}",
+    "failed_with_detail": "Başarısız oldu: {{detail}}"
+  },
+  "toasts": {
+    "source_context_retry_started": "Orijinal bağlamla yeniden deneme başlatıldı",
+    "archived": "Bildirim arşivlendi",
+    "unarchived": "Bildirim geri yüklendi"
+  },
+  "errors": {
+    "source_context_retry_failed": "Orijinal bağlamla yeniden denenemedi",
+    "source_context_retry_unavailable": "Bu bağlam artık yeniden denenemez. Dal noktasından tekrar başlayın.",
+    "mark_read_failed": "Okundu olarak işaretlenemedi",
+    "mark_unread_failed": "Okunmadı olarak işaretlenemedi",
+    "archive_failed": "Arşivlenemedi",
+    "mark_done_failed": "Tamamlandı olarak işaretlenemedi",
+    "mark_all_read_failed": "Tümü okundu olarak işaretlenemedi",
+    "archive_all_failed": "Tümü arşivlenemedi",
+    "archive_all_read_failed": "Okunmuş öğeler arşivlenemedi",
+    "archive_completed_failed": "Tamamlananlar arşivlenemedi",
+    "unarchive_failed": "Arşivden çıkarılamadı",
+    "archived_load_failed": "Arşivlenmiş bildirimler yüklenemedi"
+  }
+}

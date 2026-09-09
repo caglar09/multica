@@ -1,0 +1,127 @@
+{
+  "avatar_upload": {
+    "change": "Avatarı değiştir",
+    "remove": "Kaldır",
+    "select_image": "Lütfen bir resim dosyası seçin.",
+    "updated": "Avatar güncellendi",
+    "failed": "Avatar yüklenemedi",
+    "upload_image": "Resim yükle",
+    "emoji_label": "Emoji",
+    "more_emojis": "Daha fazla emoji…",
+    "emoji_loading": "Yükleniyor…"
+  },
+  "avatar_crop": {
+    "title": "Avatarı düzenle",
+    "zoom": "Yakınlaştır",
+    "zoom_in": "Yakınlaştır",
+    "zoom_out": "Uzaklaştır",
+    "rotate": "Döndür",
+    "reset": "Sıfırla",
+    "cancel": "İptal",
+    "apply": "Kaydet",
+    "uploading": "Yükleniyor…",
+    "loading": "Yükleniyor…",
+    "load_failed": "Resim yüklenemedi"
+  },
+  "color_picker": {
+    "saturation": "Doygunluk ve parlaklık",
+    "hue": "Ton",
+    "hex": "Hex renk",
+    "eyedropper": "Ekrandan renk seç",
+    "presets": "Ön ayarlar",
+    "random": "Rastgele"
+  },
+  "save": "Kaydet",
+  "cancel": "İptal",
+  "delete": "Sil",
+  "confirm": "Onayla",
+  "loading": "Yükleniyor...",
+  "time": {
+    "just_now": "az önce",
+    "minutes_ago": "{{count}} dk önce",
+    "hours_ago": "{{count}} sa önce",
+    "days_ago": "{{count}} gün önce"
+  },
+  "lark_bind": {
+    "page_title": "Lark hesabınızı bağlayın",
+    "redeeming": "Bağlama jetonu kullanılıyor…",
+    "needs_auth_description": "Bağlamayı tamamlamak için Multica'ya giriş yapın. Bağlantıdaki jeton, Lark hesabınızı bu Multica kullanıcısına bağlar; bu nedenle önce oturum açmış olmanız gerekir.",
+    "sign_in": "Giriş yap",
+    "done_title": "Hesabınız bağlandı.",
+    "done_description": "Lark'ta Bot'a göndereceğiniz bir sonraki mesaj doğrudan Ajan'a iletilecek. Bu sekmeyi kapatabilirsiniz.",
+    "error_title": "Bağlama tamamlanamadı",
+    "error_admin_hint": "Bu sorun devam ederse çalışma alanı yöneticisinden Lark üzerinden bağlama bağlantısını yeniden göndermesini isteyin.",
+    "error_missing_token": "Bağlantıda bağlama jetonu eksik. Bot'tan Lark'ta yeni bir tane göndermesini isteyin.",
+    "error_expired": "Bu bağlama bağlantısı geçersiz veya süresi dolmuş (bağlantılar 15 dakika geçerlidir). Bot'tan yeni bir tane göndermesini isteyin.",
+    "error_already_bound": "Bu Lark hesabı zaten farklı bir Multica kullanıcısına bağlı. Hesap transferleri için önce açık bir bağlantı kaldırma işlemi yapılmalıdır.",
+    "error_not_member": "Bu çalışma alanının üyesi olmayan bir Multica hesabıyla oturum açtınız.",
+    "error_unknown": "Bir şeyler yanlış gitti. Tekrar deneyin; sorun devam ederse çalışma alanı yöneticisiyle iletişime geçin."
+  },
+  "slack_bind": {
+    "page_title": "Slack hesabınızı bağlayın",
+    "redeeming": "Hesabınız bağlanıyor…",
+    "needs_auth_description": "Bağlamayı tamamlamak için Multica'ya giriş yapın. Bağlantıdaki jeton, Slack hesabınızı bu Multica kullanıcısına bağlar; bu nedenle önce oturum açmış olmanız gerekir.",
+    "sign_in": "Giriş yap",
+    "done_title": "Hesabınız bağlandı.",
+    "done_description": "Slack'te bota göndereceğiniz bir sonraki mesaj doğrudan ajana iletilecek. Bu sekmeyi kapatabilirsiniz.",
+    "error_title": "Bağlama tamamlanamadı",
+    "error_admin_hint": "Bu sorun devam ederse yeni bir bağlantı almak için Slack'te bota tekrar mesaj gönderin.",
+    "error_missing_token": "Bağlantıda jeton eksik. Yeni bir tane almak için Slack'te bota tekrar mesaj gönderin.",
+    "error_expired": "Bu bağlantı geçersiz veya süresi dolmuş (bağlantılar 15 dakika geçerlidir). Yeni bir tane almak için bota tekrar mesaj gönderin.",
+    "error_already_bound": "Bu Slack hesabı zaten farklı bir Multica kullanıcısına bağlı. Hesap transferleri için önce açık bir bağlantı kaldırma işlemi yapılmalıdır.",
+    "error_not_member": "Bu çalışma alanının üyesi olmayan bir Multica hesabıyla oturum açtınız.",
+    "error_unknown": "Bir şeyler yanlış gitti. Tekrar deneyin; sorun devam ederse çalışma alanı yöneticisiyle iletişime geçin."
+  },
+  "dingtalk_bind": {
+    "page_title": "DingTalk hesabınızı bağlayın",
+    "redeeming": "Hesabınız bağlanıyor…",
+    "needs_auth_description": "Bağlamayı tamamlamak için Multica'ya giriş yapın. Bağlantıdaki jeton, DingTalk hesabınızı bu Multica kullanıcısına bağlar; bu nedenle önce oturum açmış olmanız gerekir.",
+    "sign_in": "Giriş yap",
+    "done_title": "Hesabınız bağlandı.",
+    "done_description": "DingTalk'ta bota göndereceğiniz bir sonraki mesaj doğrudan ajana iletilecek. Bu sekmeyi kapatabilirsiniz.",
+    "error_title": "Bağlama tamamlanamadı",
+    "error_admin_hint": "Bu sorun devam ederse yeni bir bağlantı almak için DingTalk'ta bota tekrar mesaj gönderin.",
+    "error_missing_token": "Bağlantıda jeton eksik. Yeni bir tane almak için DingTalk'ta bota tekrar mesaj gönderin.",
+    "error_expired": "Bu bağlantı geçersiz veya süresi dolmuş (bağlantılar 15 dakika geçerlidir). Yeni bir tane almak için bota tekrar mesaj gönderin.",
+    "error_already_bound": "Bu DingTalk hesabı zaten farklı bir Multica kullanıcısına bağlı. Hesap transferleri için önce açık bir bağlantı kaldırma işlemi yapılmalıdır.",
+    "error_not_member": "Bu çalışma alanının üyesi olmayan bir Multica hesabıyla oturum açtınız.",
+    "error_unknown": "Bir şeyler yanlış gitti. Tekrar deneyin; sorun devam ederse çalışma alanı yöneticisiyle iletişime geçin."
+  },
+  "telegram_bind": {
+    "page_title": "Telegram hesabınızı bağlayın",
+    "redeeming": "Hesabınız bağlanıyor…",
+    "needs_auth_description": "Bağlamayı tamamlamak için Multica'ya giriş yapın. Bağlantıdaki jeton, Telegram hesabınızı bu Multica kullanıcısına bağlar; bu nedenle önce oturum açmış olmanız gerekir.",
+    "sign_in": "Giriş yap",
+    "done_title": "Hesabınız bağlandı.",
+    "done_description": "Telegram'da bota göndereceğiniz bir sonraki mesaj doğrudan ajana iletilecek. Bu sekmeyi kapatabilirsiniz.",
+    "error_title": "Bağlama tamamlanamadı",
+    "error_admin_hint": "Bu sorun devam ederse yeni bir bağlantı almak için Telegram'da bota tekrar mesaj gönderin.",
+    "error_missing_token": "Bağlantıda jeton eksik. Yeni bir tane almak için Telegram'da bota tekrar mesaj gönderin.",
+    "error_expired": "Bu bağlantı geçersiz veya süresi dolmuş (bağlantılar 15 dakika geçerlidir). Yeni bir tane almak için bota tekrar mesaj gönderin.",
+    "error_already_bound": "Bu Telegram hesabı zaten farklı bir Multica kullanıcısına bağlı. Hesap transferleri için önce açık bir bağlantı kaldırma işlemi yapılmalıdır.",
+    "error_not_member": "Bu çalışma alanının üyesi olmayan bir Multica hesabıyla oturum açtınız.",
+    "error_unknown": "Bir şeyler yanlış gitti. Tekrar deneyin; sorun devam ederse çalışma alanı yöneticisiyle iletişime geçin."
+  },
+  "expandable_description": {
+    "expand": "Daha fazla göster",
+    "collapse": "Daha az göster"
+  },
+  "wecom_bind": {
+    "page_title": "Multica hesabınızı bağlayın",
+    "redeeming": "Hesabınız bağlanıyor…",
+    "needs_auth_description": "Bağlamayı tamamlamak için Multica'ya giriş yapın. Bağlantıdaki jeton, WeCom kimliğinizi bu Multica kullanıcısına bağlar; bu nedenle önce oturum açmış olmanız gerekir.",
+    "sign_in": "Giriş yap",
+    "done_title": "Hesabınız bağlandı.",
+    "done_description": "WeCom'da akıllı bota göndereceğiniz bir sonraki mesaj doğrudan ajana iletilecek. Bu sekmeyi kapatabilirsiniz.",
+    "error_title": "Bağlama tamamlanamadı",
+    "error_admin_hint": "Bu sorun devam ederse yeni bir bağlantı almak için WeCom'da bota tekrar mesaj gönderin.",
+    "error_missing_token": "Bağlantıda jeton eksik. Yeni bir tane almak için WeCom'da bota tekrar mesaj gönderin.",
+    "error_expired": "Bu bağlantı geçersiz veya süresi dolmuş (bağlantılar 15 dakika geçerlidir). Yeni bir tane almak için bota tekrar mesaj gönderin.",
+    "error_already_bound": "Bu WeCom kimliği zaten farklı bir Multica kullanıcısına bağlı. Hesap transferleri için önce açık bir bağlantı kaldırma işlemi yapılmalıdır.",
+    "error_not_member": "Bu çalışma alanının üyesi olmayan bir Multica hesabıyla oturum açtınız.",
+    "error_unknown": "Bir şeyler yanlış gitti. Tekrar deneyin; sorun devam ederse çalışma alanı yöneticisiyle iletişime geçin."
+  },
+  "navigation": {
+    "open_in_new_tab": "Yeni sekmede aç"
+  }
+}

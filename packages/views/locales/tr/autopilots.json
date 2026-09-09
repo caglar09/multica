@@ -1,0 +1,465 @@
+{
+  "page": {
+    "title": "Autopilot",
+    "new_autopilot": "Yeni autopilot",
+    "start_blank": "Sıfırdan başla",
+    "table": {
+      "name": "Ad",
+      "agent": "Ajan",
+      "created_by": "Oluşturan",
+      "mode": "Mod",
+      "status": "Durum",
+      "last_run": "Son çalışma",
+      "assignee": "Atanan kişi",
+      "trigger": "Tetikleyici",
+      "next_run": "Sonraki çalışma",
+      "created": "Oluşturulma"
+    },
+    "last_run_empty": "--",
+    "empty": {
+      "title": "Henüz autopilot yok",
+      "hint": "Yapay zeka ajanlarınız için tekrarlayan görevleri zamanlayın. Bir şablon seçin veya sıfırdan başlayın."
+    },
+    "scope_all": "Tümü",
+    "no_matches": "Eşleşen otomasyon yok",
+    "retry": "Tekrar dene"
+  },
+  "status": {
+    "active": "Aktif",
+    "paused": "Duraklatıldı",
+    "paused_runtime_required": "Duraklatıldı — atanan kişinin bir runtime'a ihtiyacı var",
+    "archived": "Arşivlendi"
+  },
+  "execution_mode": {
+    "create_issue": "Görev Oluştur",
+    "run_only": "Sadece Çalıştır"
+  },
+  "relative_date": {
+    "today": "Bugün",
+    "one_day_ago": "1g önce",
+    "days_ago": "{{count}}g önce",
+    "months_ago": "{{count}}ay önce"
+  },
+  "templates": {
+    "daily_news": {
+      "title": "Günlük haber özeti",
+      "summary": "Ekip için bugünün haberlerini arayın ve özetleyin"
+    },
+    "pr_review": {
+      "title": "PR inceleme hatırlatıcısı",
+      "summary": "İncelenmesi gereken eski çekme isteklerini (pull request) işaretleyin"
+    },
+    "bug_triage": {
+      "title": "Hata önceliklendirme",
+      "summary": "Yeni hata raporlarını değerlendirin ve önceliklendirin"
+    },
+    "weekly_progress": {
+      "title": "Haftalık ilerleme raporu",
+      "summary": "Ekibin ilerlemesinin haftalık bir özetini derleyin"
+    },
+    "dependency_audit": {
+      "title": "Bağımlılık denetimi",
+      "summary": "Güvenlik açıkları ve güncel olmayan paketler için tarama yapın"
+    },
+    "documentation_check": {
+      "title": "Dokümantasyon kontrolü",
+      "summary": "Dokümantasyon eksiklikleri için son değişiklikleri inceleyin"
+    }
+  },
+  "detail": {
+    "not_found": "Autopilot bulunamadı",
+    "pause_aria": "Autopilot'u duraklat",
+    "activate_aria": "Autopilot'u aktifleştir",
+    "paused_runtime_required": "Atanan kişi runtime'ını kaybettiği için duraklatıldı. Bir runtime bağlayın, ardından bu autopilot'u yeniden aktifleştirin.",
+    "bind_runtime": "Runtime bağla",
+    "edit": "Düzenle",
+    "run_now": "Şimdi çalıştır",
+    "running": "Çalışıyor...",
+    "toast_triggered": "Autopilot tetiklendi",
+    "toast_trigger_failed": "Autopilot tetiklenemedi",
+    "run_blocked_invocation_not_allowed": "Tetiklenmedi — bu autopilot'un ajanını kullanma izniniz yok",
+    "run_blocked_runtime_offline": "Tetiklenmedi — ajanın runtime'ı çevrimdışı",
+    "run_blocked_agent_runtime_required": "Tetiklenmedi — ajanın runtime'ı yok; çalıştırmak için bir tane bağlayın",
+    "run_blocked_target_unavailable": "Tetiklenmedi — ajan kullanılamıyor",
+    "run_blocked_attribution": "Tetiklenmedi — çalışma sorumlu bir üyeye atfedilemedi",
+    "run_blocked_already_active": "Tetiklenmedi — yakın zamandaki bir çalışma bunu zaten kapsıyor",
+    "run_blocked_quota_exceeded": "Tetiklenmedi — bu dönem için çalışma sınırına ulaşıldı",
+    "run_blocked_issue_limit_reached": "Tetiklenmedi — çalışma alanı görev sınırına ulaştı",
+    "run_blocked_generic": "Tetiklenmedi — çalışma engellendi",
+    "section_properties": "Özellikler",
+    "section_triggers": "Tetikleyiciler",
+    "section_run_history": "Çalışma Geçmişi",
+    "section_danger": "Tehlike Bölgesi",
+    "field_agent": "Ajan",
+    "field_created_by": "Oluşturan",
+    "field_output_mode": "Çıktı Modu",
+    "field_project": "Proje",
+    "no_project": "Proje yok",
+    "project_unavailable": "Proje kullanılamıyor",
+    "field_prompt": "İstem (Prompt)",
+    "field_subscribers": "Aboneler",
+    "field_subscribers_none": "Yok",
+    "add_trigger": "Tetikleyici ekle",
+    "no_triggers": "Yapılandırılmış tetikleyici yok. Otomatik olarak çalıştırmak için bir zamanlama ekleyin.",
+    "no_runs": "Henüz çalışma yok. Manuel olarak tetiklemek için \"Şimdi çalıştır\"a tıklayın.",
+    "delete_button": "Autopilot'u sil",
+    "toast_deleted": "Autopilot silindi",
+    "toast_delete_failed": "Autopilot silinemedi",
+    "delete_dialog": {
+      "title": "Autopilot'u sil",
+      "description": "Bu işlem, \"{{title}}\" öğesini, tetikleyicileri ve çalışma geçmişiyle birlikte kalıcı olarak silecektir. Bu eylem geri alınamaz.",
+      "cancel": "İptal",
+      "confirm": "Sil",
+      "deleting": "Siliniyor..."
+    }
+  },
+  "access": {
+    "title": "Erişimi yönet",
+    "description": "Eklediğiniz üyeler, bu autopilot'un tetikleyicilerini ve webhook'larını düzenleyebilir, çalıştırabilir ve yönetebilir.",
+    "current_label": "Erişimi olanlar",
+    "add": "Üye ekle",
+    "search_placeholder": "Üyeleri ara…",
+    "no_results": "Üye bulunamadı",
+    "remove_tooltip": "Erişimi kaldır",
+    "empty": "Henüz kimseye erişim verilmedi.",
+    "toast_granted": "Erişim verildi",
+    "toast_revoked": "Erişim kaldırıldı",
+    "toast_failed": "Erişim güncellenemedi",
+    "owner_note": "Oluşturan ve çalışma alanı yöneticilerinin her zaman erişimi vardır."
+  },
+  "run_status": {
+    "issue_created": "Görev Oluşturuldu",
+    "running": "Çalışıyor",
+    "skipped": "Atlandı",
+    "completed": "Tamamlandı",
+    "failed": "Başarısız oldu"
+  },
+  "run_source": {
+    "schedule": "Zamanlama",
+    "manual": "Manuel",
+    "webhook": "Webhook",
+    "api": "API"
+  },
+  "run": {
+    "issue_linked": "Görev bağlandı",
+    "view_log": "Çalıştırma günlüğünü görüntüle",
+    "skipped_group": {
+      "label": "Atlandı",
+      "summary": "{{count}} atlanan çalışma"
+    }
+  },
+  "webhook_payload": {
+    "label": "Webhook olayı:",
+    "unknown_event": "webhook.received",
+    "payload": "Yük (Payload)",
+    "content_type": "Content-Type: {{type}}",
+    "copy": "Kopyala",
+    "copied": "Webhook yükü kopyalandı",
+    "copied_short": "Kopyalandı",
+    "copy_failed": "Kopyalanamadı",
+    "truncated_marker": "[kırpıldı — tam yükü almak için Kopyala'ya tıklayın]"
+  },
+  "trigger_kind": {
+    "schedule": "Zamanlama",
+    "webhook": "Webhook",
+    "api": "API"
+  },
+  "trigger_row": {
+    "disabled_badge": "Devre dışı",
+    "deprecated_badge": "Kullanımdan kaldırıldı",
+    "next_label": "Sonraki: {{date}}",
+    "webhook_url_label": "Webhook URL'si",
+    "show_url": "URL'yi göster",
+    "hide_url": "URL'yi gizle",
+    "hidden_url_aria": "Webhook URL'si gizlendi — göstermek için tıklayın",
+    "copy_url": "URL'yi kopyala",
+    "url_copied": "Webhook URL'si kopyalandı",
+    "url_copy_failed": "Kopyalanamadı",
+    "rotate_url": "URL'yi yenile",
+    "rotate_confirm_title": "Webhook URL'sini yenile",
+    "rotate_confirm_description": "Mevcut URL hemen çalışmayı durduracaktır. Onu çağıran tüm harici sistemler yeni URL ile güncellenmelidir. Devam edilsin mi?",
+    "rotate_confirm_cancel": "İptal",
+    "rotate_confirm_action": "URL'yi yenile",
+    "rotate_in_progress": "Yenileniyor...",
+    "toast_rotated": "Webhook URL'si yenilendi",
+    "toast_rotate_failed": "URL yenilenemedi",
+    "toast_deleted": "Tetikleyici silindi",
+    "toast_delete_failed": "Tetikleyici silinemedi",
+    "delete_dialog": {
+      "title": "Tetikleyiciyi sil",
+      "description": "Bu tetikleyici kaldırılacak ve autopilot bu zamanlamada ateşlemeyi durduracaktır. Bu eylem geri alınamaz.",
+      "cancel": "İptal",
+      "confirm": "Sil",
+      "deleting": "Siliniyor..."
+    }
+  },
+  "deliveries": {
+    "section_title": "Webhook Teslimatları",
+    "empty": "Henüz webhook teslimatı yok. Burada girişleri görmek için webhook URL'sine bir POST isteği gönderin.",
+    "row": {
+      "attempts": "{{count}}× deneme",
+      "replay_badge": "Tekrar Oynat"
+    },
+    "status": {
+      "queued": "Sıraya Alındı",
+      "dispatched": "Gönderildi",
+      "rejected": "Reddedildi",
+      "ignored": "Yok Sayıldı",
+      "failed": "Başarısız oldu"
+    },
+    "signature": {
+      "not_required": "İmza yok",
+      "valid": "İmza geçerli",
+      "invalid": "İmza geçersiz",
+      "missing": "İmza eksik"
+    },
+    "detail": {
+      "title": "Teslimat",
+      "received_at": "Alındı",
+      "last_attempt_at": "Son deneme",
+      "attempt_count": "Denemeler",
+      "dispatch_attempts": "Gönderme denemeleri",
+      "available_at": "Sonraki gönderim",
+      "response_status": "Yanıt",
+      "dedupe_key": "Dedupe anahtarı",
+      "dedupe_source": "Dedupe kaynağı",
+      "content_type": "Content-Type",
+      "replayed_from": "Şuradan tekrar oynatıldı",
+      "error_label": "Hata",
+      "raw_body": "Ham gövde",
+      "selected_headers": "Başlıklar (Headers)",
+      "response_body": "Yanıt gövdesi"
+    },
+    "replay": {
+      "action": "Tekrar oynat",
+      "in_progress": "Tekrar oynatılıyor...",
+      "toast_success": "Teslimat tekrar oynatıldı",
+      "toast_failed": "Tekrar oynatma başarısız oldu",
+      "disabled_invalid_signature": "Tekrar oynatılamıyor — imza geçersizdi",
+      "disabled_rejected": "Reddedilmiş bir teslimat tekrar oynatılamaz",
+      "disabled_queued": "Hâlâ sırada — sonuçlandığında tekrar oynatın"
+    }
+  },
+  "add_trigger_dialog": {
+    "title": "Tetikleyici Ekle",
+    "type_label": "Tür",
+    "type_schedule": "Zamanlama",
+    "type_webhook": "Webhook",
+    "label_field": "Etiket (isteğe bağlı)",
+    "label_placeholder": "örn. Hafta içi sabahı",
+    "webhook_help": "Multica kaydettikten sonra bir webhook URL'si oluşturacaktır. Bu autopilot'u ateşlemek için ona herhangi bir JSON'ı POST edin.",
+    "submit": "Tetikleyici ekle",
+    "submitting": "Ekleniyor...",
+    "toast_added_schedule": "Zamanlama tetikleyicisi eklendi",
+    "toast_added_webhook": "Webhook tetikleyicisi eklendi",
+    "toast_add_failed": "Tetikleyici eklenemedi"
+  },
+  "dialog": {
+    "sr_create": "Yeni Autopilot",
+    "sr_edit": "Autopilot'u Düzenle",
+    "header_create": "Yeni autopilot",
+    "header_edit": "Autopilot'u düzenle",
+    "subtitle": "Tekrarlayan bir yapay zeka görevi",
+    "expand": "Genişlet",
+    "collapse": "Daralt",
+    "close": "Kapat",
+    "title_placeholder": "Autopilot adı",
+    "runbook_label": "Runbook",
+    "runbook_hint": "Ajan tarafından her çalışmada okunur",
+    "description_placeholder": "# Hedef\nAjan ne başarmalı?\n\n# Bağlam\nBu kimin için? Herhangi bir kısıtlama var mı?\n\n# Adımlar\n1. …\n2. …",
+    "auto_run_hint": "Kaydedildikten sonra, duraklatılana kadar otomatik olarak çalışır.",
+    "cancel": "İptal",
+    "create": "Autopilot oluştur",
+    "save": "Kaydet",
+    "creating": "Oluşturuluyor...",
+    "saving": "Kaydediliyor...",
+    "toast_created": "Autopilot oluşturuldu",
+    "toast_create_partial": "Autopilot oluşturuldu, ancak zamanlama kaydedilemedi",
+    "toast_create_partial_with_reason": "Autopilot oluşturuldu, ancak zamanlama kaydedilemedi: {{reason}}",
+    "toast_create_failed": "Autopilot oluşturulamadı",
+    "toast_updated": "Autopilot güncellendi",
+    "toast_update_partial": "Autopilot güncellendi, ancak zamanlama kaydedilemedi",
+    "toast_update_partial_with_reason": "Autopilot güncellendi, ancak zamanlama kaydedilemedi: {{reason}}",
+    "toast_update_failed": "Autopilot güncellenemedi",
+    "section_agent": "Ajan",
+    "section_assignee": "Atanan kişi",
+    "select_agent": "Ajan seç",
+    "select_assignee": "Ajan veya takım seç",
+    "section_project": "Proje",
+    "project_hint": "Ayrıca çalışmaların nerede yürütüleceğini belirler — projenin deposu veya yerel dizin",
+    "no_project": "Proje yok",
+    "section_output_mode": "Çıktı modu",
+    "section_subscribers": "Aboneler",
+    "subscribers_hint": "Bu autopilot'un oluşturduğu her göreve otomatik abone olur",
+    "subscribers_empty": "Abone yok — her çalışmada onları bilgilendirmek için bir ekip arkadaşı ekleyin",
+    "subscribers_add": "Abone ekle",
+    "subscribers_search_placeholder": "Üyeleri ada göre ara…",
+    "subscribers_no_results": "Eşleşen üye yok",
+    "subscribers_remove_tooltip": "Kaldır",
+    "section_schedule": "Zamanlama",
+    "section_trigger_kind": "Tetikleyici",
+    "trigger_kind_schedule": "Zamanlama",
+    "trigger_kind_webhook": "Webhook",
+    "section_webhook": "Webhook",
+    "webhook_help_create": "Multica bu autopilot oluşturulduktan sonra bir webhook URL'si oluşturacaktır. Onu ateşlemek için o URL'ye herhangi bir JSON'ı POST edin.",
+    "webhook_help_edit": "Bu autopilot webhook tarafından ateşlenir. URL'yi (kopyala / yenile) autopilot'un detay sayfasından yönetin.",
+    "webhook_created_title": "Webhook autopilot'u hazır",
+    "webhook_created_description": "Aşağıdaki URL'ye herhangi bir JSON'ı POST edin ve autopilot ateşlenecektir. Onu şimdi kopyalayın — ayrıca autopilot'un detay sayfasında bulabilir ve yenileyebilirsiniz.",
+    "webhook_created_warning": "Bu URL'ye bir şifre gibi davranın. Ona sahip olan herkes autopilot'u tetikleyebilir.",
+    "webhook_created_done": "Bitti",
+    "event_filter_label": "Olay filtreleri",
+    "event_filter_docs_link_label": "Olay filtrelerinin nasıl çalıştığını öğrenin",
+    "event_filter_event_placeholder": "örn. workflow_run",
+    "event_filter_actions_placeholder": "completed, failed",
+    "event_filter_add": "Ekle",
+    "event_filter_remove_label": "Filtreyi kaldır",
+    "event_filter_hint": "Yalnızca bu olaylarla eşleşen webhook'ları işleyin. Tümünü kabul etmek için boş bırakın.",
+    "schedule_disabled_reason": "Bu autopilot'un birden çok zamanlaması var — detay sayfasında bunları düzenleyin.",
+    "schedule_empty": "Zamanlama yok — bu autopilot yalnızca manuel tetiklendiğinde çalışır.",
+    "schedule_add": "Zamanlama ekle",
+    "error_title_required": "Bu autopilot için bir ad girin.",
+    "error_assignee_required": "Bu autopilot'u çalıştıracak ajanı veya takımı seçin.",
+    "output_modes": {
+      "create_issue": {
+        "label": "Görev oluştur",
+        "description": "Her çalışma takip edilen bir görev oluşturur"
+      },
+      "run_only": {
+        "label": "Sadece çalıştır",
+        "description": "Sessiz çalışma, görev oluşturulmaz"
+      }
+    }
+  },
+  "schedule_editor": {
+    "time_label": "Zaman",
+    "time_at": "Belirli bir zamanda",
+    "time_every": "Belirli bir aralıkta",
+    "every_prefix": "Her",
+    "unit_hours": "saatte bir",
+    "unit_minutes": "dakikada bir",
+    "days_label": "Günler",
+    "days_every": "Her gün",
+    "days_weekly": "Haftanın günleri",
+    "days_monthly": "Ayın günü",
+    "monthly_short_month_hint": "{{day}}. günü olmayan aylar atlanır.",
+    "days_short": {
+      "sun": "Paz",
+      "mon": "Pzt",
+      "tue": "Sal",
+      "wed": "Çar",
+      "thu": "Per",
+      "fri": "Cum",
+      "sat": "Cmt"
+    },
+    "timezone_label": "Saat dilimi",
+    "cron_toggle": "Cron",
+    "cron_click_to_edit": "düzenlemek için tıklayın",
+    "cron_hint": "Standart 5 alanlı cron (dakika saat ay_günü ay hafta_günü)",
+    "cron_invalid": "Bu cron ifadesi geçerli değil.",
+    "timezone_invalid": "Bu saat dilimi sunucu tarafından tanınmıyor.",
+    "advanced_hint": "Bu ifade, görsel düzenleyicinin temsil edemeyeceği özellikler kullanıyor. Cron metnini doğrudan düzenleyin veya kontrolleri yeniden etkinleştirmek için basitleştirin.",
+    "advanced_unverified": "Bu ifadeyi kontrol etmek için sunucuya ulaşılamadı, bu yüzden kontroller kapalı kalıyor. Kaydetmeden önce cron metninin doğru olduğundan emin olun.",
+    "advanced_checking": "Bu ifade sunucu ile kontrol ediliyor. O cevap verene kadar kontroller kapalı kalır.",
+    "next_runs_label": "Sonraki çalışmalar",
+    "next_in": "{{countdown}} içinde",
+    "preview_unavailable": "Sonraki çalışmalar şu an kullanılamıyor.",
+    "no_upcoming_runs": "Bu ifadenin yaklaşan bir çalışması yok.",
+    "describe": {
+      "days_every": "Her gün",
+      "days_monthly": "Ayın {{day}}. günü",
+      "days_long": {
+        "sun": "Paz",
+        "mon": "Pzt",
+        "tue": "Sal",
+        "wed": "Çar",
+        "thu": "Per",
+        "fri": "Cum",
+        "sat": "Cmt"
+      },
+      "days_range": "{{from}}–{{to}}",
+      "days_join": ", ",
+      "time_at": "{{time}}'da",
+      "time_every_hour": "Her saat :{{minute}} geçe",
+      "time_every_hours": "Her {{interval}} saatte bir :{{minute}} geçe",
+      "time_every_hour_window": "Her saat",
+      "time_every_hours_window": "Her {{interval}} saatte bir",
+      "time_every_minute": "Her dakika",
+      "time_every_minutes": "Her {{interval}} dakikada bir",
+      "window": "{{from}}–{{to}}"
+    },
+    "countdown": {
+      "days_hours": "{{days}}g {{hours}}sa {{minutes}}dk",
+      "hours_minutes": "{{hours}}sa {{minutes}}dk",
+      "minutes": "{{minutes}}dk",
+      "less_than_minute": "<1dk"
+    },
+    "a11y": {
+      "fixed_hour": "Saat",
+      "fixed_minute": "Dakika",
+      "interval": "Aralık",
+      "interval_unit": "Aralık birimi",
+      "window_start_hour": "Pencere başlangıç saati",
+      "window_start_minute": "Pencere başlangıç dakikası",
+      "window_end_hour": "Pencere bitiş saati",
+      "window_end_minute": "Pencere bitiş dakikası",
+      "day_pattern": "Gün deseni",
+      "day_of_month": "Ayın günü",
+      "timezone": "Saat dilimi",
+      "days_full": {
+        "sun": "Pazar",
+        "mon": "Pazartesi",
+        "tue": "Salı",
+        "wed": "Çarşamba",
+        "thu": "Perşembe",
+        "fri": "Cuma",
+        "sat": "Cumartesi"
+      }
+    }
+  },
+  "agent_picker": {
+    "filter_placeholder": "Ajanları veya takımları filtrele...",
+    "select_agent": "Ajan seç",
+    "select_assignee": "Ajan veya takım seç",
+    "agents_group": "Ajanlar",
+    "squads_group": "Takımlar",
+    "agent_runtime_required": "Bu ajanı seçmeden önce bir runtime bağlayın",
+    "squad_runtime_required": "Bu takımı seçmeden önce liderine bir runtime bağlayın"
+  },
+  "timezone_picker": {
+    "search_placeholder": "Saat dilimi ara..."
+  },
+  "toolbar": {
+    "result_count_title": "Eşleşen otomasyonlar / tüm otomasyonlar",
+    "filter_label": "Filtre",
+    "filter_active_count_one": "{{count}} filtre",
+    "filter_active_count_other": "{{count}} filtre",
+    "clear_filters": "Filtreleri temizle",
+    "section_assignee": "Atanan kişi",
+    "section_mode": "Mod",
+    "section_trigger": "Tetikleyici",
+    "section_creator": "Oluşturan",
+    "display": "Görünüm",
+    "sort_by": "Sırala",
+    "direction_asc": "Artan",
+    "direction_desc": "Azalan",
+    "section_columns": "Sütunlar"
+  },
+  "actions": {
+    "row_menu": "Otomasyon eylemleri",
+    "pause": "Duraklat",
+    "resume": "Devam ettir",
+    "delete": "Sil",
+    "selected_one": "{{count}} seçildi",
+    "selected_other": "{{count}} seçildi",
+    "clear_selection": "Seçimi temizle",
+    "delete_dialog": {
+      "title": "Otomasyon silinsin mi?",
+      "description_one": "Bu işlem, \"{{name}}\" öğesini ve çalışma geçmişini kalıcı olarak silecektir.",
+      "description_other": "Bu işlem, {{count}} otomasyonu ve çalışma geçmişlerini kalıcı olarak silecektir.",
+      "warning": "Bu eylem geri alınamaz.",
+      "cancel": "İptal",
+      "confirm": "Kalıcı olarak sil",
+      "deleting": "Siliniyor…"
+    }
+  }
+}

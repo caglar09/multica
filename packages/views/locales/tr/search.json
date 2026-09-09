@@ -1,0 +1,37 @@
+{
+  "title": "Ara",
+  "description": "Sayfaları, görevleri, projeleri ve üyeleri arayın",
+  "placeholder": "Bir komut yazın veya arayın...",
+  "groups": {
+    "pages": "Sayfalar",
+    "commands": "Komutlar",
+    "members": "Üyeler",
+    "projects": "Projeler",
+    "issues": "Görevler",
+    "cancelled": "İptal Edilenler",
+    "recent": "Son Görüntülenenler"
+  },
+  "commands": {
+    "current_theme_aria": "Mevcut tema",
+    "new_issue": "Yeni Görev",
+    "new_project": "Yeni Proje",
+    "copy_issue_link": "Görev Bağlantısını Kopyala",
+    "copy_identifier": "Tanımlayıcıyı Kopyala ({{identifier}})",
+    "fold_all_comments": "Tüm Yorumları Daralt",
+    "unfold_all_comments": "Tüm Yorumları Genişlet",
+    "switch_to_light": "Açık Temaya Geç",
+    "switch_to_dark": "Koyu Temaya Geç",
+    "use_system_theme": "Sistem Temasını Kullan"
+  },
+  "toast": {
+    "link_copied": "Bağlantı kopyalandı",
+    "copied_identifier": "{{identifier}} kopyalandı"
+  },
+  "empty": {
+    "no_results": "Sonuç bulunamadı.",
+    "type_to_search": "Görev ve projeleri aramak için yazın"
+  },
+  "trigger": {
+    "label": "Ara..."
+  }
+}

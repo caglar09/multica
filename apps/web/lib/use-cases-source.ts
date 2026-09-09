@@ -20,6 +20,7 @@ export function getUseCaseLangForLocale(locale: SupportedLocale): UseCaseLang {
   if (locale === "zh-Hans") return "zh";
   if (locale === "ko") return "ko";
   if (locale === "ja") return "ja";
+  // tr falls back to English use-case content
   return "en";
 }
 

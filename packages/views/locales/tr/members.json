@@ -1,0 +1,21 @@
+{
+  "role": {
+    "owner": "Sahip",
+    "admin": "Yönetici",
+    "member": "Üye"
+  },
+  "card": {
+    "unavailable": "Üye mevcut değil",
+    "agents_section": "Ajanlar ({{count}})",
+    "detail_link": "Detay →",
+    "more_agents_one": "ve {{count}} diğer ajan",
+    "more_agents_other": "ve {{count}} diğer ajan"
+  },
+  "detail": {
+    "workspace_fallback": "Çalışma Alanı",
+    "members_breadcrumb": "Üyeler",
+    "breadcrumb_fallback": "Üye",
+    "not_found_title": "Üye bulunamadı",
+    "not_found_description": "Bu üye çalışma alanından ayrılmış olabilir."
+  }
+}

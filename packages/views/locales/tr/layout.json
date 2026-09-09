@@ -1,0 +1,64 @@
+{
+  "nav": {
+    "inbox": "Gelen Kutusu",
+    "chat": "Sohbet",
+    "my_issues": "Görevlerim",
+    "issues": "Görevler",
+    "projects": "Projeler",
+    "autopilots": "Autopilot",
+    "agents": "Ajanlar",
+    "squads": "Takımlar",
+    "usage": "Analitik",
+    "runtimes": "Runtime'lar",
+    "skills": "Beceriler",
+    "settings": "Ayarlar",
+    "logs": "Günlükler"
+  },
+  "tab": {
+    "issue": "Görev",
+    "project": "Proje",
+    "autopilot": "Autopilot",
+    "agent": "Ajan",
+    "member": "Üye",
+    "squad": "Takım",
+    "skill": "Beceri",
+    "machine": "Makine",
+    "runtime": "Runtime",
+    "attachment": "Ek",
+    "create_agent": "Ajan Oluştur",
+    "unknown": "Bilinmeyen sayfa"
+  },
+  "help": {
+    "trigger": "Yardım",
+    "download_desktop": "Masaüstü uygulaması",
+    "docs": "Belgeler",
+    "changelog": "Değişiklik günlüğü",
+    "discord": "Discord",
+    "feedback": "Geri bildirim",
+    "server_version": "Sunucu sürümü {{version}}"
+  },
+  "workspace_loader": {
+    "loading_workspace": "Çalışma alanı yükleniyor…",
+    "loading_named_prefix": "Yükleniyor"
+  },
+  "sidebar": {
+    "unpin_tooltip": "Sabitlemeyi kaldır",
+    "workspaces_label": "Çalışma Alanları",
+    "create_workspace": "Çalışma alanı oluştur",
+    "pending_invitations_label": "Bekleyen davetler",
+    "invitation_workspace_fallback": "Çalışma Alanı",
+    "invitation_join": "Katıl",
+    "invitation_decline": "Reddet",
+    "log_out": "Çıkış yap",
+    "new_issue": "Yeni Görev",
+    "new_issue_shortcut": "C",
+    "pinned_label": "Sabitlenmiş",
+    "workspace_group": "Çalışma Alanı",
+    "configure_group": "Yapılandır",
+    "unread_overflow": "99+",
+    "discord_card": {
+      "title": "Discord'umuza katılın",
+      "dismiss": "Kapat"
+    }
+  }
+}

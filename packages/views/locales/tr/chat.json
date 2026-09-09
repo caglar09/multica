@@ -1,0 +1,250 @@
+{
+  "page": {
+    "title": "Sohbet",
+    "select_prompt": "Bir konuşma seçin veya + ile yeni bir tane başlatın",
+    "agent_link_no_access": "Bu ajanla sohbet etme erişiminiz yok."
+  },
+  "fab": {
+    "running": "Multica çalışıyor...",
+    "unread_one": "{{count}} okunmamış sohbet",
+    "unread_other": "{{count}} okunmamış sohbet",
+    "default": "Multica'ya Sor"
+  },
+  "input": {
+    "placeholder_no_agent": "Sohbet etmeye başlamak için bir ajan oluşturun",
+    "placeholder_archived": "Bu oturum arşivlendi",
+    "placeholder_archived_agent": "Bu ajan arşivlendi",
+    "placeholder_runtime_required": "Devam etmek için bir runtime bağlayın",
+    "placeholder_access_revoked": "Artık bu ajanı çalıştırma izniniz yok",
+    "placeholder_named": "{{name}} ile sohbet et…",
+    "placeholder_default": "Bir mesaj başlat…",
+    "send_tooltip": "Gönder",
+    "queue_send_tooltip": "Mesajı sıraya ekle",
+    "stop_tooltip": "Durdur",
+    "send_failed_toast": "Mesaj gönderilemedi",
+    "send_blocked_toast": "Mesaj gönderilmedi — artık bu ajanı kullanma izniniz yok",
+    "runtime_required_toast": "Mesaj gönderilmedi — önce bu ajana bir runtime bağlayın",
+    "attachment_bind_failed_toast": "Mesaj gönderildi, ancak dosyalar eklenemedi. Lütfen birazdan tekrar deneyin.",
+    "add_tooltip": "Ekle",
+    "upload_file": "Görüntü veya dosyalar",
+    "project_context": "Proje bağlamı",
+    "change_project_context": "Proje bağlamını değiştir",
+    "remove_project_context": "Proje bağlamını kaldır",
+    "no_projects": "Henüz proje yok",
+    "project_context_unsupported": "Proje açıklaması uygulanmayacak — bu ajanın daemon'unun yükseltilmesi gerekiyor"
+  },
+  "queue": {
+    "title_one": "{{count}} sıraya alınmış mesaj",
+    "title_other": "{{count}} sıraya alınmış mesaj",
+    "clear": "Tümünü temizle",
+    "steer": "Yönlendir",
+    "steer_unavailable": "Mevcut yanıt başladıktan sonra Yönlendir kullanılabilir",
+    "steer_no_permission": "Artık bu ajanı çalıştırma izniniz yok",
+    "steer_unavailable_toast": "Yönlendir kullanılamıyor. Sıra yenileniyor.",
+    "edit": "Sıraya alınmış mesajı düzenle",
+    "remove": "Sıraya alınmış mesajı kaldır",
+    "more": "Daha fazla sıra eylemi",
+    "fallback": "Sıraya alınmış mesaj",
+    "action_failed_toast": "Sıraya alınmış mesaj güncellenemedi"
+  },
+  "message_list": {
+    "show_details": "Ayrıntıları göster",
+    "replied_in": "{{elapsed}} içinde yanıtladı",
+    "failed_after": "{{elapsed}} sonra başarısız oldu",
+    "finished_in": "{{elapsed}} içinde bitirdi",
+    "no_response": "Ajan bu sırayı bir metin yanıtı olmadan bitirdi.",
+    "failure": {
+      "agent_error": "Ajan bir hatayla karşılaştı ve yanıtı bitiremedi. Lütfen tekrar deneyin.",
+      "timeout": "Ajanın yanıt vermesi çok uzun sürdü ve bitirmeden durdu. Tekrar deneyin veya isteğinizi daha küçük adımlara bölün.",
+      "codex_semantic_inactivity": "Ajan boşa çıktı ve bitirmeden durdu. Lütfen tekrar deneyin.",
+      "runtime_offline": "Ajan şu anda çevrimdışı, bu yüzden yanıt veremedi. Çevrimiçi olduğunda lütfen tekrar deneyin.",
+      "runtime_recovery": "Ajan bitiremeden yeniden başlatıldı. Lütfen tekrar deneyin.",
+      "manual": "Bu yanıt iptal edildi.",
+      "skill_bundle_unavailable": "Ajanın becerileri indirilemedi, bu yüzden hiç başlayamadı. Bu genellikle bir bağlantı sorunudur — lütfen tekrar deneyin.",
+      "runtime_cli_timeout": "Yerel OpenClaw CLI zamanında yanıt vermedi, bu nedenle bu çalıştırma hiç başlamadı. Bu, bir ağ sorunu değil, yerel bir başlangıç zaman aşımıdır — CLI hızlanana veya zaman aşımı artırılana (MULTICA_OPENCLAW_CLI_TIMEOUT) kadar tekrar denemek yardımcı olmayacaktır.",
+      "provider_network": "Yanıt bitmeden model sağlayıcı ile bağlantı koptu. Ağınızı kontrol edin ve tekrar deneyin.",
+      "provider_auth_or_access": "Ajanın model hesabının oturumu artık açık değil. Tekrar giriş yapın, ardından tekrar deneyin.",
+      "provider_quota_limit": "Ajanın model hesabının kredisi tükendi. Krediyi doldurun veya hesapları değiştirin, ardından tekrar deneyin.",
+      "provider_capacity_or_rate_limit": "Model sağlayıcı meşgul veya bu hesabı oran sınırlıyor. Lütfen birazdan tekrar deneyin.",
+      "context_overflow": "Bu konuşma model için çok uzun oldu. Yeni bir oturum başlatın veya isteğinizi daha küçük adımlara bölün.",
+      "runtime_missing_executable": "Ajanın CLI'ı bu makinede çalıştırılamadı. Doğru şekilde yüklendiğini ve PATH'te olduğunu kontrol edin, ardından tekrar deneyin.",
+      "runtime_version_unsupported": "Ajanın CLI'ı bu runtime için çok eski. Yükseltin, ardından tekrar deneyin.",
+      "fallback": "Bir şeyler yanlış gitti ve ajan yanıt vermeyi bitiremedi. Lütfen tekrar deneyin."
+    },
+    "tools_one": "{{count}} araç",
+    "tools_other": "{{count}} araç",
+    "tool_result_named": "{{tool}} sonucu: ",
+    "tool_result_unnamed": "sonuç: ",
+    "process_steps_one": "{{count}} adım",
+    "process_steps_other": "{{count}} adım",
+    "copy_action": "Kopyala",
+    "copied_toast": "Kopyalandı",
+    "copy_failed_toast": "Kopyalanamadı",
+    "loading_older": "Eski mesajlar yükleniyor…",
+    "quick_actions_heading": "Takip soruları",
+    "quick_actions_aria": "Önerilen takipler",
+    "quick_actions_regenerate": "Önerileri yeniden oluştur",
+    "quick_actions_regenerate_failed": "Öneriler yenilenemedi. Lütfen tekrar deneyin."
+  },
+  "session_history": {
+    "untitled": "Başlıksız",
+    "time": {
+      "just_now": "az önce",
+      "minutes": "{{count}}d önce",
+      "hours": "{{count}}s önce",
+      "days": "{{count}}g önce"
+    },
+    "row_delete_aria": "Sohbet oturumunu sil",
+    "row_rename_aria": "Sohbet oturumunu yeniden adlandır",
+    "row_stop_aria": "Geçerli çalıştırmayı durdur",
+    "stop_action": "Durdur",
+    "row_subtitle": {
+      "working": "Çalışıyor",
+      "completed": "Tamamlandı",
+      "new_reply": "Yeni yanıt"
+    },
+    "stop_dialog": {
+      "title": "Bu çalıştırma durdurulsun mu?",
+      "description_with_title": "Bu, \"{{title}}\" içindeki mevcut ajan görevini iptal edecektir. Kısmi çıktı sohbette kalacaktır.",
+      "description_default": "Bu, mevcut ajan görevini iptal edecektir. Kısmi çıktı sohbette kalacaktır.",
+      "cancel": "Çalıştırmaya devam et",
+      "confirm": "Çalıştırmayı durdur",
+      "confirming": "Durduruluyor..."
+    },
+    "delete_dialog": {
+      "title": "Sohbet oturumunu sil",
+      "description_with_title": "\"{{title}}\" ve mesajları kalıcı olarak kaldırılacaktır. Bu işlem geri alınamaz.",
+      "description_default": "Bu sohbet oturumu ve mesajları kalıcı olarak kaldırılacaktır. Bu işlem geri alınamaz.",
+      "cancel": "İptal",
+      "confirm": "Sil",
+      "confirming": "Siliniyor..."
+    },
+    "row_actions_aria": "Sohbet eylemleri"
+  },
+  "window": {
+    "new_chat_tooltip": "Yeni sohbet",
+    "restore_tooltip": "Geri yükle",
+    "expand_tooltip": "Genişlet",
+    "minimize_tooltip": "Küçült",
+    "another_running": "Başka bir sohbet çalışıyor",
+    "another_unread": "Başka bir sohbette okunmamış yanıtlar var",
+    "running": "Çalışıyor",
+    "unread": "Okunmamış",
+    "no_previous": "Önceki sohbet yok",
+    "untitled": "Yeni sohbet",
+    "my_agents": "Benim ajanlarım",
+    "others": "Diğerleri",
+    "no_agents": "Ajan yok",
+    "history_group": "Sohbet geçmişi",
+    "agent_filter_placeholder": "Ajanlarda ara...",
+    "agent_needs_runtime": "Runtime gerekiyor",
+    "agent_needs_runtime_hint": "Bu ajanla sohbete başlamadan önce bir runtime bağlayın"
+  },
+  "empty_state": {
+    "first_time_title": "Ajanlarınızla sohbet edin",
+    "first_time_intro": "✨ Onlar çalışma alanınızı biliyor —",
+    "first_time_pillars": "görevler, projeler, beceriler",
+    "first_time_pillars_suffix": ".",
+    "first_time_actions": "Bir özet isteyin, gününüzü planlayın veya hızlı bir görevi devredin.",
+    "returning_title_named": "Merhaba, ben {{name}}",
+    "returning_title_default": "Multica'ya Hoş Geldiniz",
+    "returning_subtitle": "Sormayı deneyin",
+    "chat_with_named": "{{name}} ile sohbet et"
+  },
+  "conversation_starters": {
+    "aria_label": "Konuşma başlatıcılar",
+    "capabilities": {
+      "label": "Ne konularda yardımcı olabilirsiniz?",
+      "prompt": "Hangi konularda yardımcı olmakta en iyisiniz? Bana kısa bir genel bakış verin."
+    },
+    "first_task": {
+      "label": "Bir ilk görev önerin",
+      "prompt": "Size devredebileceğim faydalı üç görev önerin."
+    },
+    "recommend": {
+      "label": "Bir eylem öner",
+      "prompt": "Çalışma alanım hakkında bildiklerinizi gözden geçirin ve faydalı bir ilk eylem önerin."
+    },
+    "customize": "Başlatıcıları özelleştir"
+  },
+  "onboarding_cards": {
+    "aria_label": "Başlamanın yolları",
+    "cta": "Başlat",
+    "board": {
+      "title": "Dakikalar içinde bir pano hazırlayın",
+      "desc": "Bana hedefi söyleyin — projeyi oluşturacağım, görevleri böleceğim ve öncelikleri belirleyeceğim.",
+      "prompt": "Mevcut hedeflerimizi bir proje panosuna dönüştür"
+    },
+    "delegate": {
+      "title": "Önce bana bir şey devret",
+      "desc": "Hızlı bir araştırma, örneğin — sonuçlar bir görev ve bir rapor olarak geri döner.",
+      "prompt": "Bir işi benim yerime yap: hızlı bir araştırma yürüt ve sonuçları bir rapor olarak geri gönder"
+    },
+    "digest": {
+      "title": "Günlük özet kendi kendini yazsın",
+      "desc": "Çalışma alanı ilerlemesinin sabah özeti doğrudan gelen kutunuzda.",
+      "prompt": "Çalışma alanı ilerlemesinin sabah özetini yayınlayan günlük bir otomasyon kur"
+    },
+    "digest_badge": "Her gün 09:00"
+  },
+  "no_agent_banner": "Sohbet etmeye başlamak için bir ajana ihtiyacınız var.",
+  "archived_agent_banner": "{{name}} arşivlendi — bu konuşma salt okunurdur.",
+  "agent_access_revoked_banner": "Artık {{name}} adlı ajanı çalıştırma izniniz yok — bu konuşma salt okunurdur.",
+  "runtime_required_banner": {
+    "fallback_name": "Ajan",
+    "message": "{{name}} yanıt vermeden önce bir runtime gerektiriyor.",
+    "action": "Runtime bağla"
+  },
+  "offline_banner": {
+    "fallback_name": "ajan",
+    "unstable": "{{name}} için bağlantı kararsız — yanıtlar gecikebilir.",
+    "offline": "{{name}} çevrimdışı — mesajınız geri döndüklerinde teslim edilecektir."
+  },
+  "status_pill": {
+    "stages": {
+      "offline": "Çevrimdışı",
+      "reconnecting": "Yeniden bağlanıyor",
+      "retrying": "Yeniden deneniyor",
+      "queued": "Sırada",
+      "waiting_local_directory": "Yerel dizin bekleniyor",
+      "waiting_local_directory_reason": "{{reason}} bekleniyor",
+      "starting_up": "Başlatılıyor",
+      "thinking": "Düşünüyor",
+      "typing": "Yazıyor"
+    },
+    "tools": {
+      "running_command": "Bir komut çalıştırıyor",
+      "reading_files": "Dosyaları okuyor",
+      "searching_code": "Kodu arıyor",
+      "making_edits": "Düzenlemeler yapıyor",
+      "searching_web": "Web'de arıyor",
+      "fallback": "Çalışıyor"
+    }
+  },
+  "list": {
+    "typing": "Yazıyor…",
+    "failed": "Gönderilemedi",
+    "you_prefix": "Siz: ",
+    "no_messages": "Henüz mesaj yok",
+    "no_response_preview": "Metin yanıtı yok",
+    "quick_agents": "Sık kullanılan ajanlar",
+    "add": "Ekle",
+    "add_agent": "Sık kullanılan bir ajan ekle",
+    "unpin_agent": "Sık kullanılanlardan kaldır",
+    "waiting": "Yanıt bekleniyor",
+    "pin": "Sabitle",
+    "unpin": "Sabitlemeyi kaldır",
+    "pinned": "Sabitlendi",
+    "archive": "Arşivle",
+    "unarchive": "Arşivden çıkar",
+    "archived_title": "Arşivlendi",
+    "row_actions_aria": "Sohbet eylemleri"
+  },
+  "header": {
+    "view_profile": "Ajan profilini görüntüle",
+    "rename": "Sohbeti yeniden adlandır",
+    "archive": "Sohbeti arşivle",
+    "unarchive": "Sohbeti arşivden çıkar",
+    "delete": "Sohbeti sil"
+  }
+}
