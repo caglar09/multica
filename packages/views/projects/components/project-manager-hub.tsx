@@ -1,4 +1,3 @@
-/* eslint-disable i18next/no-literal-string, no-restricted-syntax */
 "use client";
 
 import { useMemo, useState, useRef, useEffect, useCallback } from "react";
@@ -34,6 +33,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
+import { useT } from "../../i18n";
 
 export interface ProjectManagerChangeProposal {
   summary?: string;
@@ -100,10 +100,11 @@ export function ProjectManagerHub({
   isRejecting = false,
   onOpenRuleModal,
 }: ProjectManagerHubProps) {
+  const { t } = useT("projects");
   const sessionId = leaderChatData.session.id;
   const canChat = leaderChatData.can_chat;
   const leader = leaderChatData.leader;
-  const leaderName = leader.name || "Mika";
+  const leaderName = leader.name || "Product Manager";
 
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -163,12 +164,11 @@ export function ProjectManagerHub({
     return leaderChangesData?.items.find((c) => c.state === "approval_required");
   }, [leaderChangesData]);
 
-  // Team members list (using snapshot or fallback to Stitch design preview)
+  // Team members list (using snapshot or fallback to localized default roles)
   const teamMembers = useMemo(() => {
     if (snapshot.team?.members && snapshot.team.members.length > 0) {
       return snapshot.team.members;
     }
-    // High-fidelity fallback roles matching Stitch template
     return [
       {
         role: "PM",
@@ -176,11 +176,11 @@ export function ProjectManagerHub({
         agent_id: "pm-1",
         agent_name: `${leaderName} (Product Lead)`,
         capabilities: ["requirements", "planning"],
-        responsibilities: ["Kullanıcı isteklerini yönetir", "Planlama"],
+        responsibilities: [t(($) => $.hub.status_running)],
         reason: "Core lead",
         active: true,
         current_task_id: null,
-        current_task_title: "Kullanıcı isteklerini yönetiyor",
+        current_task_title: t(($) => $.hub.station_subtitle),
         current_task_status: "running",
         created_at: new Date().toISOString(),
       },
@@ -188,13 +188,13 @@ export function ProjectManagerHub({
         role: "FE",
         family: "frontend",
         agent_id: "fe-1",
-        agent_name: "Frontend Geliştirici",
+        agent_name: "Frontend Engineer",
         capabilities: ["react", "tailwind"],
-        responsibilities: ["Bileşen yapısı", "Grafik entegrasyonu"],
+        responsibilities: ["UI & Components"],
         reason: "UI Implementation",
         active: true,
         current_task_id: null,
-        current_task_title: "Bileşen yapısı & grafik entegrasyonu",
+        current_task_title: t(($) => $.hub.proposal_sample_frontend),
         current_task_status: "awaiting_approval",
         created_at: new Date().toISOString(),
       },
@@ -202,13 +202,13 @@ export function ProjectManagerHub({
         role: "QA",
         family: "qa",
         agent_id: "qa-1",
-        agent_name: "QA & Test Uzmanı",
+        agent_name: "QA Engineer",
         capabilities: ["playwright", "e2e"],
-        responsibilities: ["E2E senaryoları", "Doğrulama"],
+        responsibilities: ["E2E Verification"],
         reason: "Quality Assurance",
         active: true,
         current_task_id: null,
-        current_task_title: "E2E Playwright senaryoları",
+        current_task_title: t(($) => $.hub.proposal_sample_qa),
         current_task_status: "idle",
         created_at: new Date().toISOString(),
       },
@@ -216,65 +216,65 @@ export function ProjectManagerHub({
         role: "CR",
         family: "review",
         agent_id: "cr-1",
-        agent_name: "Kod İnceleyici",
+        agent_name: "Code Reviewer",
         capabilities: ["security", "linter"],
-        responsibilities: ["Statik analiz", "Güvenlik"],
+        responsibilities: ["Static Analysis"],
         reason: "Code Review",
         active: true,
         current_task_id: null,
-        current_task_title: "Statik analiz & güvenlik denetimi",
+        current_task_title: t(($) => $.hub.status_ready),
         current_task_status: "idle",
         created_at: new Date().toISOString(),
       },
     ] as AutonomousTeamMember[];
-  }, [snapshot.team?.members, leaderName]);
+  }, [snapshot.team?.members, leaderName, t]);
 
-  // Project decisions list (using snapshot or fallback to Stitch design decisions)
+  // Project decisions list (using snapshot or localized fallback decisions)
   const decisions = useMemo(() => {
     if (snapshot.decisions && snapshot.decisions.length > 0) {
       return snapshot.decisions;
     }
     return [
       {
-        id: "KARAR-02",
+        id: "DECISION-02",
         source_type: "architecture",
         source_id: "arch-2",
         source_revision: "1",
         planner_name: leaderName,
         planner_model: "autonomous",
         plan: {
-          intent: "VERİ ENTEGRASYONU",
-          summary: "5 günlük tahmin grafiği için ek kütüphane yerine hafif SVG eğrileri tercih edildi; bundle boyutu minimum tutulacak.",
+          intent: t(($) => $.hub.rule_api_label).replace(":", ""),
+          summary: t(($) => $.hub.rule_api_desc),
         },
-        created_at: "Bugün 14:05",
+        created_at: t(($) => $.hub.decision_today),
       },
       {
-        id: "KARAR-01",
+        id: "DECISION-01",
         source_type: "architecture",
         source_id: "arch-1",
         source_revision: "1",
         planner_name: leaderName,
         planner_model: "autonomous",
         plan: {
-          intent: "EKİP YAPISI",
-          summary: "Tek ekranlı SPA projesi olduğu için backend ajanına ihtiyaç duyulmadı, sadece Frontend + QA + Reviewer kadrosu kuruldu.",
+          intent: t(($) => $.hub.rule_design_label).replace(":", ""),
+          summary: t(($) => $.hub.rule_design_desc),
         },
-        created_at: "Bugün 13:58",
+        created_at: t(($) => $.hub.decision_today),
       },
     ] as unknown as AutonomousDecision[];
-  }, [snapshot.decisions, leaderName]);
+  }, [snapshot.decisions, leaderName, t]);
 
   // Starter prompts for new sessions
   const starterPrompts = [
-    "Sprint 1 başlangıç paketini ve iş listesini hazırla",
-    "Arayüz için varsayılan Dark Mode ve responsive kurallarını ekle",
-    "Open-Meteo API entegrasyonu ve QA senaryolarını doğrula",
+    t(($) => $.hub.starter_prompt_1),
+    t(($) => $.hub.starter_prompt_2),
+    t(($) => $.hub.starter_prompt_3),
   ];
 
   return (
     <div className="flex flex-col lg:flex-row h-full min-h-[640px] max-h-[calc(100vh-180px)] rounded-xl border border-border bg-card/60 backdrop-blur-sm shadow-sm overflow-hidden">
       {/* =========================================================================
-          LEFT COLUMN (55-60%): Mika Conversational Station (Chat & Command Hub)
+          LEFT COLUMN (55-60%): Conversational Station (Chat & Command Hub)
       ========================================================================= */}
       <section className="flex-1 flex flex-col min-w-0 border-b lg:border-b-0 lg:border-r border-border bg-background/50 relative">
         {/* Chat Subheader */}
@@ -289,19 +289,20 @@ export function ProjectManagerHub({
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold text-foreground truncate">
-                  {leaderName} (Product Manager Agent)
+                  {leaderName}
                 </span>
                 <span className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-mono font-medium bg-muted text-emerald-500 border border-emerald-500/20">
                   <span className="size-1.5 rounded-full bg-emerald-500" />
-                  Otonom İş İstasyonu
+                  {t(($) => $.hub.station_badge)}
                 </span>
               </div>
               <p className="text-[11px] text-muted-foreground truncate">
-                Fikrinizi projeye ve otonom iş paketlerine dönüştürür
+                {t(($) => $.hub.station_subtitle)}
               </p>
             </div>
           </div>
 
+          <div className="flex items-center gap-2 shrink-0">
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -316,8 +317,9 @@ export function ProjectManagerHub({
                   </Button>
                 }
               />
-              <TooltipContent side="bottom">Sohbeti Yenile</TooltipContent>
+              <TooltipContent side="bottom">{t(($) => $.hub.refresh_tooltip)}</TooltipContent>
             </Tooltip>
+          </div>
         </div>
 
         {/* Message Stream */}
@@ -338,16 +340,16 @@ export function ProjectManagerHub({
               </div>
               <div>
                 <h3 className="text-base font-semibold text-foreground">
-                  {leaderName} ile Çalışmaya Başlayın
+                  {t(($) => $.hub.welcome_title, { name: leaderName })}
                 </h3>
                 <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Projeniz için bir gereksinim iletin, mimari kural ekleyin veya ekibi kurup sprint sürecini başlatmasını isteyin.
+                  {t(($) => $.hub.welcome_description)}
                 </p>
               </div>
 
               <div className="w-full space-y-2 pt-2 text-left">
                 <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Örnek İstekler
+                  {t(($) => $.hub.starter_header)}
                 </p>
                 {starterPrompts.map((prompt, idx) => (
                   <button
@@ -373,7 +375,9 @@ export function ProjectManagerHub({
                 <div key={message.id} className="flex justify-end gap-3 items-start pl-10 md:pl-16">
                   <div className="flex flex-col items-end max-w-xl">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-medium text-foreground">Siz</span>
+                      <span className="text-xs font-medium text-foreground">
+                        {t(($) => $.hub.sender_you)}
+                      </span>
                       <span className="text-[11px] font-mono text-muted-foreground">
                         {formatMessageTime(message.created_at)}
                       </span>
@@ -399,7 +403,7 @@ export function ProjectManagerHub({
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-semibold text-foreground">{leaderName}</span>
                     <span className="px-1.5 py-0.2 rounded text-[10px] font-mono font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                      Plan Hazır
+                      {t(($) => $.hub.badge_plan_ready)}
                     </span>
                     <span className="text-[11px] font-mono text-muted-foreground">
                       {formatMessageTime(message.created_at)}
@@ -416,13 +420,13 @@ export function ProjectManagerHub({
                           <div className="flex items-center gap-2">
                             <Rocket className="size-4 text-primary" />
                             <span className="text-xs font-semibold text-foreground">
-                              {pendingChange.proposal?.summary || "Sprint 1 Başlangıç Paketi"}
+                              {pendingChange.proposal?.summary || t(($) => $.hub.proposal_default_title)}
                             </span>
                           </div>
                           <Badge variant="outline" className="text-[10px] font-mono text-primary border-primary/30 bg-primary/5">
                             {pendingChange.proposal?.operations?.length
-                              ? `${pendingChange.proposal.operations.length} Görev Tanımlandı`
-                              : "Onay Bekliyor"}
+                              ? t(($) => $.hub.proposal_tasks_count, { count: pendingChange.proposal.operations.length })
+                              : t(($) => $.hub.proposal_awaiting_approval)}
                           </Badge>
                         </div>
 
@@ -441,15 +445,15 @@ export function ProjectManagerHub({
                             <>
                               <div className="flex items-center gap-2">
                                 <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" />
-                                <span><strong>Frontend:</strong> React + Tailwind ile arama çubuğu ve 5 günlük tahmin grafiği</span>
+                                <span>{t(($) => $.hub.proposal_sample_frontend)}</span>
                               </div>
                               <div className="flex items-center gap-2">
                                 <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" />
-                                <span><strong>Veri Kaynağı:</strong> Open-Meteo API entegrasyonu (ücretsiz, key gerekmez)</span>
+                                <span>{t(($) => $.hub.proposal_sample_data)}</span>
                               </div>
                               <div className="flex items-center gap-2">
                                 <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" />
-                                <span><strong>QA:</strong> Playwright ile responsive görsel ve senaryo testleri</span>
+                                <span>{t(($) => $.hub.proposal_sample_qa)}</span>
                               </div>
                             </>
                           )}
@@ -466,7 +470,7 @@ export function ProjectManagerHub({
                               className="flex-1 text-xs font-semibold h-8 bg-primary hover:bg-primary/90 text-primary-foreground shadow-xs gap-1.5"
                             >
                               <Rocket className="size-3.5" />
-                              Ekibi ve Planı Onayla (Süreci Başlat)
+                              {t(($) => $.hub.approve_plan_button)}
                             </Button>
                             <Button
                               type="button"
@@ -476,13 +480,13 @@ export function ProjectManagerHub({
                               onClick={() => onRejectChange?.(pendingChange.id)}
                               className="text-xs h-8"
                             >
-                              Düzenle
+                              {t(($) => $.hub.edit_plan_button)}
                             </Button>
                           </div>
                         )}
 
                         <p className="text-[11px] text-muted-foreground italic">
-                          💡 Onayladığınızda ajanlar eş zamanlı olarak kodlama ve test sürecine başlayacaktır.
+                          {t(($) => $.hub.approval_note)}
                         </p>
                       </div>
                     )}
@@ -496,7 +500,7 @@ export function ProjectManagerHub({
           {pending?.task_id && (
             <div className="flex items-center gap-2.5 text-xs text-muted-foreground animate-pulse pl-11 py-1">
               <Loader2 className="size-3.5 animate-spin text-primary" />
-              <span>{leaderName} düşünüyor ve plan hazırlıyor…</span>
+              <span>{t(($) => $.hub.thinking_status, { name: leaderName })}</span>
             </div>
           )}
 
@@ -517,7 +521,7 @@ export function ProjectManagerHub({
                 }
               }}
               disabled={!canChat || sending}
-              placeholder={`${leaderName}'ya yeni bir kural söyleyin veya gereksinim ekleyin... (Örn: Şehir aramasında favorilere ekleme özelliği olsun)`}
+              placeholder={t(($) => $.hub.input_placeholder, { name: leaderName })}
               rows={2}
               className="w-full bg-transparent border-0 resize-none text-sm text-foreground placeholder:text-muted-foreground outline-none focus:ring-0 p-1 leading-relaxed disabled:cursor-not-allowed disabled:opacity-60"
             />
@@ -535,7 +539,7 @@ export function ProjectManagerHub({
                       </button>
                     }
                   />
-                  <TooltipContent side="top">Dosya veya Taslak Ekle</TooltipContent>
+                  <TooltipContent side="top">{t(($) => $.hub.tooltip_attach)}</TooltipContent>
                 </Tooltip>
 
                 <Tooltip>
@@ -550,17 +554,17 @@ export function ProjectManagerHub({
                       </button>
                     }
                   />
-                  <TooltipContent side="top">Kural Tanımla / Bellek</TooltipContent>
+                  <TooltipContent side="top">{t(($) => $.hub.tooltip_rules)}</TooltipContent>
                 </Tooltip>
 
                 <span className="text-[11px] font-mono text-muted-foreground ml-1 hidden sm:inline select-none">
-                  {leaderName} Context: v1.4
+                  {t(($) => $.hub.context_label, { name: leaderName })}
                 </span>
               </div>
 
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-mono text-muted-foreground hidden md:inline select-none">
-                  Enter ile gönder
+                  {t(($) => $.hub.send_enter_hint)}
                 </span>
                 <Button
                   type="button"
@@ -578,20 +582,22 @@ export function ProjectManagerHub({
       </section>
 
       {/* =========================================================================
-          RIGHT COLUMN (40-45%): Proje Durumu & Canlı Ajanlar (Context Hub)
+          RIGHT COLUMN (40-45%): Project Status & Live Agents (Context Hub)
       ========================================================================= */}
       <aside className="w-full lg:w-[420px] xl:w-[460px] flex flex-col bg-muted/15 overflow-y-auto p-4 md:p-5 space-y-4 shrink-0">
         {/* Panel Header */}
         <div className="flex items-center justify-between pb-2 border-b border-border">
           <div>
-            <h3 className="font-semibold text-sm text-foreground">Proje Durumu &amp; Canlı Ajanlar</h3>
+            <h3 className="font-semibold text-sm text-foreground">
+              {t(($) => $.hub.panel_title)}
+            </h3>
             <p className="text-xs text-muted-foreground">
-              {leaderName}&apos;nın organize ettiği canlı ekip ve karar defteri
+              {t(($) => $.hub.panel_subtitle, { name: leaderName })}
             </p>
           </div>
           <span className="px-2.5 py-1 rounded-full text-xs font-mono bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5 shrink-0">
             <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-            Senkronize
+            {t(($) => $.hub.badge_synchronized)}
           </span>
         </div>
 
@@ -601,11 +607,11 @@ export function ProjectManagerHub({
             <div className="flex items-center gap-2">
               <Users className="size-4 text-primary" />
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground font-mono">
-                Otonom Ekip Durumu
+                {t(($) => $.hub.section_team)}
               </h4>
             </div>
             <span className="text-xs text-muted-foreground font-mono">
-              {teamMembers.length} Rol Atandı
+              {t(($) => $.hub.team_roles_count, { count: teamMembers.length })}
             </span>
           </div>
 
@@ -637,7 +643,7 @@ export function ProjectManagerHub({
                         {member.agent_name}
                       </div>
                       <div className="text-[11px] text-muted-foreground truncate">
-                        {member.current_task_title || member.responsibilities?.[0] || "Göreve hazır"}
+                        {member.current_task_title || member.responsibilities?.[0] || t(($) => $.hub.status_ready)}
                       </div>
                     </div>
                   </div>
@@ -662,7 +668,11 @@ export function ProjectManagerHub({
                           : "bg-muted-foreground/60",
                       )}
                     />
-                    {isRunning ? "Çalışıyor" : isWaiting ? "Beklemede (Onay bekliyor)" : "Beklemede"}
+                    {isRunning
+                      ? t(($) => $.hub.status_running)
+                      : isWaiting
+                      ? t(($) => $.hub.status_awaiting_approval)
+                      : t(($) => $.hub.status_waiting)}
                   </span>
                 </div>
               );
@@ -676,7 +686,7 @@ export function ProjectManagerHub({
             <div className="flex items-center gap-2">
               <Brain className="size-4 text-sky-500" />
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground font-mono">
-                Proje Belleği (Brain)
+                {t(($) => $.hub.section_brain)}
               </h4>
             </div>
             <button
@@ -684,7 +694,7 @@ export function ProjectManagerHub({
               onClick={() => onOpenRuleModal?.()}
               className="text-[11px] text-primary hover:underline cursor-pointer font-mono"
             >
-              + Kural Ekle
+              {t(($) => $.hub.add_rule)}
             </button>
           </div>
 
@@ -692,27 +702,33 @@ export function ProjectManagerHub({
             <li className="flex items-start gap-2.5 p-2 rounded-lg bg-background/80 border border-border/60">
               <Moon className="size-4 text-sky-500 shrink-0 mt-0.5" />
               <div>
-                <span className="font-medium text-foreground">Tasarım Standardı:</span>
+                <span className="font-medium text-foreground">
+                  {t(($) => $.hub.rule_design_label)}
+                </span>
                 <p className="text-muted-foreground text-[11px] mt-0.5">
-                  Kullanıcı tercihi gereği arayüz varsayılan olarak &apos;Dark Mode&apos; çalışacak.
+                  {t(($) => $.hub.rule_design_desc)}
                 </p>
               </div>
             </li>
             <li className="flex items-start gap-2.5 p-2 rounded-lg bg-background/80 border border-border/60">
               <CloudLightning className="size-4 text-emerald-500 shrink-0 mt-0.5" />
               <div>
-                <span className="font-medium text-foreground">Hava Durumu API:</span>
+                <span className="font-medium text-foreground">
+                  {t(($) => $.hub.rule_api_label)}
+                </span>
                 <p className="text-muted-foreground text-[11px] mt-0.5">
-                  Open-Meteo API kullanılacak. Rate limit ve API anahtarı gerektirmez.
+                  {t(($) => $.hub.rule_api_desc)}
                 </p>
               </div>
             </li>
             <li className="flex items-start gap-2.5 p-2 rounded-lg bg-background/80 border border-border/60">
               <Smartphone className="size-4 text-primary shrink-0 mt-0.5" />
               <div>
-                <span className="font-medium text-foreground">Duyarlılık (Responsive):</span>
+                <span className="font-medium text-foreground">
+                  {t(($) => $.hub.rule_responsive_label)}
+                </span>
                 <p className="text-muted-foreground text-[11px] mt-0.5">
-                  Mobil ve masaüstü görünümlerde grafik yatay kaydırılabilir kalacak.
+                  {t(($) => $.hub.rule_responsive_desc)}
                 </p>
               </div>
             </li>
@@ -725,11 +741,11 @@ export function ProjectManagerHub({
             <div className="flex items-center gap-2">
               <Gavel className="size-4 text-amber-500" />
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground font-mono">
-                {leaderName}&apos;nın Son Kararları
+                {t(($) => $.hub.section_decisions, { name: leaderName })}
               </h4>
             </div>
             <span className="text-[11px] text-muted-foreground font-mono">
-              {decisions.length} Karar Kayıtlı
+              {t(($) => $.hub.decisions_count, { count: decisions.length })}
             </span>
           </div>
 
@@ -747,14 +763,14 @@ export function ProjectManagerHub({
                     "font-mono font-semibold",
                     dIdx % 2 === 0 ? "text-emerald-600 dark:text-emerald-400" : "text-primary"
                   )}>
-                    {decision.id} · {decision.plan?.intent || "KARAR"}
+                    {decision.id} · {decision.plan?.intent || t(($) => $.hub.decision_fallback_intent)}
                   </span>
                   <span className="text-muted-foreground text-[10px]">
-                    {decision.created_at || "Bugün"}
+                    {decision.created_at || t(($) => $.hub.decision_today)}
                   </span>
                 </div>
                 <p className="text-xs text-foreground leading-snug">
-                  &ldquo;{decision.plan?.summary || "Karar detayı kaydedildi."}&rdquo;
+                  &ldquo;{decision.plan?.summary || t(($) => $.hub.decision_fallback_summary)}&rdquo;
                 </p>
               </div>
             ))}
