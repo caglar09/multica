@@ -23,6 +23,7 @@ vi.mock("@multica/ui/lib/clipboard", () => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({
+  queryOptions: (options: unknown) => options,
   useQuery: (options: { queryKey?: readonly unknown[] }) => {
     switch (options.queryKey?.[0]) {
       case "project-detail":
@@ -123,8 +124,12 @@ vi.mock("@multica/ui/components/ui/resizable", () => ({
 }));
 
 vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
-  DropdownMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  DropdownMenuTrigger: ({ render }: { render: React.ReactNode }) => <>{render}</>,
+  DropdownMenu: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
+  DropdownMenuTrigger: ({ render }: { render: React.ReactNode }) => (
+    <>{render}</>
+  ),
   DropdownMenuContent: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
@@ -236,7 +241,9 @@ vi.mock("../../issues/surface/issue-surface", () => ({
 }));
 
 vi.mock("./autonomous-control-center", () => ({
-  AutonomousControlCenter: () => <div data-testid="autonomous-control-center" />,
+  AutonomousControlCenter: () => (
+    <div data-testid="autonomous-control-center" />
+  ),
 }));
 
 vi.mock("../../layout/breadcrumb-header", () => ({
@@ -314,7 +321,9 @@ describe("ProjectDetail content tabs", () => {
     renderProjectDetail("tab=autonomous");
 
     expect(screen.getByTestId("autonomous-control-center")).toBeInTheDocument();
-    expect(screen.queryByTestId("project-issue-surface")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("project-issue-surface"),
+    ).not.toBeInTheDocument();
   });
 
   it("stores the Autonomous tab in the URL while preserving existing location state", async () => {
@@ -347,7 +356,13 @@ describe("ProjectDetail issue surface layout", () => {
     const surface = screen.getByTestId("project-issue-surface");
     const layout = surface.parentElement;
 
-    expect(layout).toHaveClass("flex", "h-full", "min-h-0", "flex-1", "flex-col");
+    expect(layout).toHaveClass(
+      "flex",
+      "h-full",
+      "min-h-0",
+      "flex-1",
+      "flex-col",
+    );
   });
 });
 
@@ -402,5 +417,16 @@ describe("ProjectDetail project deletion", () => {
     expect(
       screen.queryByRole("button", { name: "Delete project" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ProjectDetail inspector sidebar", () => {
+  it("renders the inspector header and structural card sections", () => {
+    renderProjectDetail();
+
+    expect(screen.getByText("Inspector")).toBeInTheDocument();
+    expect(screen.getByText(/Attached squad/i)).toBeInTheDocument();
+    expect(screen.getByText("Properties")).toBeInTheDocument();
+    expect(screen.getByText("Progress")).toBeInTheDocument();
   });
 });
