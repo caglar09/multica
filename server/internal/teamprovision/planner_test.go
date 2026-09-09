@@ -7,10 +7,22 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+func TestChooseTeamLeaderPrefersImplementationRoleOverProjectManager(t *testing.T) {
+	plan := Plan{ImplementationRole: RoleBackendEngineer}
+	members := map[string]pgtype.UUID{
+		RoleProductManager:  {Bytes: [16]byte{1}, Valid: true},
+		RoleBackendEngineer: {Bytes: [16]byte{2}, Valid: true},
+	}
+
+	if got, ok := chooseTeamLeader(plan, members); !ok || got != (pgtype.UUID{Bytes: [16]byte{2}, Valid: true}) {
+		t.Fatalf("chooseTeamLeader() = %v, %v; want backend engineer", got, ok)
+	}
+}
+
 func TestHeuristicPlannerMobileBackendProject(t *testing.T) {
 	planner := NewHeuristicPlanner()
 	project := db.Project{
-		Title: "React Native baby tracker",
+		Title:       "React Native baby tracker",
 		Description: pgtype.Text{String: "Mobile app with backend API and Postgres", Valid: true},
 	}
 	plan := planner.PlanProject(project)
@@ -30,7 +42,7 @@ func TestHeuristicPlannerMobileBackendProject(t *testing.T) {
 func TestHeuristicPlannerRoutesIssueToSpecialist(t *testing.T) {
 	planner := NewHeuristicPlanner()
 	plan := planner.PlanProject(db.Project{
-		Title: "SaaS dashboard",
+		Title:       "SaaS dashboard",
 		Description: pgtype.Text{String: "React frontend with backend API and database", Valid: true},
 	})
 
@@ -79,7 +91,7 @@ func assertRole(t *testing.T, plan Plan, role string) {
 
 func TestLooksLikeSoftwareProject(t *testing.T) {
 	if !LooksLikeSoftwareProject(db.Project{
-		Title: "Bebek takip uygulaması MVP",
+		Title:       "Bebek takip uygulaması MVP",
 		Description: pgtype.Text{String: "React Native mobile application with API", Valid: true},
 	}) {
 		t.Fatal("software-like project was not classified for eager bootstrap")

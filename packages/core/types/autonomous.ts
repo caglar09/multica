@@ -323,3 +323,23 @@ export interface AutonomousProjectSnapshot {
   budget: AutonomousBudget | null;
   brain: AutonomousBrainConfig | null;
 }
+
+export interface ProjectLeaderChat {
+  session: { id: string; agent_id: string; project_id: string; status: string };
+  leader: { id: string; name: string; status: string; runtime_id: string; model: string };
+  can_chat: boolean;
+  can_approve: boolean;
+}
+
+export interface ProjectLeaderChangeRequest {
+  id: string;
+  state: string;
+  request_text: string;
+  proposal: Record<string, unknown> | null;
+  impact: Record<string, unknown> | null;
+  base_plan_id: string;
+  applied_plan_id: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
+}

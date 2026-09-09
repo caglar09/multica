@@ -682,8 +682,8 @@ var antigravityBlockedArgs = map[string]blockedArgMode{
 	"--conversation":                 blockedWithValue, // managed via ExecOptions.ResumeSessionID
 	"--model":                        blockedWithValue, // managed via ExecOptions.Model / agent.model
 	"--print-timeout":                blockedWithValue,
-	"--output-format":                blockedWithValue, // daemon owns the NDJSON transport
-	"--input-format":                 blockedWithValue, // -p one-shot mode must stay text-input
+	"--output-format":                blockedWithValue,  // daemon owns the NDJSON transport
+	"--input-format":                 blockedWithValue,  // -p one-shot mode must stay text-input
 	"--dangerously-skip-permissions": blockedStandalone, // always-on in daemon mode
 	"--log-file":                     blockedWithValue,  // daemon needs it for session capture
 	"--settings":                     blockedWithValue,  // Claude Code-only flag; agy rejects it
@@ -715,6 +715,9 @@ func buildAntigravityArgs(prompt, logPath string, timeout time.Duration, opts Ex
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 	}
+	if opts.ReadOnly {
+		args = append(args, "--mode", "plan")
+	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
 	}
@@ -733,9 +736,21 @@ func buildAntigravityArgs(prompt, logPath string, timeout time.Duration, opts Ex
 	if opts.Cwd != "" {
 		args = append(args, "--add-dir", filepath.Clean(opts.Cwd))
 	}
-	args = append(args, filterCustomArgs(opts.ExtraArgs, antigravityBlockedArgs, logger)...)
-	args = append(args, filterCustomArgs(opts.CustomArgs, antigravityBlockedArgs, logger)...)
+	args = append(args, filterCustomArgs(opts.ExtraArgs, antigravityArgsFilter(opts), logger)...)
+	args = append(args, filterCustomArgs(opts.CustomArgs, antigravityArgsFilter(opts), logger)...)
 	return args
+}
+
+func antigravityArgsFilter(opts ExecOptions) map[string]blockedArgMode {
+	if !opts.ReadOnly {
+		return antigravityBlockedArgs
+	}
+	filtered := make(map[string]blockedArgMode, len(antigravityBlockedArgs)+1)
+	for key, mode := range antigravityBlockedArgs {
+		filtered[key] = mode
+	}
+	filtered["--mode"] = blockedWithValue
+	return filtered
 }
 
 // antigravityModelError returns an actionable error when `model` is non-empty

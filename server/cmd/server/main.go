@@ -626,6 +626,9 @@ func main() {
 	registerAutopilotListeners(bus, autopilotSvc)
 	if autonomousRuntime := startAutonomousWorkflow(sweepCtx, bus, pool, taskSvc); autonomousRuntime != nil {
 		h.AutonomousWorkflowRestart = autonomousRuntime.RestartProjectWorkflow
+		h.ProjectLeaderSession = autonomousRuntime.EnsureProjectLeaderSession
+		h.ProjectLeaderCompletion = autonomousRuntime.ProcessProjectLeaderCompletion
+		h.ProjectLeaderApprove = autonomousRuntime.ApproveProjectLeaderChange
 	}
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP

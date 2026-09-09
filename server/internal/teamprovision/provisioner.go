@@ -326,7 +326,10 @@ func normalizeLegacyPlan(plan Plan) Plan {
 }
 
 func chooseTeamLeader(plan Plan, members map[string]pgtype.UUID) (pgtype.UUID, bool) {
-	for _, preferredFamily := range []string{"product", "architecture", "fullstack", "backend", "frontend", "mobile"} {
+	if id, ok := members[plan.ImplementationRole]; ok && id.Valid {
+		return id, true
+	}
+	for _, preferredFamily := range []string{"fullstack", "backend", "frontend", "mobile", "architecture", "product"} {
 		for _, role := range plan.Roles {
 			if role.Family != preferredFamily {
 				continue

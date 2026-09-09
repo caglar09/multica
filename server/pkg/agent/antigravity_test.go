@@ -74,6 +74,24 @@ func TestBuildAntigravityArgsModel(t *testing.T) {
 	}
 }
 
+func TestBuildAntigravityArgsReadOnlyCannotBeOverridden(t *testing.T) {
+	args := buildAntigravityArgs(
+		"status",
+		"/tmp/agy.log",
+		20*time.Minute,
+		ExecOptions{ReadOnly: true, CustomArgs: []string{"--mode", "accept-edits"}},
+		quietAntigravityLogger(),
+	)
+	for i := range args {
+		if args[i] == "--mode" && i+1 < len(args) && args[i+1] != "plan" {
+			t.Fatalf("read-only mode was overridden: %v", args)
+		}
+	}
+	if !slices.Contains(args, "plan") {
+		t.Fatalf("read-only Antigravity task must use plan mode: %v", args)
+	}
+}
+
 func TestBuildAntigravityArgsNoCapUsesLargePrintTimeout(t *testing.T) {
 	t.Parallel()
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -1073,9 +1074,14 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		FROM agent_task_queue t
 		JOIN chat_session s ON s.id = t.chat_session_id
 		JOIN agent a ON a.id = t.agent_id
+		JOIN autonomous_project_team_member tm
+		  ON tm.agent_id = a.id AND tm.role = 'product_manager' AND tm.active = TRUE
+		JOIN autonomous_project_team team
+		  ON team.id = tm.team_id AND team.workspace_id = s.workspace_id
+		 AND team.project_id = s.project_id AND team.status = 'active'
 		WHERE s.workspace_id = $1
 		  AND s.project_id = $2
-		  AND a.system_key = 'autonomous_project_planner'
+		  AND s.session_kind = 'autonomous_project_planning'
 		ORDER BY t.created_at DESC
 		LIMIT 1
 	`, workspaceID, projectID).Scan(
@@ -2342,4 +2348,162 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "decision": req.Decision})
+}
+
+type projectLeaderChatResponse struct {
+	Session    db.ChatSession `json:"session"`
+	Leader     map[string]any `json:"leader"`
+	CanChat    bool           `json:"can_chat"`
+	CanApprove bool           `json:"can_approve"`
+}
+
+func (h *Handler) GetProjectLeaderChat(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	creatorID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{UserID: creatorID, WorkspaceID: workspaceID}); err != nil {
+		writeError(w, http.StatusForbidden, "workspace member required")
+		return
+	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if h.ProjectLeaderSession == nil {
+		writeError(w, http.StatusServiceUnavailable, "project leader runtime is unavailable")
+		return
+	}
+	session, leader, err := h.ProjectLeaderSession(r.Context(), workspaceID, projectID, creatorID)
+	if err != nil {
+		slog.Warn("ensure project leader chat failed", "project_id", uuidToString(projectID), "error", err)
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	canApprove := false
+	if member, memberErr := h.Queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{UserID: creatorID, WorkspaceID: workspaceID}); memberErr == nil {
+		canApprove = member.Role == "owner" || member.Role == "admin"
+	}
+	writeJSON(w, http.StatusOK, projectLeaderChatResponse{Session: session, Leader: map[string]any{"id": uuidToString(leader.ID), "name": leader.Name, "status": leader.Status, "runtime_id": uuidToString(leader.RuntimeID), "model": leader.Model.String}, CanChat: true, CanApprove: canApprove})
+}
+
+func (h *Handler) ListProjectLeaderChanges(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	limit := 20
+	rows, err := h.DB.Query(r.Context(), `SELECT id,state,request_text,proposal,impact,base_plan_id,applied_plan_id,error,created_at,updated_at FROM autonomous_project_change_request WHERE workspace_id=$1 AND project_id=$2 AND source='project_director' ORDER BY created_at DESC LIMIT $3`, workspaceID, projectID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load project leader changes")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id pgtype.UUID
+		var state, requestText string
+		var proposal, impact []byte
+		var basePlan, appliedPlan pgtype.UUID
+		var errorText pgtype.Text
+		var created, updated pgtype.Timestamptz
+		if err := rows.Scan(&id, &state, &requestText, &proposal, &impact, &basePlan, &appliedPlan, &errorText, &created, &updated); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to decode project leader change")
+			return
+		}
+		items = append(items, map[string]any{"id": uuidToString(id), "state": state, "request_text": requestText, "proposal": json.RawMessage(proposal), "impact": json.RawMessage(impact), "base_plan_id": uuidToString(basePlan), "applied_plan_id": uuidToString(appliedPlan), "error": errorText.String, "created_at": created.Time.UTC().Format(time.RFC3339Nano), "updated_at": updated.Time.UTC().Format(time.RFC3339Nano)})
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list project leader changes")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *Handler) ApproveProjectLeaderChange(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	changeID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "changeRequestId"), "change request id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
+		return
+	}
+	if h.ProjectLeaderApprove == nil {
+		writeError(w, http.StatusServiceUnavailable, "project leader runtime is unavailable")
+		return
+	}
+	var req struct {
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid approval request")
+			return
+		}
+	}
+	if err := h.ProjectLeaderApprove(r.Context(), workspaceID, projectID, changeID, req.IdempotencyKey); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(strings.ToLower(err.Error()), "stale") || strings.Contains(strings.ToLower(err.Error()), "cannot") {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"change_request_id": uuidToString(changeID), "queued": true})
+}
+
+func (h *Handler) RejectProjectLeaderChange(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	changeID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "changeRequestId"), "change request id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
+		return
+	}
+	tag, err := h.DB.Exec(r.Context(), `UPDATE autonomous_project_change_request SET state='rejected',error='rejected by project administrator',updated_at=now() WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND source='project_director' AND state='approval_required'`, changeID, workspaceID, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reject project leader change")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusConflict, "change request is not awaiting approval")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rejected": true})
 }

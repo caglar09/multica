@@ -97,6 +97,8 @@ import type {
   CancelTaskResponse,
   Project,
   AutonomousProjectSnapshot,
+  ProjectLeaderChat,
+  ProjectLeaderChangeRequest,
   ProjectReportSnapshot,
   DiagnosticLogsResponse,
   DiagnosticLogQuery,
@@ -3364,14 +3366,17 @@ export class ApiClient {
     sessionId: string,
     content: string,
     attachmentIds?: string[],
+    clientMessageId?: string,
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
+      client_message_id?: string;
     } = { content };
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }
+    if (clientMessageId) body.client_message_id = clientMessageId;
     const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/messages`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -3586,6 +3591,25 @@ export class ApiClient {
 
   async getProjectAutonomous(id: string): Promise<AutonomousProjectSnapshot> {
     return this.fetch(`/api/projects/${id}/autonomous`);
+  }
+
+  async getProjectLeaderChat(id: string): Promise<ProjectLeaderChat> {
+    return this.fetch(`/api/projects/${id}/autonomous/leader-chat`);
+  }
+
+  async listProjectLeaderChanges(id: string): Promise<{ items: ProjectLeaderChangeRequest[] }> {
+    return this.fetch(`/api/projects/${id}/autonomous/change-requests`);
+  }
+
+  async approveProjectLeaderChange(id: string, changeRequestId: string, idempotencyKey?: string): Promise<{ queued: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/change-requests/${changeRequestId}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ idempotency_key: idempotencyKey }),
+    });
+  }
+
+  async rejectProjectLeaderChange(id: string, changeRequestId: string): Promise<{ rejected: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/change-requests/${changeRequestId}/reject`, { method: "POST" });
   }
 
   async getProjectReport(id: string): Promise<ProjectReportSnapshot> {

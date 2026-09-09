@@ -569,8 +569,9 @@ export function useChatController(opts?: { isActive?: boolean }) {
       // reads as "posted but the box is still full", and a rejected one keeps
       // the draft for retry (ChatInput never cleared it).
       let result;
+      const clientMessageId = crypto.randomUUID();
       try {
-        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds);
+        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds, clientMessageId);
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
         // Invoke permission can be revoked mid-session; the send is refused with

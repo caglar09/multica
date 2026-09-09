@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
@@ -18,9 +18,11 @@ import {
   LoaderCircle,
   Users,
   Workflow,
+  MessageCircle,
+  Send,
 } from "lucide-react";
 import { toast } from "sonner";
-import { clientErrorMessage, errorCode } from "@multica/core/api";
+import { api, clientErrorMessage, errorCode } from "@multica/core/api";
 
 import type {
   AutonomousActivityItem,
@@ -31,6 +33,7 @@ import type {
   UpdateAutonomousBrainConfig,
   AutonomousTeamMember,
   AutonomousWorkflowRun,
+  ChatMessage,
 } from "@multica/core/types";
 import {
   autonomousProjectOptions,
@@ -43,6 +46,10 @@ import {
   useRetryAutonomousAction,
   useUpdateAutonomousBrain,
   useResolveAutonomousEscalation,
+  projectLeaderChatOptions,
+  projectLeaderChangesOptions,
+  useApproveProjectLeaderChange,
+  useRejectProjectLeaderChange,
 } from "@multica/core/projects";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { runtimeModelsOptions } from "@multica/core/runtimes";
@@ -66,6 +73,7 @@ import {
 } from "@multica/ui/components/ui/tabs";
 import { useNavigation } from "../../navigation";
 import { CreateSkillDialog } from "../../skills/components/create-skill-dialog";
+import { chatKeys, chatMessagesPageOptions, pendingChatTaskOptions } from "@multica/core/chat/queries";
 
 function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -123,6 +131,85 @@ function statusDotClass(status: string): string {
     default:
       return "bg-muted-foreground/60";
   }
+}
+
+function ProjectManagerChatPanel({
+  sessionId,
+  canChat,
+}: {
+  sessionId: string;
+  canChat: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const { data: pages, isLoading } = useInfiniteQuery(chatMessagesPageOptions(sessionId));
+  const { data: pending } = useQuery(pendingChatTaskOptions(sessionId));
+  const messages = [...(pages?.pages ?? [])].reverse().flatMap((page) => page.messages) as ChatMessage[];
+
+  async function sendMessage() {
+    const content = draft.trim();
+    if (!content || sending || !canChat) return;
+    setSending(true);
+    try {
+      await api.sendChatMessage(sessionId, content, undefined, crypto.randomUUID());
+      setDraft("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) }),
+        queryClient.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) }),
+      ]);
+    } catch (error) {
+      toast.error(clientErrorMessage(error));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="max-h-96 min-h-32 space-y-2 overflow-y-auto rounded-md border p-3">
+        {isLoading ? <Skeleton className="h-12 w-full" /> : null}
+        {!isLoading && messages.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Project Manager hazır. Projenizle ilgili bir hedef, bug veya değişiklik yazabilirsiniz.
+          </p>
+        ) : null}
+        {messages.map((message) => (
+          <div
+            key={message.id}
+            className={cn(
+              "max-w-[90%] rounded-md px-3 py-2 text-sm whitespace-pre-wrap",
+              message.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-muted",
+            )}
+          >
+            {message.content}
+          </div>
+        ))}
+      </div>
+      {pending?.task_id ? (
+        <p className="text-xs text-muted-foreground">Project Manager düşünüyor…</p>
+      ) : null}
+      <div className="flex gap-2">
+        <textarea
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void sendMessage();
+            }
+          }}
+          disabled={!canChat || sending}
+          placeholder="Project Manager'a yazın…"
+          rows={2}
+          className="min-h-10 flex-1 resize-y rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+        />
+        <Button type="button" onClick={() => void sendMessage()} disabled={!draft.trim() || !canChat || sending}>
+          <Send className="mr-2 size-4" /> Gönder
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function isRunningActivity(item: AutonomousActivityItem): boolean {
@@ -1319,6 +1406,16 @@ export function AutonomousControlCenter({
   const rerunIssue = useRerunAutonomousIssue();
   const resolveEscalation = useResolveAutonomousEscalation();
   const updateBrain = useUpdateAutonomousBrain();
+  const leaderChat = useQuery({
+    ...projectLeaderChatOptions(wsId, projectId),
+    enabled: Boolean(data?.enabled),
+  });
+  const leaderChanges = useQuery({
+    ...projectLeaderChangesOptions(wsId, projectId),
+    enabled: Boolean(data?.enabled),
+  });
+  const approveLeaderChange = useApproveProjectLeaderChange();
+  const rejectLeaderChange = useRejectProjectLeaderChange();
   const [createSkillOpen, setCreateSkillOpen] = useState(false);
 
   const replanPending = data ? isReplanPending(data) : false;
@@ -1638,7 +1735,105 @@ export function AutonomousControlCenter({
             <TabsTrigger value="decisions">
               <Brain /> Decisions
             </TabsTrigger>
+            <TabsTrigger value="leader">
+              <MessageCircle /> Project Manager
+            </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="leader" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Project Manager</CardTitle>
+                <CardDescription>
+                  Projenin müşteriye dönük yöneticisiyle konuşun. Gereksinimleri netleştirir,
+                  plan ve issue değişikliklerini önerir; mutation işlemleri approval gerektirir.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {leaderChat.isLoading ? <Skeleton className="h-10 w-full" /> : null}
+                {leaderChat.isError ? (
+                  <p className="text-sm text-muted-foreground">
+                    Project Manager team approval sonrasında kullanılabilir. Runtime hazır
+                    değilse workflow hata vermeden bekleme durumunda kalır.
+                  </p>
+                ) : null}
+                {leaderChat.data ? (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
+                      <div>
+                        <p className="font-medium">{leaderChat.data.leader.name}</p>
+                        <p className="text-sm text-muted-foreground">
+                          Runtime {leaderChat.data.leader.status} · ortak proje konuşması
+                        </p>
+                      </div>
+                    </div>
+                    <ProjectManagerChatPanel
+                      sessionId={leaderChat.data.session.id}
+                      canChat={leaderChat.data.can_chat === true}
+                    />
+                  </>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Proposed project changes</CardTitle>
+                <CardDescription>
+                  Active and recent Project Manager proposals. Running and completed work is
+                  protected by the backend mutation boundary.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {leaderChanges.isLoading ? <Skeleton className="h-16 w-full" /> : null}
+                {(leaderChanges.data?.items ?? []).map((change) => {
+                  const proposal = change.proposal as { summary?: string; operations?: unknown[] } | null;
+                  const awaiting = change.state === "approval_required";
+                  return (
+                    <div key={change.id} className="rounded-md border p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-medium">{proposal?.summary ?? change.request_text}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {change.state} · {proposal?.operations?.length ?? 0} operations
+                          </p>
+                        </div>
+                        {awaiting && canControl ? (
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              disabled={approveLeaderChange.isPending || rejectLeaderChange.isPending}
+                              onClick={() =>
+                                approveLeaderChange.mutate({ projectId, changeRequestId: change.id })
+                              }
+                            >
+                              Approve
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={approveLeaderChange.isPending || rejectLeaderChange.isPending}
+                              onClick={() =>
+                                rejectLeaderChange.mutate({ projectId, changeRequestId: change.id })
+                              }
+                            >
+                              Reject
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                      {change.error ? (
+                        <p className="mt-2 text-sm text-destructive">{change.error}</p>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {!leaderChanges.isLoading && (leaderChanges.data?.items.length ?? 0) === 0 ? (
+                  <p className="text-sm text-muted-foreground">No Project Manager proposals yet.</p>
+                ) : null}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           <TabsContent value="overview" className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

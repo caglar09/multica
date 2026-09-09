@@ -743,6 +743,8 @@ type TaskAgentData struct {
 	// (issue #3260). Other providers ignore the payload entirely. Sent
 	// raw so the daemon can evolve its schema without a server roundtrip.
 	RuntimeConfig json.RawMessage `json:"runtime_config,omitempty"`
+	// ReadOnly is a server-enforced policy for reasoning-only Project Manager tasks.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // taskToResponse maps a queue row to its wire shape. workspaceID is threaded

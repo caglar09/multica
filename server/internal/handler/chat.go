@@ -266,6 +266,20 @@ func (h *Handler) loadChatSessionForUser(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusNotFound, "chat session not found")
 		return db.ChatSession{}, false
 	}
+	if leader, err := h.isProjectLeaderChatSession(r.Context(), session.ID); err == nil && leader {
+		memberID, parseErr := util.ParseUUID(userID)
+		if parseErr != nil {
+			writeError(w, http.StatusForbidden, "workspace member required")
+			return db.ChatSession{}, false
+		}
+		if _, memberErr := h.Queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
+			UserID: memberID, WorkspaceID: workspaceUUID,
+		}); memberErr != nil {
+			writeError(w, http.StatusForbidden, "workspace member required")
+			return db.ChatSession{}, false
+		}
+		return session, true
+	}
 	if uuidToString(session.CreatorID) != userID {
 		writeError(w, http.StatusForbidden, "not your chat session")
 		return db.ChatSession{}, false
@@ -282,6 +296,11 @@ func (h *Handler) gateChatSessionForUser(w http.ResponseWriter, r *http.Request,
 	session, ok := h.loadChatSessionForUser(w, r, userID, workspaceID, sessionID)
 	if !ok {
 		return db.ChatSession{}, false
+	}
+	if leader, err := h.isProjectLeaderChatSession(r.Context(), session.ID); err == nil && leader {
+		// Project Manager sessions are shared by project members. The membership
+		// check is performed by loadChatSessionForUser above.
+		return session, true
 	}
 	agent, err := h.Queries.GetAgent(r.Context(), session.AgentID)
 	if err != nil {
@@ -802,8 +821,9 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type SendChatMessageRequest struct {
-	Content       string   `json:"content"`
-	AttachmentIDs []string `json:"attachment_ids"`
+	Content         string   `json:"content"`
+	AttachmentIDs   []string `json:"attachment_ids"`
+	ClientMessageID string   `json:"client_message_id,omitempty"`
 }
 
 type SendChatMessageResponse struct {
@@ -846,6 +866,11 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "content is required")
 		return
 	}
+	req.ClientMessageID = strings.TrimSpace(req.ClientMessageID)
+	if len(req.ClientMessageID) > 200 {
+		writeError(w, http.StatusBadRequest, "client_message_id is too long")
+		return
+	}
 
 	// Pre-validate attachment ids early so invalid input returns 400 before
 	// any state mutation. The actual link runs after CreateChatMessage so we
@@ -871,6 +896,26 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if session.Status != "active" {
 		writeError(w, http.StatusBadRequest, "chat session is archived")
 		return
+	}
+	leaderSession, err := h.isProjectLeaderChatSession(r.Context(), session.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to identify chat session")
+		return
+	}
+	if !leaderSession {
+		// The idempotency key is intentionally scoped to Project Leader chat;
+		// ordinary chat keeps its historical semantics.
+		req.ClientMessageID = ""
+	}
+	var sent *service.DirectChatSendResult
+	if req.ClientMessageID != "" {
+		if response, found, err := h.loadIdempotentLeaderSend(r.Context(), session.ID, req.ClientMessageID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to check duplicate chat message")
+			return
+		} else if found {
+			writeJSON(w, http.StatusOK, response)
+			return
+		}
 	}
 
 	// Preflight the agent's enqueue preconditions BEFORE persisting the user
@@ -906,7 +951,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// message / attachments / task. Blocked returns a structured, enumeration-safe
 	// reason so the composer can explain it without leaking private-agent details.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
+	if !leaderSession && !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}
@@ -942,8 +987,18 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// creator-only), so they are the task initiator — surfaced to the agent
 	// under `## Task Initiator`. actorType/actorID were resolved above for the
 	// invoke gate.
-	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
+	if req.ClientMessageID != "" {
+		sent, err = h.TaskService.SendDirectChatMessageWithClientMessageID(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), req.ClientMessageID)
+	} else {
+		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
+	}
 	if err != nil {
+		if req.ClientMessageID != "" {
+			if response, found, lookupErr := h.loadIdempotentLeaderSend(r.Context(), session.ID, req.ClientMessageID); lookupErr == nil && found {
+				writeJSON(w, http.StatusOK, response)
+				return
+			}
+		}
 		switch {
 		case errors.Is(err, service.ErrChatSessionArchived):
 			writeError(w, http.StatusConflict, "chat session is archived")
@@ -1017,6 +1072,37 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     timestampToString(task.CreatedAt),
 		AttachmentIDs: boundAttachmentIDs,
 	})
+}
+
+func (h *Handler) isProjectLeaderChatSession(ctx context.Context, sessionID pgtype.UUID) (bool, error) {
+	var kind string
+	err := h.DB.QueryRow(ctx, `SELECT session_kind FROM chat_session WHERE id=$1`, sessionID).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return kind == "autonomous_project_leader", err
+}
+
+func (h *Handler) loadIdempotentLeaderSend(ctx context.Context, sessionID pgtype.UUID, clientMessageID string) (SendChatMessageResponse, bool, error) {
+	var messageID, taskID pgtype.UUID
+	var taskCreated, messageCreated pgtype.Timestamptz
+	err := h.DB.QueryRow(ctx, `
+		SELECT m.id, m.task_id, m.created_at, COALESCE(t.created_at, m.created_at)
+		FROM chat_message m
+		JOIN chat_session s ON s.id=m.chat_session_id
+		LEFT JOIN agent_task_queue t ON t.id=m.task_id
+		WHERE m.chat_session_id=$1 AND m.client_message_id=$2
+	`, sessionID, clientMessageID).Scan(&messageID, &taskID, &messageCreated, &taskCreated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SendChatMessageResponse{}, false, nil
+	}
+	if err != nil {
+		return SendChatMessageResponse{}, false, err
+	}
+	return SendChatMessageResponse{
+		MessageID: uuidToString(messageID), TaskID: uuidToString(taskID),
+		SupportsQueue: true, Queued: true, CreatedAt: timestampToString(taskCreated),
+	}, true, nil
 }
 
 func shouldGenerateFirstMessageTitle(hadUserMessage bool, currentTitle, initializedTitle string, channelBacked, channelSourceKnown bool) bool {
@@ -1120,13 +1206,18 @@ func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusConflict, "chat agent is archived")
 		return
 	}
+	leaderSession, err := h.isProjectLeaderChatSession(r.Context(), session.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to identify chat session")
+		return
+	}
 	// The refresh no longer runs the agent, but it is still a user-triggered
 	// spend against that agent's conversation, so it keeps clearing the same
 	// INVOKE gate as a send (MUL-4525) rather than the softer view gate in
 	// gatePublicChatSessionForUser. Deliberately NOT relaxed as a side effect of
 	// moving generation server-side.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
+	if !leaderSession && !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}

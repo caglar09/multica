@@ -238,7 +238,7 @@ const createChatMessage = `-- name: CreateChatMessage :one
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id
+    channel_context_revision, client_message_id, id
 )
 VALUES (
     $1, $2, $3, $4, $5, $6,
@@ -253,8 +253,8 @@ VALUES (
     CASE WHEN $9::float8 IS NULL THEN NULL
          ELSE now() + make_interval(secs => $9::float8) END,
     COALESCE($10::boolean, FALSE),
-    $11,
-    COALESCE($12::uuid, gen_random_uuid())
+    $11, $12,
+    COALESCE($13::uuid, gen_random_uuid())
 )
 RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids
 `
@@ -271,6 +271,7 @@ type CreateChatMessageParams struct {
 	ChannelMediaPendingSecs pgtype.Float8 `json:"channel_media_pending_secs"`
 	ChannelIngested         pgtype.Bool   `json:"channel_ingested"`
 	ChannelContextRevision  pgtype.Int8   `json:"channel_context_revision"`
+	ClientMessageID         pgtype.Text   `json:"client_message_id"`
 	ID                      pgtype.UUID   `json:"id"`
 }
 
@@ -290,6 +291,7 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 		arg.ChannelMediaPendingSecs,
 		arg.ChannelIngested,
 		arg.ChannelContextRevision,
+		arg.ClientMessageID,
 		arg.ID,
 	)
 	var i ChatMessage
@@ -1618,6 +1620,7 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2
+  AND cs.session_kind = 'standard'
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR
@@ -2203,6 +2206,7 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
+  AND cs.session_kind = 'standard'
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR
@@ -2300,6 +2304,7 @@ WHERE atq.chat_session_id IS NOT NULL
   AND atq.regenerate_quick_actions_for IS NULL
   AND cs.workspace_id = $1
   AND cs.creator_id = $2
+  AND cs.session_kind = 'standard'
 ORDER BY atq.created_at DESC
 `
 

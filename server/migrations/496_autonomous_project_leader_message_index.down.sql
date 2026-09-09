@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS uq_chat_message_client_message_id;

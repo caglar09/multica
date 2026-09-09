@@ -236,10 +236,10 @@ func patchProjectLeaderNode(node NodeSpec, patch map[string]any) (NodeSpec, erro
 	return out, nil
 }
 
-// ApplyProjectLeaderProposal is the deterministic apply boundary used by chat
-// orchestration. It fences the proposal to the exact plan revision the model
-// observed, persists it through the existing change-request ledger, and either
-// applies an allowed closed-loop change or leaves a durable approval request.
+// ApplyProjectLeaderProposal is the deterministic proposal boundary used by
+// chat orchestration. Project Leader proposals are deliberately approval-only:
+// the existing low-risk auto-apply path is for system/planner changes, never
+// for a human-facing project conversation.
 func (s *Store) ApplyProjectLeaderProposal(ctx context.Context, workspaceID, projectID pgtype.UUID, proposal ProjectChangeProposal, plannerName, plannerModel string) (ProjectLeaderApplyResult, error) {
 	if s == nil || s.pool == nil { return ProjectLeaderApplyResult{}, errors.New("project orchestration store is not configured") }
 	if !workspaceID.Valid || !projectID.Valid { return ProjectLeaderApplyResult{}, errors.New("workspace_id and project_id are required") }
@@ -270,17 +270,17 @@ func (s *Store) ApplyProjectLeaderProposal(ctx context.Context, workspaceID, pro
 	impact := AnalyzeChangeImpact(cr.Type, operations, nodes, current.Plan.Policy)
 	cr, err = s.RecordChangeProposal(ctx, mustProjectUUID(cr.ID), proposal, impact, nil)
 	if err != nil { return ProjectLeaderApplyResult{}, err }
-	if cr.State == ChangeApprovalRequired {
-		return ProjectLeaderApplyResult{ChangeRequest: cr}, nil
+	if cr.State == ChangeProposalReady {
+		if err := s.AdvanceChangeRequest(ctx, mustProjectUUID(cr.ID), ChangeApprovalRequired, ""); err != nil {
+			return ProjectLeaderApplyResult{}, err
+		}
+		cr, err = s.LoadChangeRequest(ctx, mustProjectUUID(cr.ID))
+		if err != nil { return ProjectLeaderApplyResult{}, err }
 	}
-	if cr.State != ChangeProposalReady && cr.State != ChangeApproved && cr.State != ChangeApplying {
+	if cr.State != ChangeApprovalRequired {
 		return ProjectLeaderApplyResult{}, fmt.Errorf("project leader proposal cannot apply from change request state %s", cr.State)
 	}
-	plan, err := s.ApplyChangePlanMutation(ctx, workspaceID, projectID, mustProjectUUID(cr.ID), operations, plannerName, plannerModel)
-	if err != nil { return ProjectLeaderApplyResult{}, err }
-	cr, err = s.LoadChangeRequest(ctx, mustProjectUUID(cr.ID))
-	if err != nil { return ProjectLeaderApplyResult{}, err }
-	return ProjectLeaderApplyResult{ChangeRequest: cr, AppliedPlan: &plan}, nil
+	return ProjectLeaderApplyResult{ChangeRequest: cr}, nil
 }
 
 func mustProjectUUID(value string) pgtype.UUID {

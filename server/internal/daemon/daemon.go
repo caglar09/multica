@@ -7243,8 +7243,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var agentMcpConfig json.RawMessage
 	var effectiveMcpConfig json.RawMessage
 	var cursorMcpAuthSource string
+	readOnlyTask := task.Agent != nil && task.Agent.ReadOnly
+	if readOnlyTask && provider != "antigravity" && provider != "claude" && provider != "codex" {
+		return TaskResult{}, fmt.Errorf("project manager requires a provider read-only mode; %s is unsupported", provider)
+	}
+	remoteMCPConnections := task.RemoteMCPConnections
+	if readOnlyTask {
+		remoteMCPConnections = nil
+		task.PluginHookTools = nil
+	}
 	remoteMCPConfig, remoteMCPDiagnostics, remoteMCPBrokers, remoteMCPErr := startTaskRemoteMCPBrokers(
-		prepareCtx, ctx, task.ID, provider, task.RemoteMCPConnections,
+		prepareCtx, ctx, task.ID, provider, remoteMCPConnections,
 		func(resolveCtx context.Context, contributionID string) (http.Header, error) {
 			return d.client.ResolveRemoteMCPCredential(resolveCtx, task.RemoteMCPDaemonToken, task.ID, contributionID)
 		},
@@ -7286,7 +7295,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			remoteMCPConfig = merged
 		}
 	}
-	if task.Agent != nil {
+	if task.Agent != nil && !readOnlyTask {
 		agentMcpConfig = task.Agent.McpConfig
 		effectiveMcpConfig = agentMcpConfig
 		if merged, mergeErr := mergeRuntimeAndAgentMcpConfig(provider, agentMcpConfig); mergeErr != nil {
@@ -8042,6 +8051,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		OpenclawMode:           openclawMode,
 		ClaudeSettingsPath:     env.ClaudeSettingsPath,
 		QwenpawWorkspace:       env.QwenpawWorkspace,
+		ReadOnly:               readOnlyTask,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:

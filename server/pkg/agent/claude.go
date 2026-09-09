@@ -717,7 +717,12 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
-		"--permission-mode", "bypassPermissions",
+		"--permission-mode", func() string {
+			if opts.ReadOnly {
+				return "plan"
+			}
+			return "bypassPermissions"
+		}(),
 		// AskUserQuestion is Claude Code's built-in interactive question tool.
 		// The daemon runs Claude in non-interactive stream-json mode and has
 		// no UI for the prompt to render in, so a call returns an empty

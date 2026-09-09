@@ -231,6 +231,8 @@ type AgentData struct {
 	// daemon decodes provider-specific fields (e.g. openclaw mode +
 	// gateway endpoint, see issue #3260); other backends ignore it.
 	RuntimeConfig json.RawMessage `json:"runtime_config,omitempty"`
+	// ReadOnly is a server-enforced policy for reasoning-only tasks.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // DisabledRuntimeSkillData is the task-wire identity of one runtime-local
@@ -298,15 +300,15 @@ type TaskUsageEntry struct {
 
 // TaskResult is the outcome of executing a task.
 type TaskResult struct {
-	Status     string `json:"status"`
-	Comment    string `json:"comment"`
+	Status               string   `json:"status"`
+	Comment              string   `json:"comment"`
 	BranchName           string   `json:"branch_name,omitempty"`
 	WorktreeBaseSHA      string   `json:"worktree_base_sha,omitempty"`
 	WorktreeCommitSHA    string   `json:"worktree_commit_sha,omitempty"`
 	WorktreeChangedFiles []string `json:"worktree_changed_files,omitempty"`
 	EnvType              string   `json:"env_type,omitempty"`
-	SessionID  string `json:"session_id,omitempty"` // Claude session ID for future resumption
-	WorkDir    string `json:"work_dir,omitempty"`   // working directory used during execution
+	SessionID            string   `json:"session_id,omitempty"` // Claude session ID for future resumption
+	WorkDir              string   `json:"work_dir,omitempty"`   // working directory used during execution
 	// DurableWorkDir replaces WorkDir only after a disposable local worktree
 	// was finalized and its removal was confirmed. Empty keeps WorkDir authoritative.
 	DurableWorkDir string `json:"durable_work_dir,omitempty"`

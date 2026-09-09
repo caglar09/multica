@@ -1,4 +1,4 @@
-# Autonomous Project Leader Chat ve Güvenli Plan Değişikliği
+# Autonomous Project Manager ve Gömülü Proje Chat'i
 
 **Durum:** Onaylı uygulama planı  
 **Tarih:** 2026-09-09  
@@ -6,9 +6,9 @@
 
 ## 1. Karar özeti
 
-Autonomous ekranına proje özelinde kalıcı bir **Project Leader** sohbeti eklenecek. Bu sohbet yeni bir genel chat sistemi olmayacak; mevcut `chat_session`, `chat_message`, `agent_task_queue` ve proje bağlamlı chat akışı tekrar kullanılacak.
+Her proje için team approval sonrasında kalıcı bir **Project Manager** agent'ı bulunacak. Bu agent, team draft içindeki mevcut `product_manager` rolünün proje kapsamındaki karşılığıdır; yeni paralel planner/agent sistemi oluşturulmayacaktır. Autonomous ekranı Manager ile konuşmak için gömülü, proje ortaklı bir chat paneli sunacaktır. Mevcut `chat_session`, `chat_message`, `agent_task_queue` ve proje bağlamlı chat akışı tekrar kullanılacaktır.
 
-Lider:
+Manager:
 
 1. Kullanıcının talebini konuşma içinde netleştirecek.
 2. Gerekliyse soru soracak; yeterli bilgi oluşmadan task üretmeyecek.
@@ -16,6 +16,13 @@ Lider:
 4. Eklenecek ve güncellenecek taskları yapılandırılmış bir proposal olarak gösterecek.
 5. Kullanıcı açıkça onaylamadan planı veya issue'ları değiştirmeyecek.
 6. Onaydan sonra değişikliği dayanıklı control-plane işi olarak uygulayacak; mevcut workflow kendiliğinden devam edecek.
+
+Lifecycle:
+
+1. Mika proje oluştururken team draft'ı ve `product_manager` rolünü hazırlar.
+2. Human team approval gelmeden Manager agent'ı, Manager chat'i veya ilk task bootstrap'ı oluşturulmaz.
+3. Team approval sonrasında Manager ve diğer agent'lar mevcut provisioning transaction'ı ile oluşturulur; Manager runtime/model/skills profilini seçilen team ayarlarından miras alır.
+4. Provisioning tamamlanınca mevcut project-planning loop isteği Manager agent'a gönderilir. Manager ilk plan/DAG/task/assignment önerisini üretir; backend doğrular ve scheduler mevcut mekanizma ile devam eder.
 
 En önemli güvenlik kuralı:
 
@@ -50,7 +57,7 @@ Bu özellik için gerekli omurganın büyük bölümü zaten mevcut:
 | Proje bağlı sohbet | `CreateChatSession`, `project_id`, `SendChatMessage`, `SendDirectChatMessage` | Aynı kalıcı mesaj ve task kuyruğu kullanılacak |
 | Sohbet arayüzü | `packages/views/chat/components/chat-window.tsx` ve core chat hook'ları | Küçük, yeniden kullanılabilir message-list/composer parçaları ayrıştırılacak; tam sayfa bileşeni gömülmeyecek |
 | Autonomous ekranı | `AutonomousControlCenter` ve 5 saniyelik snapshot yenilemesi | Lider paneli ve proposal durumu burada gösterilecek |
-| Proje lideri/coordinator | `ensureProjectCoordinator` ile proje özelinde oluşturulan coordinator | UI'da Project Leader olarak gösterilecek; delivery node'larına atanmayarak sohbetin aktif işlerle yarışması önlenecek |
+| Proje yöneticisi | Team provisioning içindeki `product_manager` agent'ı | UI'da Project Manager olarak gösterilecek; delivery node'larına atanmayarak sohbetin aktif işlerle yarışması önlenecek |
 | Değişiklik yaşam döngüsü | `autonomous_project_change_request` ve event history | Konuşmadan çıkan önerinin kayıt/audit kaynağı olacak |
 | Plan değişikliği | `ApplyPlanMutation`, `AnalyzeChangeImpact`, `autonomous_project_plan_mutation` | Operasyon modeli ve DAG doğrulaması tekrar kullanılacak |
 | Dayanıklı arka plan işi | `enqueuePlanMutation`, control-plane lease/heartbeat/retry | Onay HTTP isteğinde inline apply yapılmayacak |
@@ -68,16 +75,19 @@ Bu nedenle özellik yalnız UI/API bağlantısı olarak eklenmemeli. Önce plan 
 ```mermaid
 flowchart LR
     U[Human user] --> ACC[Autonomous Control Center]
-    ACC --> LC[Project Leader chat API]
+    M[Mika] --> TD[Team draft + Manager role]
+    TD -->|Human team approval| PROV[Manager + team provisioning]
+    PROV --> PM[Per-project Project Manager]
+    ACC --> LC[Embedded shared Manager chat]
     LC --> CS[(chat_session / chat_message)]
     LC --> TQ[(agent_task_queue)]
-    TQ --> PL[Project coordinator agent]
-    PL --> CTX[Project context compiler]
+    TQ --> PM
+    PM --> CTX[Project context compiler]
     CTX --> SPEC[(Active specification)]
     CTX --> PLAN[(Latest plan DAG)]
     CTX --> ISSUES[(Open issues and states)]
     CTX --> CODE[Project code context]
-    PL --> TOOL[submit_project_change_proposal tool]
+    PM --> TOOL[submit_project_change_proposal tool]
     TOOL --> CR[(change_request + proposal)]
     CR --> ACC
     ACC -->|Approve| API[Approval API]
@@ -89,28 +99,29 @@ flowchart LR
     REC --> AGENTS[Eligible agent tasks]
 ```
 
-### 5.1 Neden coordinator kullanılacak?
+### 5.1 Manager ve Team Leader ayrımı
 
-Projenin ekip lideri bir delivery taskında çalışıyor olabilir. Normal chat kuyruğu aynı agent üzerindeki işi serialize ettiği için sohbet gecikebilir veya aktif çalışma kapasitesiyle yarışabilir. Mevcut proje coordinator'ı ise proje yönetimi için zaten oluşturuluyor. UI bu agent'ı **Project Leader** olarak sunacak; gerçek ekip üyelerinin çalışan tasklarına dokunulmayacak.
+Project Manager müşteriyle konuşur, proje hedefi/kapsamı/öncelik/dependency ve backlog yönetimini yapar; kod yazmaz. Team Leader ise kendi squad'ının günlük execution koordinasyonunu ve somut agent atamasını yapar. Manager, Team Leader'ın yerine geçmez; Project Manager yalnızca proje seviyesinde görev ve atama önerir.
 
-Coordinator bulunamazsa sohbet yeni ve ayrı bir agent üretmeye çalışmayacak. `ensureProjectCoordinator` idempotent biçimde aynı proje coordinator'ını sağlamalı; runtime hazır değilse UI net bir `leader_unavailable` durumu ve retry gösterecek.
+Manager bulunamazsa sohbet yeni ve ayrı bir agent üretmeye çalışmayacak. Team approval tamamlanmamışsa UI statik olarak team approval bekleme durumunu gösterir; runtime hazır değilse Manager runtime bekleme ve retry göstergesi gösterilir. Existing project'ler için idempotent backfill yalnız Manager agent/session yoksa çalışır; ilk bootstrap tasklarını yeniden üretmez.
 
 ## 6. Kullanıcı deneyimi
 
 ### 6.1 Yerleşim
 
-`AutonomousControlCenter` içine **Project Leader** bölümü eklenir:
+`AutonomousControlCenter` içine **Project Manager** bölümü eklenir:
 
 - Masaüstünde mevcut kontrol/diagnostic alanlarının altında iki kolonlu panel veya genişliği uygunsa sağ panel.
 - Dar ekranda normal document flow içinde tek kolon.
 - Başlıkta lider adı, runtime/queue durumu ve son activity.
-- Mesaj listesi, composer, attachment desteği ve queued/running göstergeleri mevcut chat primitive'lerinden gelir.
+- Sayfadan çıkmadan mesaj listesi, composer, attachment desteği ve queued/running göstergeleri mevcut chat primitive'lerinden gelir.
+- Panel açılması LLM task'ı başlatmaz; statik karşılama ve Manager profili gösterilir. İlk kullanıcı mesajı durable chat task'ını başlatır.
 - Panelin altında ya da son lider mesajına bağlı olarak **Proposed project changes** kartı gösterilir.
 
 ### 6.2 Konuşma akışı
 
 1. Kullanıcı isteğini yazar.
-2. Lider gerekli ayrıntıları sorar.
+2. Manager gerekli ayrıntıları sorar.
 3. Yeterli bilgi oluştuğunda `Analyzing project…` durumu görünür.
 4. Lider serbest metinle özet verir ve typed tool üzerinden proposal kaydeder.
 5. UI aşağıdaki diff'i gösterir:
@@ -141,10 +152,10 @@ approved/applying -> failed (retry edilebilir teknik hata)
 
 ### 7.1 Oturum kapsamı
 
-- Her `(workspace, project, creator)` için bir aktif Project Leader chat oturumu.
-- Transcript kullanıcıya özeldir; proposal ve uygulanmış değişiklik ise proje genelinde görünür/audit edilir.
-- Session proje coordinator agent'ına ve `project_id`'ye bağlıdır.
-- Projenin coordinator kimliği değişirse session'ın agent bağlantısı kontrollü güncellenir; eski transcript korunur.
+- Her `(workspace, project)` için bir aktif, ortak Project Manager chat oturumu.
+- Project üyeleri transcript'i okuyabilir; proje yazma yetkisi olan üyeler mesaj gönderebilir. Approval yalnız workspace owner/admin içindir.
+- Session `product_manager` agent'ına ve `project_id`'ye bağlıdır.
+- Manager agent değişirse session agent/runtime bağlantısı kontrollü güncellenir; eski transcript korunur.
 
 ### 7.2 En küçük şema ilavesi
 
@@ -159,7 +170,7 @@ Get-or-create yarışını veritabanında kapatmak için ayrı, tek statement mi
 
 ```sql
 CREATE UNIQUE INDEX CONCURRENTLY uq_chat_session_project_leader
-ON chat_session (workspace_id, project_id, creator_id, session_kind)
+ON chat_session (workspace_id, project_id, session_kind)
 WHERE session_kind = 'autonomous_project_leader' AND status = 'active';
 ```
 
@@ -171,7 +182,7 @@ Migration kuralları:
 
 ## 8. API sözleşmesi
 
-### 8.1 Lider sohbetini açma
+### 8.1 Manager sohbetini açma
 
 ```http
 GET /api/projects/{projectId}/autonomous/leader-chat
@@ -182,7 +193,7 @@ Yanıt:
 ```json
 {
   "session": { "id": "...", "agent_id": "...", "project_id": "..." },
-  "leader": { "id": "...", "name": "Project Leader", "status": "online" },
+  "leader": { "id": "...", "name": "Project Manager", "status": "online" },
   "active_change_request": null,
   "can_chat": true,
   "can_approve": true
@@ -192,7 +203,7 @@ Yanıt:
 Handler:
 
 - Project read erişimini doğrular.
-- Coordinator'ı idempotent olarak çözer.
+- Team approval sonrası provision edilmiş `product_manager` agent'ını idempotent olarak çözer.
 - `INSERT ... ON CONFLICT ... DO UPDATE/NOTHING RETURNING` ile oturumu bulur/oluşturur.
 - Mesajları mevcut chat query ve websocket mekanizmasına bırakır.
 
@@ -204,7 +215,7 @@ Mevcut endpoint korunur:
 POST /api/chat/sessions/{sessionId}/messages
 ```
 
-`session_kind=autonomous_project_leader` olduğunda backend task context'ine Project Leader sözleşmesini ekler. Mesaj persistence, sıra, offline queue, task ownership ve websocket davranışı `SendDirectChatMessage` üzerinden devam eder.
+`session_kind=autonomous_project_leader` olduğunda backend task context'ine Project Manager sözleşmesini ekler. Mesaj persistence, sıra, offline queue, task ownership ve websocket davranışı `SendDirectChatMessage` üzerinden devam eder.
 
 ### 8.3 Proposal listeleme
 
@@ -695,9 +706,11 @@ Minimum tanılar:
 
 ## 18. Kabul kriterleri
 
-- [ ] Autonomous ekranında proje özelinde kalıcı Project Leader chat görünür.
-- [ ] Lider eksik gereksinimler için soru sorabilir ve cevapları aynı session'da korur.
-- [ ] Lider aktif specification, plan, open issue ve proje kod bağlamını kullanarak proposal üretir.
+- [ ] Team approval sonrasında her projede tek, kalıcı Project Manager agent görünür.
+- [ ] Autonomous ekranında sayfadan ayrılmadan ortak, gömülü Project Manager chat görünür.
+- [ ] Panel açılması task başlatmaz; ilk kullanıcı mesajı durable Manager chat task'ını başlatır.
+- [ ] Manager eksik gereksinimler için soru sorabilir ve cevapları aynı shared session'da korur.
+- [ ] Manager aktif specification, plan, open issue, Brain, docs ve proje kod bağlamını kullanarak proposal üretir.
 - [ ] Proposal eklenecek/güncellenecek/korunacak taskları ve dependency değişikliklerini gösterir.
 - [ ] İnsan onayı olmadan plan, specification veya issue değişmez.
 - [ ] `in_progress`/`running` ve `in_review`/`verification` işler doğrudan veya dolaylı değiştirilmez.
@@ -727,8 +740,9 @@ UI, atomik apply ve aktif-task koruma testleri geçmeden proposal onay butonunu 
 
 ## 20. Son mimari kararlar
 
-- **Chat:** mevcut chat altyapısını kullan.
-- **Lider:** delivery agent değil, mevcut proje coordinator'ı; UI adı Project Leader.
+- **Chat:** mevcut chat altyapısını kullan; tek shared project session ve embedded panel.
+- **Manager:** team approval sonrası provision edilen `product_manager` agent; UI adı Project Manager.
+- **Team Leader:** squad execution ve günlük agent assignment sahibi; Manager'dan ayrı roldür.
 - **Planlama:** LLM önerir, backend doğrular ve uygular.
 - **Proposal:** serbest metin parse etmek yerine typed tool.
 - **Onay:** her `project_director` proposal'ında zorunlu insan onayı.
@@ -737,4 +751,3 @@ UI, atomik apply ve aktif-task koruma testleri geçmeden proposal onay butonunu 
 - **Apply:** project lock + base revision CAS + tek transaction + idempotent control-plane job.
 - **Devam:** commit sonrası mevcut reconciler; pause/reset/cancel yok.
 - **Kurtarma:** stale proposal re-analysis, teknik hata retry, notification kaybı periodic reconcile.
-

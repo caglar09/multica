@@ -510,8 +510,9 @@ export function ChatWindow() {
       // reads as "posted but the box is still full", and a rejected one keeps
       // the draft for retry (ChatInput never cleared it).
       let result;
+      const clientMessageId = crypto.randomUUID();
       try {
-        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds);
+        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds, clientMessageId);
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
         const reason = dispatchReasonCode(err);

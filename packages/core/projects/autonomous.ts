@@ -18,6 +18,46 @@ export function autonomousProjectOptions(wsId: string, projectId: string) {
   });
 }
 
+export function projectLeaderChatOptions(wsId: string, projectId: string) {
+  return queryOptions({
+    queryKey: [...autonomousProjectKeys.detail(wsId, projectId), "leader-chat"] as const,
+    queryFn: () => api.getProjectLeaderChat(projectId),
+    staleTime: 5000,
+  });
+}
+
+export function projectLeaderChangesOptions(wsId: string, projectId: string) {
+  return queryOptions({
+    queryKey: [...autonomousProjectKeys.detail(wsId, projectId), "leader-changes"] as const,
+    queryFn: () => api.listProjectLeaderChanges(projectId),
+    refetchInterval: 5000,
+  });
+}
+
+export function useApproveProjectLeaderChange() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ projectId, changeRequestId }: { projectId: string; changeRequestId: string }) =>
+      api.approveProjectLeaderChange(projectId, changeRequestId),
+    onSettled: (_data, _error, vars) => {
+      qc.invalidateQueries({ queryKey: autonomousProjectKeys.detail(wsId, vars.projectId) });
+    },
+  });
+}
+
+export function useRejectProjectLeaderChange() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ projectId, changeRequestId }: { projectId: string; changeRequestId: string }) =>
+      api.rejectProjectLeaderChange(projectId, changeRequestId),
+    onSettled: (_data, _error, vars) => {
+      qc.invalidateQueries({ queryKey: autonomousProjectKeys.detail(wsId, vars.projectId) });
+    },
+  });
+}
+
 function useAutonomousControlMutation<TData>(
   mutationFn: (projectId: string) => Promise<TData>,
 ) {

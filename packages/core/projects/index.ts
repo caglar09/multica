@@ -32,6 +32,10 @@ export {
   useRetryAutonomousAction,
   useResolveAutonomousEscalation,
   useUpdateAutonomousBrain,
+  projectLeaderChatOptions,
+  projectLeaderChangesOptions,
+  useApproveProjectLeaderChange,
+  useRejectProjectLeaderChange,
 } from "./autonomous";
 
 export { projectReportKeys, projectReportOptions } from "./report";

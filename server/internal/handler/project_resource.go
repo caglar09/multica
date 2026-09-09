@@ -878,6 +878,188 @@ type claimProjectContext struct {
 	Repos       []RepoData
 }
 
+const projectLeaderChatContract = `You are the reasoning-only Project Manager for this project.
+Do not use tools or mutate issues, plans, files, agents, or workflow state.
+Read the supplied project, plan, issue, Brain and documentation context. Serve the customer and coordinate the project; do not implement production code. Ask focused clarification questions when the request is incomplete. When it is ready, return exactly one JSON object with message and optional proposal fields matching ProjectLeaderResponse.
+Allowed proposal operations are only add_node, update_not_started_node, cancel_not_started_node, add_dependency, remove_dependency, and replace_dependency. Every operation needs a reason. Never change running, verification, completed, blocked, or cancelled work; propose a follow-up node instead.
+If no change is ready, return {"message":"..."} without a proposal. The backend validates and owns every mutation.`
+
+// buildProjectLeaderContext keeps the coordinator's input bounded while still
+// giving it the durable project state it is allowed to reason about. Delivery
+// agents continue to receive the smaller claimProjectContext above.
+func (h *Handler) buildProjectLeaderContext(ctx context.Context, workspaceID, projectID pgtype.UUID, identity claimProjectContext) (string, error) {
+	contextData := map[string]any{
+		"project": map[string]any{
+			"id":          identity.ProjectID,
+			"title":       identity.Title,
+			"description": identity.Description,
+		},
+		"resources": identity.Resources,
+	}
+
+	var specRevision int64
+	var specification []byte
+	if err := h.DB.QueryRow(ctx, `
+		SELECT r.revision,r.specification
+		FROM autonomous_project_specification_head h
+		JOIN autonomous_project_specification_revision r ON r.id=h.specification_revision_id
+		WHERE h.workspace_id=$1 AND h.project_id=$2
+	`, workspaceID, projectID).Scan(&specRevision, &specification); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("load project leader specification: %w", err)
+	}
+	if specRevision > 0 {
+		contextData["specification"] = map[string]any{"revision": specRevision, "value": json.RawMessage(specification)}
+	}
+
+	var planID pgtype.UUID
+	var planRevision int64
+	var goal string
+	if err := h.DB.QueryRow(ctx, `
+		SELECT id,revision,goal
+		FROM autonomous_project_plan
+		WHERE workspace_id=$1 AND project_id=$2
+		ORDER BY revision DESC
+		LIMIT 1
+	`, workspaceID, projectID).Scan(&planID, &planRevision, &goal); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("load project leader plan: %w", err)
+		}
+	} else {
+		plan := map[string]any{"id": uuidToString(planID), "revision": planRevision, "goal": goal}
+		nodes, err := h.DB.Query(ctx, `
+			SELECT n.node_key,n.kind,n.title,n.description,n.status,n.priority,
+			       COALESCE(n.required_role_family,''),COALESCE(n.assigned_role,''),
+			       n.materialized_issue_id,COALESCE(issue_effective_status(i.workspace_id,i.status),''),COALESCE(i.priority,''),
+			       COALESCE(n.blocked_reason,'')
+			FROM autonomous_project_plan_node n
+			LEFT JOIN issue i ON i.id=n.materialized_issue_id AND i.workspace_id=n.workspace_id
+			WHERE n.plan_id=$1 AND n.workspace_id=$2 AND n.project_id=$3
+			  AND n.status NOT IN ('completed','cancelled')
+			ORDER BY n.created_at,n.node_key
+			LIMIT 100
+		`, planID, workspaceID, projectID)
+		if err != nil {
+			return "", fmt.Errorf("load project leader nodes: %w", err)
+		}
+		var nodeList []map[string]any
+		for nodes.Next() {
+			var key, kind, title, description, status, role, assignedRole, issueStatus, issuePriority, blocked string
+			var priority int32
+			var materialized pgtype.UUID
+			if err := nodes.Scan(&key, &kind, &title, &description, &status, &priority, &role, &assignedRole, &materialized, &issueStatus, &issuePriority, &blocked); err != nil {
+				nodes.Close()
+				return "", fmt.Errorf("scan project leader node: %w", err)
+			}
+			nodeList = append(nodeList, map[string]any{
+				"key": key, "kind": kind, "title": title, "description": truncateProjectLeaderText(description, 800),
+				"status": status, "priority": priority, "required_role_family": role,
+				"assigned_role": assignedRole, "materialized_issue_id": uuidToString(materialized),
+				"issue_status": issueStatus, "issue_priority": issuePriority, "blocked_reason": truncateProjectLeaderText(blocked, 400),
+			})
+		}
+		if err := nodes.Err(); err != nil {
+			nodes.Close()
+			return "", fmt.Errorf("read project leader nodes: %w", err)
+		}
+		nodes.Close()
+		plan["nodes"] = nodeList
+
+		edges, err := h.DB.Query(ctx, `SELECT from_node_key,to_node_key,dependency_type FROM autonomous_project_plan_edge WHERE plan_id=$1 AND workspace_id=$2 AND project_id=$3 ORDER BY from_node_key,to_node_key`, planID, workspaceID, projectID)
+		if err != nil {
+			return "", fmt.Errorf("load project leader dependencies: %w", err)
+		}
+		var edgeList []map[string]string
+		for edges.Next() {
+			var from, to, dependencyType string
+			if err := edges.Scan(&from, &to, &dependencyType); err != nil {
+				edges.Close()
+				return "", fmt.Errorf("scan project leader dependency: %w", err)
+			}
+			edgeList = append(edgeList, map[string]string{"from": from, "to": to, "type": dependencyType})
+		}
+		if err := edges.Err(); err != nil {
+			edges.Close()
+			return "", fmt.Errorf("read project leader dependencies: %w", err)
+		}
+		edges.Close()
+		plan["edges"] = edgeList
+		contextData["plan"] = plan
+	}
+
+	activeChanges, err := h.projectLeaderRows(ctx, workspaceID, projectID, `
+		SELECT id,state,request_text,proposal,impact FROM autonomous_project_change_request
+		WHERE workspace_id=$1 AND project_id=$2 AND state NOT IN ('applied','rejected') ORDER BY created_at DESC LIMIT 20
+	`)
+	if err != nil {
+		return "", err
+	}
+	contextData["active_change_requests"] = activeChanges
+	openEscalations, err := h.projectLeaderRows(ctx, workspaceID, projectID, `
+		SELECT id,category,severity,summary,context FROM autonomous_project_escalation
+		WHERE workspace_id=$1 AND project_id=$2 AND status IN ('open','acknowledged') ORDER BY opened_at DESC LIMIT 10
+	`)
+	if err != nil {
+		return "", err
+	}
+	contextData["open_escalations"] = openEscalations
+	recentDecisions, err := h.projectLeaderRows(ctx, workspaceID, projectID, `
+		SELECT id,entry_type,subject,content,source_type,source_id FROM autonomous_project_brain_entry
+		WHERE workspace_id=$1 AND project_id=$2
+		  AND entry_type IN ('product_decision','architecture_decision','repository_fact','requirement','risk')
+		ORDER BY created_at DESC LIMIT 10
+	`)
+	if err != nil {
+		return "", err
+	}
+	contextData["recent_project_knowledge"] = recentDecisions
+
+	raw, err := json.MarshalIndent(contextData, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("encode project leader context: %w", err)
+	}
+	return string(raw), nil
+}
+
+func (h *Handler) projectLeaderRows(ctx context.Context, workspaceID, projectID pgtype.UUID, query string) ([]map[string]any, error) {
+	rows, err := h.DB.Query(ctx, query, workspaceID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("load project leader context rows: %w", err)
+	}
+	defer rows.Close()
+	columns := rows.FieldDescriptions()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return out, fmt.Errorf("read project leader context row: %w", err)
+		}
+		item := make(map[string]any, len(columns))
+		for i, column := range columns {
+			if i >= len(values) {
+				break
+			}
+			item[column.Name] = values[i]
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("iterate project leader context rows: %w", err)
+	}
+	return out, nil
+}
+
+func truncateProjectLeaderText(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= max {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	return string(runes[:max]) + "..."
+}
+
 // applyTo copies the resolved context onto a claim response. Callers assign the
 // whole context or none of it, so a claim can never carry a project's title
 // without its resources.

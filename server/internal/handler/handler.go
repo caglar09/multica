@@ -189,6 +189,9 @@ type Handler struct {
 	// AutonomousWorkflowRestart requests an immediate project-scoped durable
 	// workflow recovery pass. Wired by cmd/server after the runtime starts.
 	AutonomousWorkflowRestart func(context.Context, pgtype.UUID, pgtype.UUID) error
+	ProjectLeaderSession      func(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID) (db.ChatSession, db.Agent, error)
+	ProjectLeaderCompletion   func(context.Context, pgtype.UUID, []byte) error
+	ProjectLeaderApprove      func(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, string) error
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider

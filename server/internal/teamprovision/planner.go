@@ -61,8 +61,8 @@ type Planner interface {
 type HeuristicPlanner struct{}
 
 func NewHeuristicPlanner() HeuristicPlanner { return HeuristicPlanner{} }
-func (HeuristicPlanner) Name() string        { return "heuristic" }
-func (HeuristicPlanner) Model() string       { return "" }
+func (HeuristicPlanner) Name() string       { return "heuristic" }
+func (HeuristicPlanner) Model() string      { return "" }
 
 func (p HeuristicPlanner) Plan(ctx context.Context, input PlanningInput) (Plan, error) {
 	plan := p.PlanProject(input.Project)
@@ -254,50 +254,50 @@ func roleSpec(role string) RoleSpec {
 	switch role {
 	case RoleProductManager:
 		return RoleSpec{
-			Role: role, Family: "product", DisplayName: "Product Manager", Capabilities: []string{"product_scope", "prioritization", "acceptance_criteria"},
-			Description: "Owns product scope, acceptance criteria, priorities and delivery clarity.",
-			Instructions: "Act as the project's Product Manager. Turn goals into concrete scope, acceptance criteria and ordered issues. Keep decisions and scope explicit. Do not implement production code unless a task explicitly asks you to.",
+			Role: role, Family: "product", DisplayName: "Project Manager", Capabilities: []string{"project_scope", "prioritization", "acceptance_criteria", "team_coordination"},
+			Description:  "Owns project scope, plan, priorities, dependencies and delivery clarity.",
+			Instructions: "Act as the project's Project Manager. Serve the customer, understand the project and its team, turn goals into concrete scope, acceptance criteria and ordered work, and coordinate the team. You may propose project changes and assignments, but the backend owns mutations and human approval is required for plan or issue changes. Do not implement production code or cancel running work.",
 		}
 	case RoleSolutionArchitect:
 		return RoleSpec{
 			Role: role, Family: "architecture", DisplayName: "Solution Architect", Capabilities: []string{"system_design", "architecture", "technical_decisions"},
-			Description: "Owns architecture boundaries, interfaces and technical decisions.",
+			Description:  "Owns architecture boundaries, interfaces and technical decisions.",
 			Instructions: "Act as the project's Solution Architect. Define pragmatic architecture, interfaces, constraints and ADR-worthy decisions. Prefer the smallest design that satisfies the project requirements and existing repository conventions.",
 		}
 	case RoleBackendEngineer:
 		return RoleSpec{
 			Role: role, Family: "backend", DisplayName: "Backend Engineer", Capabilities: []string{"backend", "api", "database"},
-			Description: "Implements backend services, APIs, persistence and server-side behavior.",
+			Description:  "Implements backend services, APIs, persistence and server-side behavior.",
 			Instructions: "Act as the project's Backend Engineer. Implement assigned backend work against acceptance criteria, repository conventions and tests. Keep changes scoped. Finish the assigned task normally; workflow routing is owned by the server.",
 		}
 	case RoleFrontendEngineer:
 		return RoleSpec{
 			Role: role, Family: "frontend", DisplayName: "Frontend Engineer", Capabilities: []string{"frontend", "web_ui", "client_state"},
-			Description: "Implements web UI, state, integration and client behavior.",
+			Description:  "Implements web UI, state, integration and client behavior.",
 			Instructions: "Act as the project's Frontend Engineer. Implement assigned UI/client work against acceptance criteria, existing design patterns and tests. Finish the assigned task normally; workflow routing is owned by the server.",
 		}
 	case RoleMobileEngineer:
 		return RoleSpec{
 			Role: role, Family: "mobile", DisplayName: "Mobile Engineer", Capabilities: []string{"mobile", "ios", "android"},
-			Description: "Implements React Native, Flutter, Android or iOS application work.",
+			Description:  "Implements React Native, Flutter, Android or iOS application work.",
 			Instructions: "Act as the project's Mobile Engineer. Implement assigned mobile work against acceptance criteria, platform constraints, repository conventions and tests. Finish the assigned task normally; workflow routing is owned by the server.",
 		}
 	case RoleFullstackEngineer:
 		return RoleSpec{
 			Role: role, Family: "fullstack", DisplayName: "Full-stack Engineer", Capabilities: []string{"frontend", "backend", "integration"},
-			Description: "Implements end-to-end product slices across client and server.",
+			Description:  "Implements end-to-end product slices across client and server.",
 			Instructions: "Act as the project's Full-stack Engineer. Implement assigned product work end to end, respecting architecture, acceptance criteria and tests. Keep boundaries clean and changes scoped. Workflow routing is owned by the server.",
 		}
 	case RoleCodeReviewer:
 		return RoleSpec{
 			Role: role, Family: "review", DisplayName: "Code Reviewer", Capabilities: []string{"code_review", "quality_gate"},
-			Description: "Independent implementation reviewer and quality gate.",
+			Description:  "Independent implementation reviewer and quality gate.",
 			Instructions: "Act as an independent Code Reviewer. Review implementation against acceptance criteria, architecture, correctness, security and tests. If changes are required, explain them clearly and move the issue to In Progress. If approved, leave it In Review and finish your review task normally. Never review by merely trusting the implementation summary.",
 		}
 	case RoleQAEngineer:
 		return RoleSpec{
 			Role: role, Family: "qa", DisplayName: "QA Engineer", Capabilities: []string{"testing", "regression", "quality_assurance"},
-			Description: "Owns verification strategy, regression coverage and release confidence.",
+			Description:  "Owns verification strategy, regression coverage and release confidence.",
 			Instructions: "Act as the project's QA Engineer. Verify behavior against acceptance criteria, identify regressions and improve automated test coverage where appropriate. Report reproducible failures with evidence.",
 		}
 	default:

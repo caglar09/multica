@@ -364,6 +364,8 @@ export type {
   AutonomousBrainLearningMode,
   AutonomousBrainConfig,
   UpdateAutonomousBrainConfig,
+  ProjectLeaderChat,
+  ProjectLeaderChangeRequest,
 } from "./autonomous";
 
 export type {

@@ -2667,6 +2667,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
+		var sessionKind string
+		if err := h.DB.QueryRow(r.Context(), `SELECT session_kind FROM chat_session WHERE id=$1`, cs.ID).Scan(&sessionKind); err == nil && (sessionKind == "autonomous_project_leader" || sessionKind == "autonomous_project_planning") && cs.ProjectID.Valid && resp.Agent != nil {
+			// Project Manager and hidden planning turns are reasoning-only.
+			// The daemon enforces the provider policy below; this marker must
+			// never be inferred from instructions or user text.
+			resp.Agent.ReadOnly = true
+			resp.PluginHookTools = nil
+			resp.RemoteMCPConnections = nil
+			leaderContext, contextErr := h.buildProjectLeaderContext(r.Context(), cs.WorkspaceID, cs.ProjectID, projectCtx)
+			if contextErr != nil {
+				slog.Warn("project leader context unavailable; delivery continues without proposal context", "task_id", uuidToString(task.ID), "project_id", uuidToString(cs.ProjectID), "error", contextErr)
+				resp.Agent.Instructions += "\n\n## Project Leader Contract\n" + projectLeaderChatContract + "\n\n## Project Leader Context\nContext could not be loaded. Do not produce a proposal; explain that project context is temporarily unavailable."
+			} else {
+				resp.Agent.Instructions += "\n\n## Project Leader Contract\n" + projectLeaderChatContract + "\n\n## Project Leader Context\n" + leaderContext
+			}
+		}
 		if !task.ForceFreshSession && !task.ChannelContextRevision.Valid {
 			// Resume chat sessions only when the stored pointer was produced
 			// by the same runtime as the claiming task. When the chat_session
@@ -3808,6 +3824,14 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("complete task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if h.ProjectLeaderCompletion != nil {
+		if err := h.ProjectLeaderCompletion(r.Context(), task.ID, task.Result); err != nil {
+			// Chat completion is already durable. A malformed leader answer must
+			// not turn a completed delivery task into a retry loop; it remains
+			// visible in the transcript and can be corrected in the next turn.
+			slog.Warn("project leader completion was not accepted", "task_id", uuidToString(task.ID), "error", err)
+		}
 	}
 
 	h.emitIssueExecutedOnFirstCompletion(r, task)

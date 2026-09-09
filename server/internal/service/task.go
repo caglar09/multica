@@ -2253,6 +2253,37 @@ func (s *TaskService) SendDirectChatMessage(
 	uploaderType string,
 	uploaderID pgtype.UUID,
 ) (*DirectChatSendResult, error) {
+	return s.sendDirectChatMessage(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, "")
+}
+
+// SendDirectChatMessageWithClientMessageID is the idempotent variant used by
+// Project Leader chat. The unique database index makes the user message and
+// its task one durable turn even when the browser retries concurrently.
+func (s *TaskService) SendDirectChatMessageWithClientMessageID(
+	ctx context.Context,
+	session db.ChatSession,
+	agent db.Agent,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	clientMessageID string,
+) (*DirectChatSendResult, error) {
+	return s.sendDirectChatMessage(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, clientMessageID)
+}
+
+func (s *TaskService) sendDirectChatMessage(
+	ctx context.Context,
+	session db.ChatSession,
+	agent db.Agent,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	clientMessageID string,
+) (*DirectChatSendResult, error) {
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
 	overlay := s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)
@@ -2368,12 +2399,13 @@ func (s *TaskService) SendDirectChatMessage(
 		// Create the user message already owned by this task (task_id = task.id),
 		// so it belongs to this immutable input batch the instant it exists.
 		msg, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
-			ID:            dbid.NewV7(),
-			ChatSessionID: session.ID,
-			Role:          "user",
-			Content:       content,
-			TaskID:        task.ID,
-			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
+			ID:              dbid.NewV7(),
+			ChatSessionID:   session.ID,
+			Role:            "user",
+			Content:         content,
+			TaskID:          task.ID,
+			MessageKind:     pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
+			ClientMessageID: pgtype.Text{String: strings.TrimSpace(clientMessageID), Valid: strings.TrimSpace(clientMessageID) != ""},
 		})
 		if err != nil {
 			return fmt.Errorf("create user chat message: %w", err)

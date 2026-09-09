@@ -132,6 +132,7 @@ type Runtime struct {
 	team               *teamprovision.Provisioner
 	projectStore       *projectorchestration.Store
 	projectPlanner     *projectorchestration.Planner
+	projectLeader      *MikaProjectLeaderExecutor
 	brainExecutor      *BrainRuntimeExecutor
 	repositoryAnalyzer projectorchestration.RepositoryAnalyzer
 	qualityGateRunner  projectorchestration.QualityGateRunner
@@ -179,6 +180,7 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		team:               teamprovision.New(pool, taskSvc.Queries, planner),
 		projectStore:       projectorchestration.NewStore(pool),
 		projectPlanner:     projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
+		projectLeader:      NewMikaProjectLeaderExecutor(pool, taskSvc),
 		brainExecutor:      NewBrainRuntimeExecutor(pool, taskSvc),
 		repositoryAnalyzer: projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
 		qualityGateRunner:  projectorchestration.NewWebhookQualityGateRunner(cfg.AdapterConfig),
@@ -217,6 +219,27 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		"max_project_attempts", projectPolicy.Budget.MaxTotalAttempts,
 	)
 	return r, nil
+}
+
+func (r *Runtime) EnsureProjectLeaderSession(ctx context.Context, workspaceID, projectID, creatorID pgtype.UUID) (db.ChatSession, db.Agent, error) {
+	if r == nil || r.projectLeader == nil {
+		return db.ChatSession{}, db.Agent{}, errors.New("project leader runtime is not configured")
+	}
+	return r.projectLeader.EnsureProjectLeaderSession(ctx, workspaceID, projectID, creatorID)
+}
+
+func (r *Runtime) ProcessProjectLeaderCompletion(ctx context.Context, taskID pgtype.UUID, result []byte) error {
+	if r == nil || r.projectLeader == nil {
+		return nil
+	}
+	return r.projectLeader.ProcessCompletion(ctx, taskID, result)
+}
+
+func (r *Runtime) ApproveProjectLeaderChange(ctx context.Context, workspaceID, projectID, changeID pgtype.UUID, idempotencyKey string) error {
+	if r == nil || r.projectLeader == nil {
+		return errors.New("project leader runtime is not configured")
+	}
+	return r.projectLeader.ApproveChange(ctx, workspaceID, projectID, changeID, idempotencyKey)
 }
 
 func definition() workflow.Definition {

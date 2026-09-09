@@ -272,6 +272,11 @@ func buildCodexArgs(opts ExecOptions, logger *slog.Logger) []string {
 	if opts.ServiceTier == codexFastServiceTier {
 		launchArgs = enforceCodexFastMode(launchArgs, logger)
 	}
+	if opts.ReadOnly {
+		// Append last so an inherited workspace-write setting cannot outvote
+		// the server-owned Project Manager policy.
+		launchArgs = append(launchArgs, "--sandbox", "read-only")
+	}
 	return append(args, launchArgs...)
 }
 
