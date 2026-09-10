@@ -1159,6 +1159,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
 	}
+	if err := ensureIssueDependencyReady(ctx, s.Queries, issue.WorkspaceID, issue.ID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 
 	agent, err := s.Queries.GetAgent(ctx, issue.AssigneeID)
 	if err != nil {
@@ -1313,6 +1316,9 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+	if err := ensureIssueDependencyReady(ctx, s.Queries, issue.WorkspaceID, issue.ID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("mention task enqueue failed: agent not found", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -6435,6 +6441,12 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			return delegatedFailureRecoveryReplayed, nil
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return delegatedFailureRecoveryCovered, fmt.Errorf("merge recovery into pending task: %w", err)
+		}
+		if err := ensureIssueDependencyReady(ctx, s.Queries, target.issue.WorkspaceID, target.issue.ID); err != nil {
+			if errors.Is(err, ErrIssueBlockedByDependency) {
+				return delegatedFailureRecoveryCovered, nil
+			}
+			return delegatedFailureRecoveryCovered, fmt.Errorf("check recovery issue dependencies: %w", err)
 		}
 
 		originator, accountable := delegatedFailureRecoveryAttribution(target)

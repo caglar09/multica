@@ -30,6 +30,7 @@ import { useRecentIssuesStore } from "./stores";
 import type { InboxItem, Issue, IssueReaction } from "../types";
 import type {
   CreateCommentSubIssueManualRequest,
+  CreateIssueDependencyRequest,
   CreateIssueRequest,
   ListIssuesCache,
   MoveIssueRequest,
@@ -110,6 +111,30 @@ function useIssueCreateMutation<TVariables>(
 
 export function useCreateIssue() {
   return useIssueCreateMutation((data: CreateIssueRequest) => api.createIssue(data));
+}
+
+export function useCreateIssueDependency() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ issueId, data }: { issueId: string; data: CreateIssueDependencyRequest }) =>
+      api.createIssueDependency(issueId, data),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+    },
+  });
+}
+
+export function useDeleteIssueDependency() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ issueId, dependencyId }: { issueId: string; dependencyId: string }) =>
+      api.deleteIssueDependency(issueId, dependencyId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+    },
+  });
 }
 
 export function useCreateCommentSubIssue() {

@@ -1192,6 +1192,37 @@ export const CommentSubIssueTaskResponseSchema = z.object({
   task_id: z.string().min(1),
 }).loose();
 
+export const IssueDependencyIssueSchema = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  title: z.string(),
+  status: z.string(),
+  done: z.boolean(),
+}).loose();
+
+export const IssueDependencySchema = z.object({
+  id: z.string(),
+  type: z.string(),
+  issue_id: z.string(),
+  depends_on_issue_id: z.string(),
+  related_issue: IssueDependencyIssueSchema,
+}).loose();
+
+export const IssueDependenciesResponseSchema = z.object({
+  blocked_by: z.array(IssueDependencySchema).default([]),
+  blocks: z.array(IssueDependencySchema).default([]),
+  is_blocked: z.boolean().default(false),
+  unresolved_blocker_count: z.number().int().nonnegative().default(0),
+  dependency_state: z.string().default("unblocked"),
+}).loose();
+
+export const IssueDependencyMutationResponseSchema = z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  depends_on_issue_id: z.string(),
+  type: z.string(),
+}).loose();
+
 export const IssueSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
@@ -1229,6 +1260,13 @@ export const IssueSchema = z.object({
   // Older backends predate `stage`; default to null so a missing field parses
   // cleanly into the non-optional Issue.stage (number | null).
   stage: z.number().nullable().default(null),
+  // Dependency projections are additive so older self-hosted backends keep
+  // parsing. The booleans/count default to the safe unblocked state.
+  blocked_by: z.array(IssueDependencySchema).optional().catch(undefined),
+  blocks: z.array(IssueDependencySchema).optional().catch(undefined),
+  is_blocked: z.boolean().default(false).catch(false),
+  unresolved_blocker_count: z.number().int().nonnegative().default(0).catch(0),
+  dependency_state: z.string().optional().catch(undefined),
   start_date: z.string().nullable(),
   due_date: z.string().nullable(),
   metadata: IssueMetadataSchema,

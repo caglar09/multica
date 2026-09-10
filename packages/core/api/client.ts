@@ -1,6 +1,8 @@
 import { configStore } from "../config";
 import type {
   Issue,
+  IssueDependencyState,
+  CreateIssueDependencyRequest,
   IssuePriority,
   CreateIssueRequest,
   MoveIssueRequest,
@@ -316,6 +318,8 @@ import {
   ListIssuesResponseSchema,
   CreateIssueResponseSchema,
   IssueSchema,
+  IssueDependenciesResponseSchema,
+  IssueDependencyMutationResponseSchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
   CommentSubIssueTaskResponseSchema,
@@ -1111,6 +1115,42 @@ export class ApiClient {
       throw new Error("GET /api/issues/:id returned a malformed issue");
     }
     return issue;
+  }
+
+  async getIssueDependencies(id: string): Promise<IssueDependencyState> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${encodeURIComponent(id)}/dependencies`,
+    );
+    return parseWithFallback(raw, IssueDependenciesResponseSchema, {
+      blocked_by: [],
+      blocks: [],
+      is_blocked: false,
+      unresolved_blocker_count: 0,
+      dependency_state: "unblocked",
+    }, { endpoint: "GET /api/issues/:id/dependencies" });
+  }
+
+  async createIssueDependency(
+    id: string,
+    data: CreateIssueDependencyRequest,
+  ): Promise<{ id: string; issue_id: string; depends_on_issue_id: string; type: string }> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${encodeURIComponent(id)}/dependencies`,
+      { method: "POST", body: JSON.stringify(data) },
+    );
+    return parseWithFallback(raw, IssueDependencyMutationResponseSchema, {
+      id: "",
+      issue_id: "",
+      depends_on_issue_id: "",
+      type: "blocked_by",
+    }, { endpoint: "POST /api/issues/:id/dependencies" });
+  }
+
+  async deleteIssueDependency(issueId: string, dependencyId: string): Promise<void> {
+    await this.fetch<unknown>(
+      `/api/issues/${encodeURIComponent(issueId)}/dependencies/${encodeURIComponent(dependencyId)}`,
+      { method: "DELETE" },
+    );
   }
 
   async createIssue(data: CreateIssueRequest): Promise<Issue> {

@@ -731,6 +731,13 @@ func (s *IssueService) maybeEnqueueOnAssign(ctx context.Context, issue db.Issue,
 	if issuestatus.Effective(ctx, s.Queries, issue.WorkspaceID, issue.Status) == "backlog" {
 		return pgtype.UUID{}
 	}
+	if err := ensureIssueDependencyReady(ctx, s.Queries, issue.WorkspaceID, issue.ID); err != nil {
+		if !errors.Is(err, ErrIssueBlockedByDependency) {
+			slog.Warn("dependency check failed before issue enqueue",
+				"issue_id", util.UUIDToString(issue.ID), "error", err)
+		}
+		return pgtype.UUID{}
+	}
 	verdict, admitted := agentAssigneeVerdict(ctx, s.runtimeLookup(s.Queries), issue)
 	if !admitted && verdict.Reason == dispatch.ReasonRuntimeUnusable {
 		// Assignment has no response the assigner reads for this outcome, so the
@@ -775,6 +782,9 @@ func (s *IssueService) shouldEnqueueAgentTaskWithQueries(ctx context.Context, q 
 	// Resolved through q, not s.Queries: this runs inside the create
 	// transaction and must see the same snapshot as the rest of it. (MUL-6243)
 	if issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) == "backlog" {
+		return false
+	}
+	if err := ensureIssueDependencyReady(ctx, q, issue.WorkspaceID, issue.ID); err != nil {
 		return false
 	}
 	return isAgentAssigneeReadyWithQueries(ctx, s.runtimeLookup(q), issue)
