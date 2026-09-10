@@ -7,15 +7,21 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-func TestChooseTeamLeaderPrefersImplementationRoleOverProjectManager(t *testing.T) {
-	plan := Plan{ImplementationRole: RoleBackendEngineer}
+func TestChooseTeamLeaderPrefersProjectManager(t *testing.T) {
+	plan := Plan{
+		ImplementationRole: RoleBackendEngineer,
+		Roles: []RoleSpec{
+			{Role: RoleProductManager},
+			{Role: RoleBackendEngineer},
+		},
+	}
 	members := map[string]pgtype.UUID{
 		RoleProductManager:  {Bytes: [16]byte{1}, Valid: true},
 		RoleBackendEngineer: {Bytes: [16]byte{2}, Valid: true},
 	}
 
-	if got, ok := chooseTeamLeader(plan, members); !ok || got != (pgtype.UUID{Bytes: [16]byte{2}, Valid: true}) {
-		t.Fatalf("chooseTeamLeader() = %v, %v; want backend engineer", got, ok)
+	if got, ok := chooseTeamLeader(plan, members); !ok || got != (pgtype.UUID{Bytes: [16]byte{1}, Valid: true}) {
+		t.Fatalf("chooseTeamLeader() = %v, %v; want product manager", got, ok)
 	}
 }
 

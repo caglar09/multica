@@ -20,6 +20,8 @@ When an agent works an issue inside the project, Multica adds the project name, 
 
 The workspace's linked repository list is always included in the run context. Repositories linked to the project additionally specify the code and default ref this body of work uses.
 
+Repository storage and task workspaces are deliberately separate. The daemon keeps one canonical bare repository cache per workspace and repository URL under its workspace root; each task gets its own branch and worktree (or isolated checkout) under its task workspace. Seeing two task `workdir` paths therefore does not mean two canonical repositories were configured. The checkout response exposes both paths as `path` and `canonical_repo_path` so operators can verify this directly.
+
 A local directory only applies to the daemon it is bound to. When the daemon running a task has a matching local directory, the agent works directly in that directory; other computers keep using the project's GitHub repositories or the workspace repositories.
 
 ## Add a GitHub repository

@@ -326,6 +326,9 @@ func normalizeLegacyPlan(plan Plan) Plan {
 }
 
 func chooseTeamLeader(plan Plan, members map[string]pgtype.UUID) (pgtype.UUID, bool) {
+	if id, ok := members[RoleProductManager]; ok && id.Valid {
+		return id, true
+	}
 	if id, ok := members[plan.ImplementationRole]; ok && id.Valid {
 		return id, true
 	}

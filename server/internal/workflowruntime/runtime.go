@@ -292,6 +292,7 @@ func definition() workflow.Definition {
 			{From: issuestatus.InProgress, Event: "implementation.completed", To: issuestatus.InReview},
 			{From: issuestatus.InProgress, Event: "implementation.failed", To: issuestatus.Blocked},
 			{From: issuestatus.InProgress, Event: "issue.completed", To: issuestatus.Done},
+			{From: issuestatus.InReview, Event: "workflow.started", To: issuestatus.InReview},
 			{From: issuestatus.InReview, Event: "review.completed", To: issuestatus.Done},
 			{From: issuestatus.InReview, Event: "review.changes_requested", To: issuestatus.InProgress},
 			{From: issuestatus.InReview, Event: "review.exhausted", To: issuestatus.Blocked},
@@ -623,6 +624,27 @@ func (r *Runtime) RestartProjectWorkflow(
 		return errors.New("workspace_id and project_id are required")
 	}
 
+	// Repair can be requested after the last durable plan reached completed
+	// while older project workflows still need to be replayed. The scheduler
+	// deliberately ignores completed plans, so reactivate that exact plan before
+	// querying/reconciling its remaining workflow runs. This preserves node and
+	// issue identity and does not create a new DAG.
+	if r.projectStore != nil {
+		stored, exists, err := r.projectStore.LoadLatestPlan(ctx, workspaceID, projectID)
+		if err != nil {
+			return fmt.Errorf("load latest autonomous project plan for repair: %w", err)
+		}
+		if exists && stored.Status == "completed" {
+			planID, err := util.ParseUUID(stored.ID)
+			if err != nil {
+				return fmt.Errorf("parse latest autonomous project plan for repair: %w", err)
+			}
+			if err := r.projectStore.ResumeCompletedPlanForDiscoveredWork(ctx, workspaceID, projectID, planID); err != nil {
+				return fmt.Errorf("resume completed autonomous project plan for repair: %w", err)
+			}
+		}
+	}
+
 	// ActionWorker can reclaim expired running actions itself; resetting only
 	// expired leases here makes the operator action immediate without duplicating
 	// a healthy in-flight side effect.
@@ -661,7 +683,7 @@ func (r *Runtime) RestartProjectWorkflow(
 		WHERE workspace_id = $1
 		  AND project_id = $2
 		  AND status IN ('open', 'acknowledged')
-		  AND category IN ('technical_failure', 'contract_violation')
+		  AND category IN ('technical_failure', 'contract_violation', 'quality_policy')
 	`, workspaceID, projectID); err != nil {
 		return fmt.Errorf("resolve recoverable project escalations before restart: %w", err)
 	}
@@ -1095,6 +1117,38 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 					return err
 				}
 			}
+			if isLegacyBlockedImplementationCompletion(run, contractTask) && issue.ProjectID.Valid && r.projectStore != nil {
+				// Older agents completed implementation work with prose instead of
+				// the current handoff contract. Do not promote that prose to review;
+				// release the blocked Project OS node and let the current workflow
+				// prompt rerun the implementation against the shared repository.
+				resumed, resumeErr := r.projectStore.ResumeNodeForWorkflowRetry(ctx, issue.WorkspaceID, issue.ID)
+				if resumeErr != nil {
+					return fmt.Errorf("resume legacy blocked implementation: %w", resumeErr)
+				}
+				if resumed {
+					result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+						ID:                "legacy-implementation-retry:" + util.UUIDToString(contractTask.ID),
+						Type:              "issue.retry_requested",
+						WorkspaceID:       run.WorkspaceID,
+						ProjectID:         util.UUIDToString(issue.ProjectID),
+						IssueID:           run.IssueID,
+						AccountableUserID: run.AccountableUserID,
+						Payload:           map[string]any{"task_id": util.UUIDToString(contractTask.ID), "recovered_from": "legacy_handoff"},
+					})
+					if handleErr != nil {
+						return handleErr
+					}
+					if result.Applied {
+						slog.Info("requeued legacy blocked implementation without handoff contract",
+							"run_id", run.ID,
+							"issue_id", run.IssueID,
+							"task_id", util.UUIDToString(contractTask.ID),
+						)
+					}
+				}
+				return nil
+			}
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -1178,6 +1232,59 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 		LIMIT 1
 	`, issueID, agentID, run.UpdatedAt).Scan(&terminalTaskID, &terminalStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// This recovery path rebuilds the project handoff envelope. Legacy issue
+		// workflows without a project must keep their existing action semantics.
+		if !issue.ProjectID.Valid {
+			return nil
+		}
+		runID, err := util.ParseUUID(run.ID)
+		if err != nil {
+			return err
+		}
+		var workPending bool
+		err = r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM agent_task_queue
+				WHERE issue_id = $1
+				  AND agent_id = $2
+				  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+			) OR EXISTS (
+				SELECT 1
+				FROM autonomous_workflow_action
+				WHERE run_id = $3
+				  AND status IN ('pending', 'running')
+			)`, issueID, agentID, runID).Scan(&workPending)
+		if err != nil {
+			return err
+		}
+		if workPending {
+			return nil
+		}
+
+		// A task can be cancelled after the workflow transition commits. Re-enter
+		// the current state so its OnEnter action recreates the missing agent task.
+		// The stable event id and pending-work guard keep this recovery idempotent.
+		result, err := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                fmt.Sprintf("reconcile-workflow-started:%s:%d:%s", run.ID, run.Revision, run.State),
+			Type:              "workflow.started",
+			WorkspaceID:       run.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           run.IssueID,
+			AccountableUserID: run.AccountableUserID,
+			Payload:           map[string]any{"recovered_from": "missing_agent_task"},
+		})
+		if err != nil {
+			return fmt.Errorf("requeue missing autonomous agent task: %w", err)
+		}
+		if result.Applied {
+			slog.Info("requeued autonomous workflow with missing agent task",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"agent_id", targetID,
+				"state", run.State,
+			)
+		}
 		return nil
 	}
 	if err != nil {
@@ -2303,6 +2410,30 @@ func (r *Runtime) ExecuteWorkflowAction(ctx context.Context, run workflow.Run, p
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("check workflow dispatch receipt: %w", err)
 		}
+		// A repaired project node can already be executing the same issue for
+		// this agent while an older workflow action is still being replayed.
+		// The pending-task unique index intentionally excludes running rows, so
+		// coalesce here before creating a second serialized task.
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND agent_id = $2
+			  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+			ORDER BY created_at DESC
+			LIMIT 1
+		`, issueID, agentID).Scan(&existingTaskID)
+		if err == nil {
+			slog.Info("workflow dispatch coalesced with active issue task",
+				"issue_id", util.UUIDToString(issueID),
+				"agent_id", util.UUIDToString(agentID),
+				"task_id", util.UUIDToString(existingTaskID),
+			)
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check active workflow task: %w", err)
+		}
 
 		envelope, err := r.prepareAssignmentHandoff(ctx, run, pending, issue, selector, agentID)
 		if err != nil {
@@ -2425,6 +2556,14 @@ func blockedRetryCompletionEvent(run workflow.Run, task db.AgentTaskQueue) strin
 	default:
 		return ""
 	}
+}
+
+func isLegacyBlockedImplementationCompletion(run workflow.Run, task db.AgentTaskQueue) bool {
+	return run.State == issuestatus.Blocked &&
+		run.OwnerAgentID != "" &&
+		run.OwnerAgentID == util.UUIDToString(task.AgentID) &&
+		!task.RetryOfTaskID.Valid &&
+		!task.RerunOfTaskID.Valid
 }
 
 func retryPending(payload any) bool {

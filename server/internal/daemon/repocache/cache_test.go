@@ -762,6 +762,49 @@ func TestCreateWorktree(t *testing.T) {
 	}
 }
 
+func TestCreateWorktreeSharesCanonicalRepoCache(t *testing.T) {
+	t.Parallel()
+	sourceRepo := createTestRepo(t)
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: sourceRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	first, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     sourceRepo,
+		WorkDir:     t.TempDir(),
+		AgentName:   "worker",
+		TaskID:      "task-one-00000000000000000000000000000001",
+	})
+	if err != nil {
+		t.Fatalf("first checkout failed: %v", err)
+	}
+	second, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     sourceRepo,
+		WorkDir:     t.TempDir(),
+		AgentName:   "worker",
+		TaskID:      "task-two-00000000000000000000000000000002",
+	})
+	if err != nil {
+		t.Fatalf("second checkout failed: %v", err)
+	}
+
+	if first.Path == second.Path {
+		t.Fatalf("task worktrees must be distinct: %q", first.Path)
+	}
+	if first.CanonicalRepoPath == "" || first.CanonicalRepoPath != second.CanonicalRepoPath {
+		t.Fatalf("canonical repo paths = %q and %q, want one shared path", first.CanonicalRepoPath, second.CanonicalRepoPath)
+	}
+	if want := cache.BarePath("ws-1", sourceRepo); first.CanonicalRepoPath != want {
+		t.Fatalf("canonical repo path = %q, want %q", first.CanonicalRepoPath, want)
+	}
+	if !isBareRepo(first.CanonicalRepoPath) {
+		t.Fatalf("canonical repo path is not a bare repository: %s", first.CanonicalRepoPath)
+	}
+}
+
 func TestCreateWorktreeWithIsolatedGitMetadata(t *testing.T) {
 	t.Parallel()
 	sourceRepo := createTestRepo(t)

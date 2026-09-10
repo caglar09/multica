@@ -26,19 +26,20 @@ func TestSoftwareDevelopmentWorkflowDefinition(t *testing.T) {
 
 	wantTransitions := map[string]string{
 		"in_progress/workflow.started":           "in_progress",
-		"in_progress/implementation.completed":    "in_review",
-		"in_progress/implementation.failed":       "blocked",
-		"in_progress/issue.completed":             "done",
-		"in_review/review.completed":              "done",
-		"in_review/review.changes_requested":      "in_progress",
-		"in_review/review.exhausted":              "blocked",
-		"in_review/review.failed":                 "blocked",
-		"in_review/issue.completed":               "done",
-		"blocked/implementation.retry_completed":  "in_review",
-		"blocked/review.retry_completed":          "done",
-		"blocked/review.retry_changes_requested":  "in_progress",
-		"blocked/issue.retry_requested":           "in_progress",
-		"blocked/issue.completed":                 "done",
+		"in_progress/implementation.completed":   "in_review",
+		"in_progress/implementation.failed":      "blocked",
+		"in_progress/issue.completed":            "done",
+		"in_review/workflow.started":             "in_review",
+		"in_review/review.completed":             "done",
+		"in_review/review.changes_requested":     "in_progress",
+		"in_review/review.exhausted":             "blocked",
+		"in_review/review.failed":                "blocked",
+		"in_review/issue.completed":              "done",
+		"blocked/implementation.retry_completed": "in_review",
+		"blocked/review.retry_completed":         "done",
+		"blocked/review.retry_changes_requested": "in_progress",
+		"blocked/issue.retry_requested":          "in_progress",
+		"blocked/issue.completed":                "done",
 	}
 	for _, tr := range def.Transitions {
 		key := tr.From + "/" + tr.Event
@@ -108,6 +109,22 @@ func TestBlockedRetryCompletionEvent(t *testing.T) {
 	}
 }
 
+func TestLegacyBlockedImplementationCompletion(t *testing.T) {
+	ownerID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	run := workflow.Run{State: issuestatus.Blocked, OwnerAgentID: util.UUIDToString(ownerID)}
+
+	if !isLegacyBlockedImplementationCompletion(run, db.AgentTaskQueue{AgentID: ownerID}) {
+		t.Fatal("legacy owner completion was not eligible for rerun")
+	}
+	if isLegacyBlockedImplementationCompletion(run, db.AgentTaskQueue{AgentID: ownerID, RetryOfTaskID: ownerID}) {
+		t.Fatal("retry completion was incorrectly treated as a legacy completion")
+	}
+	run.State = issuestatus.InProgress
+	if isLegacyBlockedImplementationCompletion(run, db.AgentTaskQueue{AgentID: ownerID}) {
+		t.Fatal("non-blocked completion was incorrectly treated as legacy")
+	}
+}
+
 func TestWorkflowRetryBoardState(t *testing.T) {
 	ownerID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
 	reviewerID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
@@ -121,6 +138,26 @@ func TestWorkflowRetryBoardState(t *testing.T) {
 	}
 	if got := workflowRetryBoardState(otherID, ownerID, reviewerID); got != "" {
 		t.Fatalf("unrelated retry board state = %q, want empty", got)
+	}
+}
+
+func TestCanResumeManualDirectNode(t *testing.T) {
+	direct := projectorchestration.BlockedNode{
+		PlannedNode: projectorchestration.PlannedNode{
+			ReadyNode: projectorchestration.ReadyNode{Kind: projectorchestration.NodeSecurity},
+		},
+		Category: "manual",
+	}
+	if !canResumeManualDirectNode(direct, issuestatus.Blocked) {
+		t.Fatal("manual direct node was not eligible for configured-resource repair")
+	}
+	workflowNode := direct
+	workflowNode.Kind = projectorchestration.NodeImplementation
+	if canResumeManualDirectNode(workflowNode, issuestatus.Blocked) {
+		t.Fatal("issue-workflow implementation node was incorrectly treated as direct")
+	}
+	if canResumeManualDirectNode(direct, issuestatus.Todo) {
+		t.Fatal("non-blocked direct node was incorrectly eligible")
 	}
 }
 
@@ -169,7 +206,6 @@ func TestRetryPending(t *testing.T) {
 	}
 }
 
-
 func TestDiscoveredProjectNodeKindRoutesSpecialistFamilies(t *testing.T) {
 	cases := map[string]projectorchestration.NodeKind{
 		"product":      projectorchestration.NodeProduct,
@@ -192,10 +228,10 @@ func TestDiscoveredProjectNodeKindRoutesSpecialistFamilies(t *testing.T) {
 func TestDiscoveredProjectPriority(t *testing.T) {
 	cases := map[string]int{
 		"urgent": 100,
-		"high": 75,
+		"high":   75,
 		"medium": 50,
-		"low": 25,
-		"none": 0,
+		"low":    25,
+		"none":   0,
 	}
 	for value, want := range cases {
 		if got := discoveredProjectPriority(value); got != want {

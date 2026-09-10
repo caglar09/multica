@@ -104,7 +104,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useModalStore } from "@multica/core/modals";
-import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
+import { issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { issueLabelsOptions } from "@multica/core/labels";
@@ -1142,7 +1142,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     members.find((m) => m.user_id === user?.id)?.role ?? null;
   const canModerateComments =
     currentUserRole === "owner" || currentUserRole === "admin";
-  const { data: allIssues = [] } = useQuery(issueListOptions(wsId));
   const { getActorName } = useActorName();
   const resolveStatusLabel = useStatusLabel(wsId);
   // The glyph set is per CATEGORY (MUL-6243), so a status-change entry for a
@@ -1345,21 +1344,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // landing effect below replays on an already-mounted detail.
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
 
-  // Issue data from TQ — uses detail query, seeded from list cache if available.
-  // Only seed when description is present; the list API omits it, so a partial
-  // list row must not masquerade as a hydrated issue detail.
+  // Issue detail is authoritative; do not mount the workspace-wide issue list
+  // just to seed this query, because realtime list invalidations are frequent.
   const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery({
     ...issueDetailOptions(wsId, id),
-    // List rows and issue-created realtime payloads intentionally omit the
-    // detail-only source-context snapshot. They can still seed this query via
-    // initialData, so always reconcile with the authoritative detail endpoint
-    // when the detail view mounts. Without this, the global Infinity staleTime
-    // hides source context until a full page refresh.
     refetchOnMount: "always",
-    initialData: () => {
-      const cached = allIssues.find((i) => i.id === id);
-      return cached?.description != null ? cached : undefined;
-    },
   });
   const openCommentSubIssue = useCallback((commentId: string) => {
     if (!issue) return;
@@ -1816,7 +1805,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { data: parentIssue = null } = useQuery({
     ...issueDetailOptions(wsId, parentIssueId ?? ""),
     enabled: !!parentIssueId,
-    initialData: () => allIssues.find((i) => i.id === parentIssueId),
   });
 
   // Project segment in the breadcrumb. The issue's project_id is the source of

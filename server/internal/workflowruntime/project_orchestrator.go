@@ -507,7 +507,11 @@ func (r *Runtime) processDiscoveredProjectWork(ctx context.Context) error {
 		 AND t.status = 'active'
 		JOIN autonomous_project_team_member tm
 		  ON tm.team_id = t.id
-		 AND tm.agent_id = i.creator_id
+		 AND tm.active = true
+		 AND tm.agent_id = CASE
+			WHEN i.assignee_type = 'agent' AND i.assignee_id IS NOT NULL THEN i.assignee_id
+			ELSE i.creator_id
+		 END
 		WHERE i.creator_type = 'agent'
 		  AND i.origin_type = 'agent_create'
 		  AND i.project_id IS NOT NULL
@@ -1366,8 +1370,22 @@ func (r *Runtime) syncProjectNodeBoardState(
 			}
 			if exists {
 				switch run.State {
-				case issuestatus.InProgress, issuestatus.InReview, issuestatus.Done, issuestatus.Blocked:
+				case issuestatus.InProgress, issuestatus.InReview, issuestatus.Done:
 					target = run.State
+				case issuestatus.Blocked:
+					// A node that the conductor just resumed must be schedulable.
+					// Keep Blocked only while an explicit task retry is active;
+					// otherwise the stale workflow state would overwrite Todo and
+					// startReadyProjectNode would refuse to dispatch it forever.
+					retryStatus, retryBoardState, _, retryErr := r.projectWorkflowRetry(ctx, workspaceID, issueID)
+					if retryErr != nil {
+						return fmt.Errorf("resolve workflow-owned ready retry status: %w", retryErr)
+					}
+					if retryStatus != "" && retryStatus != "completed" && retryBoardState != "" {
+						target = retryBoardState
+					} else if issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) != issuestatus.Blocked {
+						target = issuestatus.Todo
+					}
 				}
 			}
 		}
@@ -1785,7 +1803,26 @@ blockedNodeLoop:
 						)
 						continue blockedNodeLoop
 					}
-					resolved = effective != issuestatus.Blocked
+					if canResumeManualDirectNode(node, effective) {
+						// Manual direct nodes were blocked when no shared source was
+						// available. A configured local project resource is now an
+						// explicit repair signal; issue-workflow nodes use their own
+						// contract recovery path above.
+						if err := r.pool.QueryRow(ctx, `
+							SELECT EXISTS (
+								SELECT 1
+								FROM project_resource
+								WHERE workspace_id = $1
+								  AND project_id = $2
+								  AND resource_type = 'local_directory'
+							)
+						`, workspaceID, projectID).Scan(&resolved); err != nil {
+							return err
+						}
+					}
+					if !resolved {
+						resolved = effective != issuestatus.Blocked
+					}
 					if resolved && projectNodeUsesIssueWorkflow(node.Kind) {
 						// A task-level retry may already be executing while the
 						// Project OS node still carries the old technical block.
@@ -1876,6 +1913,12 @@ blockedNodeLoop:
 		)
 	}
 	return r.projectStore.ResumePlanAfterNodeRetry(ctx, workspaceID, projectID)
+}
+
+func canResumeManualDirectNode(node projectorchestration.BlockedNode, effectiveStatus string) bool {
+	return node.Category == "manual" &&
+		effectiveStatus == issuestatus.Blocked &&
+		!projectNodeUsesIssueWorkflow(node.Kind)
 }
 
 var errProjectApprovalRequired = errors.New("autonomous project node requires approval")

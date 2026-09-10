@@ -740,8 +740,9 @@ type WorktreeParams struct {
 
 // WorktreeResult describes a successfully created worktree.
 type WorktreeResult struct {
-	Path       string `json:"path"`        // absolute path to the worktree
-	BranchName string `json:"branch_name"` // git branch created for this worktree
+	Path              string `json:"path"`                // absolute path to the task worktree
+	BranchName        string `json:"branch_name"`         // git branch created for this worktree
+	CanonicalRepoPath string `json:"canonical_repo_path,omitempty"` // shared daemon-owned bare repo
 }
 
 // CreateWorktree looks up the bare cache for a repo, fetches latest, and creates
@@ -873,7 +874,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 			"branch", actualBranch,
 			"base", baseRef,
 		)
-		return &WorktreeResult{Path: worktreePath, BranchName: actualBranch}, nil
+		return &WorktreeResult{Path: worktreePath, BranchName: actualBranch, CanonicalRepoPath: barePath}, nil
 	}
 
 	// If worktree already exists (reused environment from a prior task),
@@ -906,8 +907,9 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		)
 
 		return &WorktreeResult{
-			Path:       worktreePath,
-			BranchName: actualBranch,
+			Path:              worktreePath,
+			BranchName:        actualBranch,
+			CanonicalRepoPath: barePath,
 		}, nil
 	}
 
@@ -939,8 +941,9 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	)
 
 	return &WorktreeResult{
-		Path:       worktreePath,
-		BranchName: actualBranch,
+		Path:              worktreePath,
+		BranchName:        actualBranch,
+		CanonicalRepoPath: barePath,
 	}, nil
 }
 

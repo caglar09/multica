@@ -153,6 +153,9 @@ func (p *ModelBackedPlanner) parseAndValidate(raw string, input PlanningInput) (
 		roles = append(roles, role)
 		byRole[role.Role] = role
 	}
+	if _, ok := byRole[RoleProductManager]; !ok {
+		roles = append(roles, roleSpec(RoleProductManager))
+	}
 	if !hasImplementation {
 		return Plan{}, fmt.Errorf("%w: at least one implementation-capable role is required", ErrInvalidTeamPlan)
 	}
