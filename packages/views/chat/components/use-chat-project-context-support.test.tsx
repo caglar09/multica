@@ -45,7 +45,7 @@ describe("useChatProjectContextSupport", () => {
     await waitFor(() => expect(result.current).toBe(false));
   });
 
-  it("returns true for a new-enough release and for dev-describe builds", async () => {
+  it("returns true for a new-enough release, dev-describe builds, and bare dev", async () => {
     vi.mocked(api.listRuntimes).mockResolvedValue([
       runtimeRow("v0.4.10-3-gabc1234"),
     ] as never);
@@ -53,6 +53,14 @@ describe("useChatProjectContextSupport", () => {
     const { result } = renderSupport({ runtime_id: "runtime-1" });
 
     await waitFor(() => expect(result.current).toBe(true));
+
+    vi.mocked(api.listRuntimes).mockResolvedValue([
+      runtimeRow("dev"),
+    ] as never);
+
+    const { result: devResult } = renderSupport({ runtime_id: "runtime-1" });
+
+    await waitFor(() => expect(devResult.current).toBe(true));
   });
 
   it("returns null (no warning) when the agent, runtime binding, or runtime row is unknown", async () => {

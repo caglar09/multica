@@ -63,6 +63,10 @@ const MinLocalWorktreeCLIVersion = "0.4.24"
 // note. Bump this to the release that actually ships the daemon rendering.
 const MinHandoffCLIVersion = "0.3.28"
 
+func isDevVersion(d string) bool {
+	return d == "dev" || d == "development" || devDescribeRe.MatchString(d)
+}
+
 // HandoffSupported reports whether a daemon reporting cliVersion is new enough
 // to render handoff notes. Reuses the CheckMinCLIVersion parsing (including the
 // git-describe dev-build exemption) but never errors — a missing/old/unparsable
@@ -72,7 +76,7 @@ func HandoffSupported(cliVersion string) bool {
 	if d == "" {
 		return false
 	}
-	if devDescribeRe.MatchString(d) {
+	if isDevVersion(d) {
 		return true
 	}
 	parsed, err := parseSemver(d)
@@ -121,7 +125,7 @@ func CheckMinCLIVersionFor(detected, minimum string) error {
 	if d == "" {
 		return ErrCLIVersionMissing
 	}
-	if devDescribeRe.MatchString(d) {
+	if isDevVersion(d) {
 		return nil
 	}
 	parsed, err := parseSemver(d)

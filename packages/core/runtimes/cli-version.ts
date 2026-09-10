@@ -27,11 +27,22 @@ const SEMVER_RE = /v?(\d+)\.(\d+)\.(\d+)/;
 
 // Matches the `git describe --tags --always --dirty` output for a build past
 // the latest tag, e.g. `v0.2.15-235-gdaf0e935` or `v0.2.15-235-gdaf0e935-dirty`.
+// Matches the `git describe --tags --always --dirty` output for a build past
+// the latest tag, e.g. `v0.2.15-235-gdaf0e935` or `v0.2.15-235-gdaf0e935-dirty`.
 // Daemons built from source (Makefile `make build` / `make daemon`) report this
 // shape; tagged releases are bare semver. Treating dev-described daemons as OK
 // is what keeps `pnpm dev:desktop` + `make daemon` unblocked without weakening
 // the gate for staging or production users running stale stable releases.
 const DEV_DESCRIBE_RE = /^v?\d+\.\d+\.\d+-\d+-g[0-9a-fA-F]+/;
+
+/**
+ * Whether a reported CLI version is a development build (bare "dev", "development",
+ * or git-describe shape). Dev builds are exempt from minimum version gates.
+ */
+export function isDevCliVersion(detected: string | undefined | null): boolean {
+  const current = (detected ?? "").trim();
+  return current === "dev" || current === "development" || DEV_DESCRIBE_RE.test(current);
+}
 
 function parseSemver(raw: string): [number, number, number] | null {
   const m = SEMVER_RE.exec(raw.trim());
@@ -49,7 +60,7 @@ function lessThan(a: [number, number, number], b: [number, number, number]) {
  * Check a daemon-reported CLI version string against the minimum. Returns
  * `"missing"` for empty/unparsable input (fail closed — same policy as the
  * server) and `"too_old"` for a parsable version below the threshold.
- * Dev-built daemons (git-describe shape) are always OK — the version string
+ * Dev-built daemons (git-describe shape or "dev") are always OK — the version string
  * itself is the shared signal, so frontend and server agree by construction.
  */
 export function checkQuickCreateCliVersion(detected: string | undefined | null): CliVersionCheck {
@@ -68,7 +79,7 @@ function checkCliVersion(
   minimum: string,
 ): CliVersionCheck {
   const current = (detected ?? "").trim();
-  if (DEV_DESCRIBE_RE.test(current)) {
+  if (isDevCliVersion(current)) {
     return { state: "ok", current, min: minimum };
   }
   const parsed = current ? parseSemver(current) : null;
@@ -139,7 +150,7 @@ export function chatProjectContextSupported(detected: string | undefined | null)
 function meetsMinCliVersion(detected: string | undefined | null, minimum: string): boolean {
   const current = (detected ?? "").trim();
   if (!current) return false;
-  if (DEV_DESCRIBE_RE.test(current)) return true;
+  if (isDevCliVersion(current)) return true;
   const parsed = parseSemver(current);
   if (!parsed) return false;
   return !lessThan(parsed, parseSemver(minimum)!);

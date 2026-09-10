@@ -7,6 +7,7 @@ import {
 	Check,
 	ChevronRight,
 	Copy,
+	LayoutDashboard,
 	Link2,
 	ListTodo,
 	MoreHorizontal,
@@ -23,10 +24,20 @@ import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { toast } from "sonner";
+import { api } from "@multica/core/api";
 import type { ProjectStatus, ProjectPriority } from "@multica/core/types";
 import { useAuthStore } from "@multica/core/auth";
 import { projectDetailOptions } from "@multica/core/projects/queries";
-import { autonomousProjectOptions } from "@multica/core/projects";
+import {
+	autonomousProjectOptions,
+	projectLeaderChangesOptions,
+	projectLeaderChatOptions,
+	useApproveProjectLeaderChange,
+	useRejectProjectLeaderChange,
+	useResolveAutonomousEscalation,
+	useConfirmAutonomousTeam,
+} from "@multica/core/projects";
+import type { AutonomousRoleRuntimeAssignment } from "@multica/core/types";
 import {
 	useUpdateProject,
 	useDeleteProject,
@@ -39,7 +50,7 @@ import {
 } from "@multica/core/workspace/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssuesScope } from "@multica/core/issues/stores";
-import { useRecentContextStore } from "@multica/core/chat";
+import { useChatStore, useRecentContextStore } from "@multica/core/chat";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import {
@@ -61,6 +72,7 @@ import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { AutonomousControlCenter } from "./autonomous-control-center";
 import { ProjectReport } from "./project-report";
+import { ProjectCockpitView } from "./cockpit";
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -231,17 +243,104 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 			);
 		}
 	}, [localProjectDirectory, t]);
+	const leaderChat = useQuery({
+		...projectLeaderChatOptions(wsId, projectId),
+		enabled: Boolean(autonomousSnapshot?.enabled),
+	});
+	const leaderChanges = useQuery({
+		...projectLeaderChangesOptions(wsId, projectId),
+		enabled: Boolean(autonomousSnapshot?.enabled),
+	});
+	const approveLeaderChange = useApproveProjectLeaderChange();
+	const rejectLeaderChange = useRejectProjectLeaderChange();
+	const resolveEscalation = useResolveAutonomousEscalation();
+	const confirmTeam = useConfirmAutonomousTeam();
+
+	const handleConfirmTeam = useCallback(
+		(assignments: AutonomousRoleRuntimeAssignment[]) => {
+			confirmTeam.mutate(
+				{ projectId, assignments },
+				{
+					onSuccess: () =>
+						toast.success(t(($) => $.cockpit.toast_team_confirmed)),
+					onError: () =>
+						toast.error(t(($) => $.cockpit.toast_team_confirm_failed)),
+				},
+			);
+		},
+		[confirmTeam, projectId, t],
+	);
+
+	const handleOpenLeaderChat = useCallback(async () => {
+		let sessionId = leaderChat.data?.session?.id;
+		let pmAgentId = leaderChat.data?.leader?.id;
+
+		// If leader chat query hasn't resolved yet, try fetching fresh from API
+		if (!sessionId && autonomousSnapshot?.enabled) {
+			try {
+				const freshLeaderChat = await api.getProjectLeaderChat(projectId);
+				if (freshLeaderChat?.session?.id) {
+					sessionId = freshLeaderChat.session.id;
+					pmAgentId = freshLeaderChat.leader?.id;
+				}
+			} catch {
+				// Fallback to snapshot team or project lead
+			}
+		}
+
+		// Fallback resolution strictly for the project's manager agent:
+		if (!pmAgentId) {
+			pmAgentId =
+				autonomousSnapshot?.team?.members.find(
+					(m) => m.role === "product_manager",
+				)?.agent_id ??
+				autonomousSnapshot?.team?.members.find((m) => m.role === "lead")
+					?.agent_id ??
+				autonomousSnapshot?.team?.leader_agent_id ??
+				(project?.lead_type === "agent" ? project.lead_id : null) ??
+				undefined;
+		}
+
+		// Synchronize ChatStore:
+		// Set activeSessionId to the project leader session if available,
+		// or null to prevent stale sessions (e.g. general Mika chat) from masking the PM agent.
+		if (sessionId) {
+			useChatStore.getState().setActiveSession(sessionId);
+		} else {
+			useChatStore.getState().setActiveSession(null);
+		}
+
+		if (pmAgentId) {
+			useChatStore.getState().setSelectedAgentId(pmAgentId);
+		}
+		useChatStore.getState().setSelectedProjectId(projectId);
+		useChatStore.getState().setOpen(true);
+	}, [
+		leaderChat.data,
+		autonomousSnapshot?.enabled,
+		autonomousSnapshot?.team,
+		project?.lead_type,
+		project?.lead_id,
+		projectId,
+	]);
+
 	const [propertiesOpen, setPropertiesOpen] = useState(true);
 	const [progressOpen, setProgressOpen] = useState(true);
 	const [descriptionOpen, setDescriptionOpen] = useState(true);
 	const tabParam = router.searchParams.get("tab");
-	const contentView =
-		tabParam === "autonomous" || tabParam === "report" ? tabParam : "issues";
+	const contentView: "cockpit" | "issues" | "autonomous" | "report" =
+		tabParam === "issues"
+			? "issues"
+			: tabParam === "autonomous"
+				? "autonomous"
+				: tabParam === "report"
+					? "report"
+					: "cockpit";
 
 	const handleContentViewChange = useCallback(
-		(view: "issues" | "autonomous" | "report") => {
+		(view: "cockpit" | "issues" | "autonomous" | "report") => {
 			const params = new URLSearchParams(router.searchParams);
-			if (view === "issues") {
+			if (view === "cockpit") {
 				params.delete("tab");
 			} else {
 				params.set("tab", view);
@@ -1017,14 +1116,31 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 							}
 						/>
 
-						<div className="flex items-center gap-1 border-b px-3 py-1.5">
+						<div className="flex items-center gap-1 border-b px-3 py-1.5 bg-muted/10">
+							<Button
+								type="button"
+								size="sm"
+								variant={contentView === "cockpit" ? "secondary" : "ghost"}
+								onClick={() => handleContentViewChange("cockpit")}
+								className={cn(
+									"gap-1.5 text-xs font-medium transition-all",
+									contentView === "cockpit" && "bg-background shadow-xs font-semibold text-foreground",
+								)}
+							>
+								<LayoutDashboard className="size-3.5 text-primary" />
+								{t(($) => $.detail.tab_cockpit)}
+							</Button>
 							<Button
 								type="button"
 								size="sm"
 								variant={contentView === "issues" ? "secondary" : "ghost"}
 								onClick={() => handleContentViewChange("issues")}
+								className={cn(
+									"gap-1.5 text-xs font-medium transition-all",
+									contentView === "issues" && "bg-background shadow-xs font-semibold text-foreground",
+								)}
 							>
-								<ListTodo />
+								<ListTodo className="size-3.5" />
 								{t(($) => $.detail.tab_issues)}
 							</Button>
 							<Button
@@ -1032,8 +1148,12 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 								size="sm"
 								variant={contentView === "autonomous" ? "secondary" : "ghost"}
 								onClick={() => handleContentViewChange("autonomous")}
+								className={cn(
+									"gap-1.5 text-xs font-medium transition-all",
+									contentView === "autonomous" && "bg-background shadow-xs font-semibold text-foreground",
+								)}
 							>
-								<Sparkles />
+								<Sparkles className="size-3.5 text-purple-500" />
 								{t(($) => $.detail.tab_autonomous)}
 							</Button>
 							<Button
@@ -1041,14 +1161,50 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 								size="sm"
 								variant={contentView === "report" ? "secondary" : "ghost"}
 								onClick={() => handleContentViewChange("report")}
+								className={cn(
+									"gap-1.5 text-xs font-medium transition-all",
+									contentView === "report" && "bg-background shadow-xs font-semibold text-foreground",
+								)}
 							>
-								<BarChart3 />
+								<BarChart3 className="size-3.5" />
 								{t(($) => $.detail.tab_reports)}
 							</Button>
 						</div>
 
 						<div className="flex h-full min-h-0 flex-1 flex-col">
-							{contentView === "issues" ? (
+							{contentView === "cockpit" ? (
+								<ProjectCockpitView
+									project={project}
+									snapshot={autonomousSnapshot}
+									changeRequests={leaderChanges.data?.items}
+									canControl={isWorkspaceAdmin}
+									onNavigateTab={handleContentViewChange}
+									onOpenLeaderChat={handleOpenLeaderChat}
+									onConfirmTeam={handleConfirmTeam}
+									isConfirmingTeam={confirmTeam.isPending}
+									onApproveChange={(id) =>
+										approveLeaderChange.mutate({
+											projectId,
+											changeRequestId: id,
+										})
+									}
+									onRejectChange={(id) =>
+										rejectLeaderChange.mutate({
+											projectId,
+											changeRequestId: id,
+										})
+									}
+									onResolveEscalation={(id) =>
+										resolveEscalation.mutate({
+											projectId,
+											escalationId: id,
+											decision: "approved",
+										})
+									}
+									isApproving={approveLeaderChange.isPending}
+									isRejecting={rejectLeaderChange.isPending}
+								/>
+							) : contentView === "issues" ? (
 								<IssueSurface
 									scope={issueScope}
 									modes={["board", "list", "table", "swimlane", "gantt"]}
