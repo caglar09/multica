@@ -73,12 +73,20 @@ type IssueResponse struct {
 	// Stage groups sub-issues under the same parent into ordered barrier
 	// groups (null = unstaged). See issue_child_done.go for how a closed
 	// stage gates the child-done -> parent wake.
-	Stage     *int32  `json:"stage"`
-	StartDate *string `json:"start_date"`
-	DueDate   *string `json:"due_date"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-	Revision  int64   `json:"revision"`
+	Stage *int32 `json:"stage"`
+	// Dependency fields are derived from issue_dependency. The directed lists
+	// make ordering explicit: blocked_by must finish before this issue; blocks
+	// lists the work that waits on this issue.
+	BlockedBy              []IssueDependencyResponse `json:"blocked_by,omitempty"`
+	Blocks                 []IssueDependencyResponse `json:"blocks,omitempty"`
+	IsBlocked              bool                      `json:"is_blocked"`
+	UnresolvedBlockerCount int                       `json:"unresolved_blocker_count"`
+	DependencyState        string                    `json:"dependency_state,omitempty"`
+	StartDate              *string                   `json:"start_date"`
+	DueDate                *string                   `json:"due_date"`
+	CreatedAt              string                    `json:"created_at"`
+	UpdatedAt              string                    `json:"updated_at"`
+	Revision               int64                     `json:"revision"`
 	// LastActivityAt is the latest semantic issue activity. It stays nullable
 	// while the operator-run historical backfill is incomplete.
 	LastActivityAt *string `json:"last_activity_at"`
@@ -1021,6 +1029,14 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		resp[i] = sir
 	}
+	dependencyResponses := make([]*IssueResponse, len(resp))
+	for i := range resp {
+		dependencyResponses[i] = &resp[i].IssueResponse
+	}
+	if err := h.fillIssueDependencyStates(ctx, wsUUID, dependencyResponses); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
+	}
 
 	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1179,6 +1195,10 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 				labels = []LabelResponse{}
 			}
 			resp[i].Labels = &labels
+		}
+		if err := h.fillIssueDependencyStates(ctx, wsUUID, issueResponsePointers(resp)); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -1581,6 +1601,10 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 		resp[i].Labels = &labels
 	}
 	h.fillStatusCategories(ctx, wsUUID, resp)
+	if err := h.fillIssueDependencyStates(ctx, wsUUID, issueResponsePointers(resp)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
@@ -2205,6 +2229,16 @@ ORDER BY
 		issue.Labels = &labels
 		groups[idx].Issues = append(groups[idx].Issues, issue)
 	}
+	var dependencyResponses []*IssueResponse
+	for groupIndex := range groups {
+		for issueIndex := range groups[groupIndex].Issues {
+			dependencyResponses = append(dependencyResponses, &groups[groupIndex].Issues[issueIndex])
+		}
+	}
+	if err := h.fillIssueDependencyStates(ctx, wsUUID, dependencyResponses); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, GroupedIssuesResponse{Groups: groups})
 }
@@ -2223,6 +2257,10 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		detailLabels = []LabelResponse{}
 	}
 	resp.Labels = &detailLabels
+	if err := h.fillIssueDependencyStates(r.Context(), issue.WorkspaceID, []*IssueResponse{&resp}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
+	}
 
 	// Fetch issue reactions.
 	reactions, err := h.Queries.ListIssueReactions(r.Context(), issue.ID)
@@ -2292,6 +2330,10 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 			labels = []LabelResponse{}
 		}
 		resp[i].Labels = &labels
+	}
+	if err := h.fillIssueDependencyStates(r.Context(), issue.WorkspaceID, issueResponsePointers(resp)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
@@ -2378,6 +2420,10 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 			labels = []LabelResponse{}
 		}
 		resp[i].Labels = &labels
+	}
+	if err := h.fillIssueDependencyStates(r.Context(), wsUUID, issueResponsePointers(resp)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
@@ -3432,6 +3478,24 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		statusKeyForGuard = statusKey
 		params.Status = pgtype.Text{String: statusKey, Valid: true}
+		effectiveStatus := issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, statusKey)
+		if effectiveStatus != "backlog" && effectiveStatus != "blocked" && effectiveStatus != "cancelled" {
+			blocked, dependencyErr := h.Queries.IssueHasUnresolvedDependencies(r.Context(), db.IssueHasUnresolvedDependenciesParams{
+				WorkspaceID: prevIssue.WorkspaceID,
+				IssueID:     prevIssue.ID,
+			})
+			if dependencyErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to check issue dependencies")
+				return
+			}
+			if blocked {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"code":    "dependency_blocked",
+					"message": "issue cannot progress until all blocked-by issues are done",
+				})
+				return
+			}
+		}
 	}
 	if req.Priority != nil {
 		if !validateIssueEnum(w, "priority", *req.Priority, validIssuePriorities) {

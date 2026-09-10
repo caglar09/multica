@@ -303,6 +303,7 @@ var concurrentIndexCleanups = map[string]string{
 	"451_autonomous_workflow_action_order_index":                "idx_autonomous_workflow_action_order",
 	"452_autonomous_workflow_processed_run_index":               "idx_autonomous_workflow_processed_run",
 	"456_autonomous_workflow_run_project_index":                  "idx_autonomous_workflow_run_project",
+	"498_issue_dependency_unique_index":                         "idx_issue_dependency_unique_edge",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -326,6 +327,7 @@ var concurrentDownIndexCleanups = map[string]string{
 	"375_drop_issue_last_activity_index":                    "idx_issue_workspace_last_activity",
 	"391_drop_agent_task_queue_dispatched_prepare_index":    "idx_agent_task_queue_dispatched_prepare",
 	"437_drop_agent_runtime_last_seen_at_index":             "idx_agent_runtime_last_seen_at",
+	"498_issue_dependency_unique_index":                     "idx_issue_dependency_unique_edge",
 }
 
 var preMigrationHooks = func() map[string]preMigrationHook {

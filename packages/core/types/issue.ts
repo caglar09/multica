@@ -157,6 +157,30 @@ export interface IssueSourceContext {
   snapshot: SourceContextSnapshot;
 }
 
+export interface IssueDependencyIssue {
+  id: string;
+  identifier: string;
+  title: string;
+  status: IssueStatus;
+  done: boolean;
+}
+
+export interface IssueDependency {
+  id: string;
+  type: "blocked_by" | (string & {});
+  issue_id: string;
+  depends_on_issue_id: string;
+  related_issue: IssueDependencyIssue;
+}
+
+export interface IssueDependencyState {
+  blocked_by: IssueDependency[];
+  blocks: IssueDependency[];
+  is_blocked: boolean;
+  unresolved_blocker_count: number;
+  dependency_state: "blocked" | "ready" | "unblocked" | (string & {});
+}
+
 export interface Issue {
   id: string;
   workspace_id: string;
@@ -193,6 +217,13 @@ export interface Issue {
   // parent assignee is notified/woken only when every sub-issue in a stage
   // finishes; see server/internal/handler/issue_child_done.go.
   stage: number | null;
+  /** Directed issue dependencies. A blocked issue cannot be progressed or
+   * enqueued until every `blocked_by` issue is done/cancelled. */
+  blocked_by?: IssueDependency[];
+  blocks?: IssueDependency[];
+  is_blocked?: boolean;
+  unresolved_blocker_count?: number;
+  dependency_state?: IssueDependencyState["dependency_state"];
   // Calendar days as date-only "YYYY-MM-DD" (no time, no timezone). Use the
   // helpers in @multica/core/issues/date to format/compare — never `new Date()`
   // + local formatting, which shifts the day by the viewer's offset.
