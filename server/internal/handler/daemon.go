@@ -2668,19 +2668,56 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		projectCtx.applyTo(&resp)
 		var sessionKind string
-		if err := h.DB.QueryRow(r.Context(), `SELECT session_kind FROM chat_session WHERE id=$1`, cs.ID).Scan(&sessionKind); err == nil && (sessionKind == "autonomous_project_leader" || sessionKind == "autonomous_project_planning") && cs.ProjectID.Valid && resp.Agent != nil {
-			// Project Manager and hidden planning turns are reasoning-only.
-			// The daemon enforces the provider policy below; this marker must
-			// never be inferred from instructions or user text.
-			resp.Agent.ReadOnly = true
-			resp.PluginHookTools = nil
-			resp.RemoteMCPConnections = nil
-			leaderContext, contextErr := h.buildProjectLeaderContext(r.Context(), cs.WorkspaceID, cs.ProjectID, projectCtx)
-			if contextErr != nil {
-				slog.Warn("project leader context unavailable; delivery continues without proposal context", "task_id", uuidToString(task.ID), "project_id", uuidToString(cs.ProjectID), "error", contextErr)
-				resp.Agent.Instructions += "\n\n## Project Leader Contract\n" + projectLeaderChatContract + "\n\n## Project Leader Context\nContext could not be loaded. Do not produce a proposal; explain that project context is temporarily unavailable."
-			} else {
-				resp.Agent.Instructions += "\n\n## Project Leader Contract\n" + projectLeaderChatContract + "\n\n## Project Leader Context\n" + leaderContext
+		if err := h.DB.QueryRow(r.Context(), `SELECT session_kind FROM chat_session WHERE id=$1`, cs.ID).Scan(&sessionKind); err == nil && cs.ProjectID.Valid && resp.Agent != nil {
+			reasoningOnlySession := sessionKind == "autonomous_project_leader" || sessionKind == "autonomous_project_planning"
+			projectManagerChat := false
+			if !reasoningOnlySession {
+				// A standard project chat can still be opened against the
+				// provisioned Project Manager agent. Resolve the role from the
+				// active project team instead of trusting the agent name or chat
+				// instructions; those are user-editable and are not a security
+				// boundary.
+				if err := h.DB.QueryRow(r.Context(), `
+					SELECT EXISTS (
+						SELECT 1
+						FROM autonomous_project_team_member tm
+						JOIN autonomous_project_team team ON team.id = tm.team_id
+						WHERE tm.agent_id = $1
+						  AND tm.role = 'product_manager'
+						  AND tm.active = TRUE
+						  AND team.workspace_id = $2
+						  AND team.project_id = $3
+						  AND team.status = 'active'
+					)
+				`, task.AgentID, cs.WorkspaceID, cs.ProjectID).Scan(&projectManagerChat); err != nil {
+					slog.Error("chat claim: failed to resolve project manager policy; preserving task for redelivery",
+						"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+					return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "error_project_manager_policy",
+						status:  http.StatusInternalServerError,
+						message: "failed to resolve project manager policy",
+					}
+				}
+			}
+
+			if projectManagerChatNeedsReadOnly(sessionKind, projectManagerChat) {
+				// Project Manager and hidden planning turns are reasoning-only.
+				// The daemon enforces the provider policy below; this marker must
+				// never be inferred from instructions or user text.
+				resp.Agent.ReadOnly = true
+				resp.PluginHookTools = nil
+				resp.RemoteMCPConnections = nil
+				if projectManagerChat {
+					resp.Agent.Instructions += "\n\n## Project Manager Chat Contract\n" + projectManagerChatContract
+				} else {
+					leaderContext, contextErr := h.buildProjectLeaderContext(r.Context(), cs.WorkspaceID, cs.ProjectID, projectCtx)
+					if contextErr != nil {
+						slog.Warn("project leader context unavailable; delivery continues without proposal context", "task_id", uuidToString(task.ID), "project_id", uuidToString(cs.ProjectID), "error", contextErr)
+						resp.Agent.Instructions += "\n\n## Project Leader Contract\n" + projectLeaderChatContract + "\n\n## Project Leader Context\nContext could not be loaded. Do not produce a proposal; explain that project context is temporarily unavailable."
+					} else {
+						resp.Agent.Instructions += "\n\n## Project Leader Contract\n" + projectLeaderChatContract + "\n\n## Project Leader Context\n" + leaderContext
+					}
+				}
 			}
 		}
 		if !task.ForceFreshSession && !task.ChannelContextRevision.Valid {
@@ -3208,6 +3245,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	}
 
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
+}
+
+func projectManagerChatNeedsReadOnly(sessionKind string, projectManagerChat bool) bool {
+	return projectManagerChat || sessionKind == "autonomous_project_leader" || sessionKind == "autonomous_project_planning"
 }
 
 // worktreeClaimBlockReason returns a user-facing reason when this runtime must

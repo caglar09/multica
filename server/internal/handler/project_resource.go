@@ -884,6 +884,11 @@ Read the supplied project, plan, issue, Brain and documentation context. Serve t
 Allowed proposal operations are only add_node, update_not_started_node, cancel_not_started_node, add_dependency, remove_dependency, and replace_dependency. Every operation needs a reason. Never change running, verification, completed, blocked, or cancelled work; propose a follow-up node instead.
 If no change is ready, return {"message":"..."} without a proposal. The backend validates and owns every mutation.`
 
+const projectManagerChatContract = `You are the Project Manager for this project in a direct chat.
+This is a planning and coordination turn. Do not edit production files, implement code, run tests or builds to make a requested change, or mutate existing issues, plans, agents, or workflow state.
+When the user requests an implementation or a concrete project change, create one tracked issue in the current project with a clear title, scope, and acceptance criteria by using the issue-creation workflow, then report the created issue identifier. Do not implement the requested change yourself. If the request is incomplete, ask focused clarification questions before creating the issue.
+Read-only project context is available for planning; the server enforces the file-write restriction.`
+
 // buildProjectLeaderContext keeps the coordinator's input bounded while still
 // giving it the durable project state it is allowed to reason about. Delivery
 // agents continue to receive the smaller claimProjectContext above.

@@ -1758,17 +1758,22 @@ blockedNodeLoop:
 		case "quality_policy":
 			// Repair & continue is an explicit request to rerun a failed
 			// contract/quality check. The node itself must be released; merely
-			// resolving the escalation leaves it permanently blocked.
+			// resolving the escalation leaves it permanently blocked. A resolved
+			// escalation is only a retry signal for the block that preceded it;
+			// historical resolutions must not resurrect a newer quality failure.
 			if node.ID != "" {
 				var nodeID pgtype.UUID
 				if parsed, parseErr := util.ParseUUID(node.ID); parseErr == nil {
 					nodeID = parsed
 					if err := r.pool.QueryRow(ctx, `
 						SELECT EXISTS (
-							SELECT 1 FROM autonomous_project_escalation
-							WHERE workspace_id=$1 AND project_id=$2
-							  AND node_id=$3 AND status='resolved'
-							  AND category IN ('contract_violation','quality_policy','technical_failure')
+							SELECT 1
+							FROM autonomous_project_escalation e
+							JOIN autonomous_project_plan_node n ON n.id = e.node_id
+							WHERE e.workspace_id=$1 AND e.project_id=$2
+							  AND e.node_id=$3 AND e.status='resolved'
+							  AND e.resolved_at > n.updated_at
+							  AND e.category IN ('contract_violation','quality_policy','technical_failure')
 						)
 					`, workspaceID, projectID, nodeID).Scan(&resolved); err != nil {
 						return err
