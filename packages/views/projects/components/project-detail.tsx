@@ -284,31 +284,17 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 					pmAgentId = freshLeaderChat.leader?.id;
 				}
 			} catch {
-				// Fallback to snapshot team or project lead
+				// The dedicated session is required for the protected PM flow.
 			}
 		}
 
-		// Fallback resolution strictly for the project's manager agent:
-		if (!pmAgentId) {
-			pmAgentId =
-				autonomousSnapshot?.team?.members.find(
-					(m) => m.role === "product_manager",
-				)?.agent_id ??
-				autonomousSnapshot?.team?.members.find((m) => m.role === "lead")
-					?.agent_id ??
-				autonomousSnapshot?.team?.leader_agent_id ??
-				(project?.lead_type === "agent" ? project.lead_id : null) ??
-				undefined;
+		if (!sessionId) {
+			toast.error(t(($) => $.cockpit.toast_leader_chat_unavailable));
+			return;
 		}
 
 		// Synchronize ChatStore:
-		// Set activeSessionId to the project leader session if available,
-		// or null to prevent stale sessions (e.g. general Mika chat) from masking the PM agent.
-		if (sessionId) {
-			useChatStore.getState().setActiveSession(sessionId);
-		} else {
-			useChatStore.getState().setActiveSession(null);
-		}
+		useChatStore.getState().setActiveSession(sessionId);
 
 		if (pmAgentId) {
 			useChatStore.getState().setSelectedAgentId(pmAgentId);
@@ -318,9 +304,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	}, [
 		leaderChat.data,
 		autonomousSnapshot?.enabled,
-		autonomousSnapshot?.team,
-		project?.lead_type,
-		project?.lead_id,
+		t,
 		projectId,
 	]);
 

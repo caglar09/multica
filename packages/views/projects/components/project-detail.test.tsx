@@ -16,6 +16,13 @@ const mocks = vi.hoisted(() => ({
   replace: vi.fn(),
   recordVisit: vi.fn(),
   toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+  leaderChatData: undefined as
+    | {
+        session: { id: string };
+        leader: { id: string; name: string };
+      }
+    | undefined,
   setActiveSession: vi.fn(),
   setSelectedAgentId: vi.fn(),
   setSelectedProjectId: vi.fn(),
@@ -67,10 +74,7 @@ vi.mock("@tanstack/react-query", () => ({
         return { data: { items: [] }, isLoading: false };
       case "project-leader-chat":
         return {
-          data: {
-            session: { id: "pm-session-1" },
-            leader: { id: "pm-agent-1", name: "Project Director" },
-          },
+          data: mocks.leaderChatData,
           isLoading: false,
         };
       default:
@@ -133,7 +137,7 @@ vi.mock("@multica/core/workspace/hooks", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: { success: mocks.toastSuccess },
+  toast: { success: mocks.toastSuccess, error: mocks.toastError },
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -369,6 +373,15 @@ beforeEach(() => {
   mocks.replace.mockReset();
   mocks.recordVisit.mockReset();
   mocks.toastSuccess.mockReset();
+  mocks.toastError.mockReset();
+  mocks.leaderChatData = {
+    session: { id: "pm-session-1" },
+    leader: { id: "pm-agent-1", name: "Project Director" },
+  };
+  mocks.setActiveSession.mockReset();
+  mocks.setSelectedAgentId.mockReset();
+  mocks.setSelectedProjectId.mockReset();
+  mocks.setOpen.mockReset();
 });
 
 describe("ProjectDetail content tabs", () => {
@@ -522,5 +535,19 @@ describe("ProjectDetail inspector sidebar", () => {
     expect(mocks.setSelectedAgentId).toHaveBeenCalledWith("pm-agent-1");
     expect(mocks.setSelectedProjectId).toHaveBeenCalledWith(PROJECT.id);
     expect(mocks.setOpen).toHaveBeenCalledWith(true);
+  });
+
+  it("does not fall back to a standard PM chat when the dedicated session is unavailable", async () => {
+    const user = userEvent.setup();
+    mocks.leaderChatData = undefined;
+    renderProjectDetail();
+
+    await user.click(screen.getByRole("button", { name: /ask project manager/i }));
+
+    expect(mocks.setOpen).not.toHaveBeenCalled();
+    expect(mocks.setSelectedAgentId).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Project Manager chat is temporarily unavailable",
+    );
   });
 });

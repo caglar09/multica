@@ -301,6 +301,7 @@
     "bootstrapping_suggested_model": "模型: {{model}}",
     "bootstrapping_roles_count": "{{count}} 个拟议角色",
     "toast_team_confirmed": "自主团队已确认；正在配置 Agent",
-    "toast_team_confirm_failed": "确认自主团队失败"
+    "toast_team_confirm_failed": "确认自主团队失败",
+    "toast_leader_chat_unavailable": "项目经理聊天暂时不可用"
   }
 }

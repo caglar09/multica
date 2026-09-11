@@ -303,6 +303,7 @@
     "bootstrapping_suggested_model": "Model: {{model}}",
     "bootstrapping_roles_count": "{{count}} Proposed Roles",
     "toast_team_confirmed": "Autonomous squad confirmed; agents are being provisioned",
-    "toast_team_confirm_failed": "Failed to confirm autonomous squad"
+    "toast_team_confirm_failed": "Failed to confirm autonomous squad",
+    "toast_leader_chat_unavailable": "Project Manager chat is temporarily unavailable"
   }
 }

@@ -301,6 +301,7 @@
     "bootstrapping_suggested_model": "모델: {{model}}",
     "bootstrapping_roles_count": "{{count}}개 제안된 역할",
     "toast_team_confirmed": "자율 스쿼드가 승인되었습니다. 에이전트가 프로비저닝되는 중입니다",
-    "toast_team_confirm_failed": "자율 스쿼드 승인에 실패했습니다"
+    "toast_team_confirm_failed": "자율 스쿼드 승인에 실패했습니다",
+    "toast_leader_chat_unavailable": "프로젝트 관리자 채팅을 현재 사용할 수 없습니다"
   }
 }

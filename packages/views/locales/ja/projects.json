@@ -301,6 +301,7 @@
     "bootstrapping_suggested_model": "モデル: {{model}}",
     "bootstrapping_roles_count": "{{count}} 件の提案された役割",
     "toast_team_confirmed": "自律スクワッドが承認されました。エージェントがプロビジョニングされています",
-    "toast_team_confirm_failed": "自律スクワッドの承認に失敗しました"
+    "toast_team_confirm_failed": "自律スクワッドの承認に失敗しました",
+    "toast_leader_chat_unavailable": "プロジェクトマネージャーのチャットは現在利用できません"
   }
 }

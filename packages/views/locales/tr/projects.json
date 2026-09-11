@@ -303,6 +303,7 @@
     "bootstrapping_suggested_model": "Model: {{model}}",
     "bootstrapping_roles_count": "{{count}} Önerilen Rol",
     "toast_team_confirmed": "Otonom ekip onaylandı; ajanlar oluşturuluyor",
-    "toast_team_confirm_failed": "Otonom ekip onaylanamadı"
+    "toast_team_confirm_failed": "Otonom ekip onaylanamadı",
+    "toast_leader_chat_unavailable": "Proje Yöneticisi sohbeti şu anda kullanılamıyor"
   }
 }
