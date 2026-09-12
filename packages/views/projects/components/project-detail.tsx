@@ -12,8 +12,11 @@ import {
 	ListTodo,
 	MoreHorizontal,
 	PanelRight,
+	Pause,
 	Pin,
 	PinOff,
+	Play,
+	RotateCcw,
 	SlidersHorizontal,
 	Sparkles,
 	Terminal,
@@ -36,6 +39,9 @@ import {
 	useRejectProjectLeaderChange,
 	useResolveAutonomousEscalation,
 	useConfirmAutonomousTeam,
+	usePauseAutonomousProject,
+	useResumeAutonomousProject,
+	useReplanAutonomousProject,
 } from "@multica/core/projects";
 import type { AutonomousRoleRuntimeAssignment } from "@multica/core/types";
 import {
@@ -255,6 +261,9 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	const rejectLeaderChange = useRejectProjectLeaderChange();
 	const resolveEscalation = useResolveAutonomousEscalation();
 	const confirmTeam = useConfirmAutonomousTeam();
+	const pauseAutonomousProject = usePauseAutonomousProject();
+	const resumeAutonomousProject = useResumeAutonomousProject();
+	const replanAutonomousProject = useReplanAutonomousProject();
 
 	const handleConfirmTeam = useCallback(
 		(assignments: AutonomousRoleRuntimeAssignment[]) => {
@@ -307,6 +316,49 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 		t,
 		projectId,
 	]);
+
+	const isExecutionPaused = Boolean(autonomousSnapshot?.control.paused);
+	const isExecutionActive = Boolean(
+		autonomousSnapshot?.health.active_workflows &&
+			autonomousSnapshot.health.active_workflows > 0,
+	);
+	const isExecutionAttention = Boolean(
+		autonomousSnapshot?.health.status === "attention" ||
+			leaderChanges.data?.items.some(
+				(change) => change.state === "approval_required",
+			) ||
+			autonomousSnapshot?.escalations?.length,
+	);
+	const activeAgents =
+		autonomousSnapshot?.team?.members.filter((member) => member.active).length ??
+		0;
+
+	const handleToggleExecution = () => {
+		const mutation = isExecutionPaused
+			? resumeAutonomousProject
+			: pauseAutonomousProject;
+		mutation.mutate(projectId, {
+			onSuccess: () =>
+				toast.success(
+					isExecutionPaused
+						? t(($) => $.cockpit.toast_resume_success)
+						: t(($) => $.cockpit.toast_pause_success),
+				),
+			onError: () =>
+				toast.error(
+					isExecutionPaused
+						? t(($) => $.cockpit.toast_resume_error)
+						: t(($) => $.cockpit.toast_pause_error),
+				),
+		});
+	};
+
+	const handleReplanExecution = () => {
+		replanAutonomousProject.mutate(projectId, {
+			onSuccess: () => toast.success(t(($) => $.cockpit.toast_replan_success)),
+			onError: () => toast.error(t(($) => $.cockpit.toast_replan_error)),
+		});
+	};
 
 	const [propertiesOpen, setPropertiesOpen] = useState(true);
 	const [progressOpen, setProgressOpen] = useState(true);
@@ -1009,6 +1061,92 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 							}
 							actions={
 								<>
+									{autonomousSnapshot?.enabled ? (
+										<div className="hidden items-center gap-2 lg:flex">
+											<div className="flex items-center gap-1.5 text-caption font-medium">
+												<span
+													className={cn(
+														"size-2 rounded-full",
+														isExecutionActive
+															? "animate-pulse bg-emerald-500"
+															: isExecutionPaused
+																? "bg-amber-500"
+																: isExecutionAttention
+																	? "bg-destructive"
+																	: "bg-muted-foreground/50",
+													)}
+												/>
+												<span>
+													{isExecutionActive
+														? t(($) => $.cockpit.health_running)
+														: isExecutionPaused
+															? t(($) => $.cockpit.health_paused)
+															: isExecutionAttention
+																? t(($) => $.cockpit.health_attention)
+																: t(($) => $.cockpit.health_idle)}
+												</span>
+											</div>
+											<span className="h-3.5 w-px bg-border" />
+											<span className="text-caption font-mono text-muted-foreground">
+												{t(($) => $.cockpit.active_agents_count, {
+													count: activeAgents,
+												})}
+											</span>
+										</div>
+									) : null}
+									{isWorkspaceAdmin && autonomousSnapshot?.enabled ? (
+										<>
+											<Button
+												variant={isExecutionPaused ? "default" : "outline"}
+												size="sm"
+												onClick={handleToggleExecution}
+												disabled={
+													pauseAutonomousProject.isPending ||
+													resumeAutonomousProject.isPending
+												}
+												aria-label={
+													isExecutionPaused
+														? t(($) => $.cockpit.resume_execution)
+														: t(($) => $.cockpit.pause_execution)
+												}
+												className="h-7 gap-1 px-2.5 text-caption"
+											>
+												{isExecutionPaused ? <Play className="size-3" /> : <Pause className="size-3" />}
+												<span className="hidden xl:inline">
+													{isExecutionPaused
+														? t(($) => $.cockpit.resume_execution)
+														: t(($) => $.cockpit.pause_execution)}
+												</span>
+											</Button>
+											<Button
+												variant="outline"
+												size="sm"
+												onClick={handleReplanExecution}
+												disabled={replanAutonomousProject.isPending}
+												aria-label={t(($) => $.cockpit.replan_project)}
+												className="h-7 gap-1 px-2.5 text-caption"
+											>
+												<RotateCcw className="size-3" />
+												<span className="hidden xl:inline">
+													{t(($) => $.cockpit.replan_project)}
+												</span>
+											</Button>
+										</>
+									) : null}
+									{autonomousSnapshot?.enabled ? (
+										<Button
+											variant="secondary"
+											size="sm"
+											onClick={handleOpenLeaderChat}
+											aria-label={t(($) => $.cockpit.ask_pm)}
+											className="h-7 gap-1 border border-primary/20 bg-primary/10 px-2.5 text-caption font-medium text-primary hover:bg-primary/20"
+										>
+											<Sparkles className="size-3" />
+											<span className="hidden sm:inline">
+												{t(($) => $.cockpit.ask_pm)}
+											</span>
+										</Button>
+									) : null}
 									<Button
 										variant="ghost"
 										size="icon-sm"

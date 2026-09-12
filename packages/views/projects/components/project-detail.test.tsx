@@ -27,6 +27,9 @@ const mocks = vi.hoisted(() => ({
   setSelectedAgentId: vi.fn(),
   setSelectedProjectId: vi.fn(),
   setOpen: vi.fn(),
+  pauseAutonomousProject: vi.fn(),
+  resumeAutonomousProject: vi.fn(),
+  replanAutonomousProject: vi.fn(),
 }));
 
 vi.mock("@multica/ui/lib/clipboard", () => ({
@@ -47,6 +50,18 @@ vi.mock("@multica/core/projects", () => ({
   useRejectProjectLeaderChange: () => ({ mutate: vi.fn(), isPending: false }),
   useResolveAutonomousEscalation: () => ({ mutate: vi.fn(), isPending: false }),
   useConfirmAutonomousTeam: () => ({ mutate: vi.fn(), isPending: false }),
+  usePauseAutonomousProject: () => ({
+    mutate: mocks.pauseAutonomousProject,
+    isPending: false,
+  }),
+  useResumeAutonomousProject: () => ({
+    mutate: mocks.resumeAutonomousProject,
+    isPending: false,
+  }),
+  useReplanAutonomousProject: () => ({
+    mutate: mocks.replanAutonomousProject,
+    isPending: false,
+  }),
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -72,6 +87,31 @@ vi.mock("@tanstack/react-query", () => ({
         return { data: [], isLoading: false };
       case "project-leader-changes":
         return { data: { items: [] }, isLoading: false };
+      case "autonomous-project":
+        return {
+          data: {
+            enabled: true,
+            control: { paused: true },
+            health: { active_workflows: 0 },
+            team: {
+              members: [
+                {
+                  agent_id: "agent-1",
+                  agent_name: "Planner",
+                  role: "planner",
+                  active: true,
+                },
+                {
+                  agent_id: "agent-2",
+                  agent_name: "Builder",
+                  role: "builder",
+                  active: true,
+                },
+              ],
+            },
+          },
+          isLoading: false,
+        };
       case "project-leader-chat":
         return {
           data: mocks.leaderChatData,
@@ -296,13 +336,7 @@ vi.mock("./autonomous-control-center", () => ({
 }));
 
 vi.mock("./cockpit", () => ({
-  ProjectCockpitView: ({ onOpenLeaderChat }: { onOpenLeaderChat?: () => void }) => (
-    <div data-testid="project-cockpit-view">
-      <button type="button" onClick={onOpenLeaderChat}>
-        Ask Project Manager
-      </button>
-    </div>
-  ),
+  ProjectCockpitView: () => <div data-testid="project-cockpit-view" />,
 }));
 
 vi.mock("../../layout/breadcrumb-header", () => ({
@@ -382,6 +416,9 @@ beforeEach(() => {
   mocks.setSelectedAgentId.mockReset();
   mocks.setSelectedProjectId.mockReset();
   mocks.setOpen.mockReset();
+  mocks.pauseAutonomousProject.mockReset();
+  mocks.resumeAutonomousProject.mockReset();
+  mocks.replanAutonomousProject.mockReset();
 });
 
 describe("ProjectDetail content tabs", () => {
@@ -535,6 +572,21 @@ describe("ProjectDetail inspector sidebar", () => {
     expect(mocks.setSelectedAgentId).toHaveBeenCalledWith("pm-agent-1");
     expect(mocks.setSelectedProjectId).toHaveBeenCalledWith(PROJECT.id);
     expect(mocks.setOpen).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps paused execution controls in the project header", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("tab=issues");
+
+    expect(screen.getByText("Execution Paused")).toBeInTheDocument();
+    expect(screen.getByText("2 Active Agents")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /resume loop/i }));
+
+    expect(mocks.resumeAutonomousProject).toHaveBeenCalledWith(
+      PROJECT.id,
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
   });
 
   it("does not fall back to a standard PM chat when the dedicated session is unavailable", async () => {

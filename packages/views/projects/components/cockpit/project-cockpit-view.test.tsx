@@ -177,7 +177,7 @@ const MOCK_CHANGES: ProjectLeaderChangeRequest[] = [
 ];
 
 describe("ProjectCockpitView", () => {
-  it("renders all 6 widgets and mission control strip correctly", () => {
+  it("renders all six cockpit widgets", () => {
     const onNavigateTab = vi.fn();
     const onOpenLeaderChat = vi.fn();
 
@@ -192,35 +192,29 @@ describe("ProjectCockpitView", () => {
       />,
     );
 
-    // 1. Mission Control Header & Controls
-    expect(screen.getByText("Autonomous Loop Active")).toBeInTheDocument();
-    expect(screen.getByText("Pause Loop")).toBeInTheDocument();
-    expect(screen.getByText("Replan")).toBeInTheDocument();
-    expect(screen.getByText("Ask Project Manager")).toBeInTheDocument();
-
-    // 2. Widget 1: Live Squad
+    // 1. Widget 1: Live Squad
     expect(screen.getByText("Autonomous Squad")).toBeInTheDocument();
     expect(screen.getByText("Mika (Lead)")).toBeInTheDocument();
     expect(screen.getByText("Nexus (Backend)")).toBeInTheDocument();
 
-    // 3. Widget 2: Execution Loop & Feed
+    // 2. Widget 2: Execution Loop & Feed
     expect(screen.getByText("Execution Loop & Live Feed")).toBeInTheDocument();
     expect(screen.getByText("Implement Stripe Webhook Idempotency")).toBeInTheDocument();
 
-    // 4. Widget 3: Decision Gate (Human in the Loop)
+    // 3. Widget 3: Decision Gate (Human in the Loop)
     expect(screen.getByText("Human-in-the-Loop & Approvals")).toBeInTheDocument();
     expect(screen.getByText("Add Caching Layer to Product Catalog")).toBeInTheDocument();
 
-    // 5. Widget 4: Issues Velocity
+    // 4. Widget 4: Issues Velocity
     expect(screen.getByText("Sprint & Issue Velocity")).toBeInTheDocument();
     expect(screen.getByText("60%")).toBeInTheDocument();
 
-    // 6. Widget 5: Telemetry & Budget
+    // 5. Widget 5: Telemetry & Budget
     expect(screen.getByText("Telemetry & Budget")).toBeInTheDocument();
     expect(screen.getAllByText(/125(\.4)?k/i).length).toBeGreaterThan(0);
     expect(screen.getByText("$4.80")).toBeInTheDocument();
 
-    // 7. Widget 6: Brain & Quality
+    // 6. Widget 6: Brain & Quality
     expect(screen.getByText("Project Brain & Quality")).toBeInTheDocument();
     expect(screen.getByText("18")).toBeInTheDocument();
     expect(screen.getByText("3 / 3 (100%)")).toBeInTheDocument();
@@ -256,10 +250,6 @@ describe("ProjectCockpitView", () => {
     await user.click(viewIssuesButton);
     expect(onNavigateTab).toHaveBeenCalledWith("issues");
 
-    // Click Ask PM
-    const askPmButton = screen.getByRole("button", { name: /ask project manager/i });
-    await user.click(askPmButton);
-    expect(onOpenLeaderChat).toHaveBeenCalled();
   });
 
   it("renders squad bootstrapping proposal card when snapshot.draft is present and handles confirmation", async () => {

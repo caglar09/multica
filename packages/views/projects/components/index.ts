@@ -1,4 +1,5 @@
 export { ProjectsPage } from "./projects-page";
+export { ProjectDashboardPage } from "./project-dashboard-page";
 export { ProjectDetail } from "./project-detail";
 export { ProjectPicker } from "./project-picker";
 export { ProjectChip } from "./project-chip";
