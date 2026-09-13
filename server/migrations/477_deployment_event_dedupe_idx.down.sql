@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS deployment_event_workspace_dedupe_uidx;
