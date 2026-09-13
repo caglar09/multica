@@ -52,6 +52,7 @@ export function DecisionGateWidget({
   );
 
   const totalPending = pendingApprovals.length + pendingEscalations.length;
+  const decisions = snapshot?.decisions ?? [];
 
   return (
     <div
@@ -207,6 +208,26 @@ export function DecisionGateWidget({
           ))}
         </div>
       )}
+
+      {decisions.length > 0 ? (
+        <details className="mt-3 border-t pt-3">
+          <summary className="cursor-pointer text-xs font-medium text-primary">
+            {t(($) => $.cockpit.decision_history, { count: decisions.length })}
+          </summary>
+          <div className="mt-2 space-y-2">
+            {decisions.map((decision) => (
+              <div key={decision.id} className="rounded-lg border bg-muted/20 p-2.5">
+                <div className="text-xs font-medium text-foreground">
+                  {decision.plan.summary || t(($) => $.cockpit.decision_summary_fallback)}
+                </div>
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  {decision.planner_name} · {new Date(decision.created_at).toLocaleString()}
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }

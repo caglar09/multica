@@ -4,6 +4,7 @@ import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import {
 	BarChart3,
+	Brain,
 	Check,
 	ChevronRight,
 	Copy,
@@ -39,9 +40,13 @@ import {
 	useRejectProjectLeaderChange,
 	useResolveAutonomousEscalation,
 	useConfirmAutonomousTeam,
+	useStartAutonomousProjectPlanning,
 	usePauseAutonomousProject,
 	useResumeAutonomousProject,
 	useReplanAutonomousProject,
+	useRestartAutonomousWorkflow,
+	useRetryAutonomousAction,
+	useRerunAutonomousIssue,
 } from "@multica/core/projects";
 import type { AutonomousRoleRuntimeAssignment } from "@multica/core/types";
 import {
@@ -76,8 +81,8 @@ import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
-import { AutonomousControlCenter } from "./autonomous-control-center";
 import { ProjectReport } from "./project-report";
+import { ProjectBrainSettings } from "./autonomous-control-center";
 import { ProjectCockpitView } from "./cockpit";
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -261,9 +266,13 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	const rejectLeaderChange = useRejectProjectLeaderChange();
 	const resolveEscalation = useResolveAutonomousEscalation();
 	const confirmTeam = useConfirmAutonomousTeam();
+	const startProjectPlanning = useStartAutonomousProjectPlanning();
 	const pauseAutonomousProject = usePauseAutonomousProject();
 	const resumeAutonomousProject = useResumeAutonomousProject();
 	const replanAutonomousProject = useReplanAutonomousProject();
+	const restartAutonomousWorkflow = useRestartAutonomousWorkflow();
+	const retryAutonomousAction = useRetryAutonomousAction();
+	const rerunAutonomousIssue = useRerunAutonomousIssue();
 
 	const handleConfirmTeam = useCallback(
 		(assignments: AutonomousRoleRuntimeAssignment[]) => {
@@ -360,21 +369,64 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 		});
 	};
 
+	const handleResumeExecution = () => {
+		resumeAutonomousProject.mutate(projectId, {
+			onSuccess: () => toast.success(t(($) => $.cockpit.toast_resume_success)),
+			onError: () => toast.error(t(($) => $.cockpit.toast_resume_error)),
+		});
+	};
+
+	const handleRestartWorkflow = () => {
+		restartAutonomousWorkflow.mutate(projectId, {
+			onSuccess: () => toast.success(t(($) => $.cockpit.waiting_repair_continue)),
+			onError: () => toast.error(t(($) => $.cockpit.toast_replan_error)),
+		});
+	};
+
+	const handleRetryWorkflowAction = (actionId: string) => {
+		retryAutonomousAction.mutate(
+			{ projectId, actionId },
+			{
+				onSuccess: () => toast.success(t(($) => $.cockpit.waiting_retry_action)),
+				onError: () => toast.error(t(($) => $.cockpit.toast_replan_error)),
+			},
+		);
+	};
+
+	const handleRerunIssue = (issueId: string, taskId?: string) => {
+		rerunAutonomousIssue.mutate(
+			{ projectId, issueId, taskId },
+			{
+				onSuccess: () => toast.success(t(($) => $.cockpit.waiting_rerun_task)),
+				onError: () => toast.error(t(($) => $.cockpit.toast_replan_error)),
+			},
+		);
+	};
+
+	const handleStartProjectPlanning = () => {
+		startProjectPlanning.mutate(projectId, {
+			onSuccess: () =>
+				toast.success(t(($) => $.cockpit.toast_planning_started)),
+			onError: () =>
+				toast.error(t(($) => $.cockpit.toast_planning_start_failed)),
+		});
+	};
+
 	const [propertiesOpen, setPropertiesOpen] = useState(true);
 	const [progressOpen, setProgressOpen] = useState(true);
 	const [descriptionOpen, setDescriptionOpen] = useState(true);
 	const tabParam = router.searchParams.get("tab");
-	const contentView: "cockpit" | "issues" | "autonomous" | "report" =
+	const contentView: "cockpit" | "issues" | "report" | "brain" =
 		tabParam === "issues"
 			? "issues"
-			: tabParam === "autonomous"
-				? "autonomous"
-				: tabParam === "report"
-					? "report"
-					: "cockpit";
+			: tabParam === "report"
+				? "report"
+				: tabParam === "brain"
+					? "brain"
+				: "cockpit";
 
 	const handleContentViewChange = useCallback(
-		(view: "cockpit" | "issues" | "autonomous" | "report") => {
+		(view: "cockpit" | "issues" | "report" | "brain") => {
 			const params = new URLSearchParams(router.searchParams);
 			if (view === "cockpit") {
 				params.delete("tab");
@@ -802,7 +854,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 								/>
 							</PropRow>
 							{autonomousSnapshot?.enabled && (
-								<PropRow label={t(($) => $.detail.tab_autonomous)}>
+								<PropRow label={t(($) => $.cockpit.loop_status)}>
 									<div className="flex items-center gap-1.5 font-medium text-emerald-500">
 										<span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
 										<span>
@@ -1268,19 +1320,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 							<Button
 								type="button"
 								size="sm"
-								variant={contentView === "autonomous" ? "secondary" : "ghost"}
-								onClick={() => handleContentViewChange("autonomous")}
-								className={cn(
-									"gap-1.5 text-xs font-medium transition-all",
-									contentView === "autonomous" && "bg-background shadow-xs font-semibold text-foreground",
-								)}
-							>
-								<Sparkles className="size-3.5 text-purple-500" />
-								{t(($) => $.detail.tab_autonomous)}
-							</Button>
-							<Button
-								type="button"
-								size="sm"
 								variant={contentView === "report" ? "secondary" : "ghost"}
 								onClick={() => handleContentViewChange("report")}
 								className={cn(
@@ -1291,6 +1330,21 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 								<BarChart3 className="size-3.5" />
 								{t(($) => $.detail.tab_reports)}
 							</Button>
+							{autonomousSnapshot?.enabled ? (
+								<Button
+									type="button"
+									size="sm"
+									variant={contentView === "brain" ? "secondary" : "ghost"}
+									onClick={() => handleContentViewChange("brain")}
+									className={cn(
+										"gap-1.5 text-xs font-medium transition-all",
+										contentView === "brain" && "bg-background shadow-xs font-semibold text-foreground",
+									)}
+								>
+									<Brain className="size-3.5 text-primary" />
+									{t(($) => $.detail.tab_brain)}
+								</Button>
+							) : null}
 						</div>
 
 						<div className="flex h-full min-h-0 flex-1 flex-col">
@@ -1303,7 +1357,10 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 									onNavigateTab={handleContentViewChange}
 									onOpenLeaderChat={handleOpenLeaderChat}
 									onConfirmTeam={handleConfirmTeam}
+									onReplanTeam={handleReplanExecution}
 									isConfirmingTeam={confirmTeam.isPending}
+									onStartProjectPlanning={handleStartProjectPlanning}
+									isStartingProjectPlanning={startProjectPlanning.isPending}
 									onApproveChange={(id) =>
 										approveLeaderChange.mutate({
 											projectId,
@@ -1325,14 +1382,21 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 									}
 									isApproving={approveLeaderChange.isPending}
 									isRejecting={rejectLeaderChange.isPending}
+									onRestartWorkflow={handleRestartWorkflow}
+									onResumeExecution={handleResumeExecution}
+									onRetryAction={handleRetryWorkflowAction}
+									onRerunIssue={handleRerunIssue}
+									isRepairing={restartAutonomousWorkflow.isPending}
+									isRetryingAction={retryAutonomousAction.isPending}
+									isRerunningIssue={rerunAutonomousIssue.isPending}
 								/>
 							) : contentView === "issues" ? (
 								<IssueSurface
 									scope={issueScope}
 									modes={["board", "list", "table", "swimlane", "gantt"]}
 								/>
-							) : contentView === "autonomous" ? (
-								<AutonomousControlCenter
+							) : contentView === "brain" ? (
+								<ProjectBrainSettings
 									projectId={projectId}
 									canControl={isWorkspaceAdmin}
 								/>
@@ -1378,7 +1442,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 					</Sheet>
 				)}
 			</ResizablePanelGroup>
-
 			{/* Delete confirmation */}
 			{isWorkspaceAdmin && (
 				<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>

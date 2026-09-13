@@ -30,6 +30,10 @@ const mocks = vi.hoisted(() => ({
   pauseAutonomousProject: vi.fn(),
   resumeAutonomousProject: vi.fn(),
   replanAutonomousProject: vi.fn(),
+	restartAutonomousWorkflow: vi.fn(),
+	retryAutonomousAction: vi.fn(),
+	rerunAutonomousIssue: vi.fn(),
+	startProjectPlanning: vi.fn(),
 }));
 
 vi.mock("@multica/ui/lib/clipboard", () => ({
@@ -50,6 +54,10 @@ vi.mock("@multica/core/projects", () => ({
   useRejectProjectLeaderChange: () => ({ mutate: vi.fn(), isPending: false }),
   useResolveAutonomousEscalation: () => ({ mutate: vi.fn(), isPending: false }),
   useConfirmAutonomousTeam: () => ({ mutate: vi.fn(), isPending: false }),
+  useStartAutonomousProjectPlanning: () => ({
+    mutate: mocks.startProjectPlanning,
+    isPending: false,
+  }),
   usePauseAutonomousProject: () => ({
     mutate: mocks.pauseAutonomousProject,
     isPending: false,
@@ -62,6 +70,18 @@ vi.mock("@multica/core/projects", () => ({
     mutate: mocks.replanAutonomousProject,
     isPending: false,
   }),
+	useRestartAutonomousWorkflow: () => ({
+		mutate: mocks.restartAutonomousWorkflow,
+		isPending: false,
+	}),
+	useRetryAutonomousAction: () => ({
+		mutate: mocks.retryAutonomousAction,
+		isPending: false,
+	}),
+	useRerunAutonomousIssue: () => ({
+		mutate: mocks.rerunAutonomousIssue,
+		isPending: false,
+	}),
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -330,8 +350,8 @@ vi.mock("../../issues/surface/issue-surface", () => ({
 }));
 
 vi.mock("./autonomous-control-center", () => ({
-  AutonomousControlCenter: () => (
-    <div data-testid="autonomous-control-center" />
+  ProjectBrainSettings: () => (
+    <div data-testid="project-brain-settings" />
   ),
 }));
 
@@ -419,6 +439,9 @@ beforeEach(() => {
   mocks.pauseAutonomousProject.mockReset();
   mocks.resumeAutonomousProject.mockReset();
   mocks.replanAutonomousProject.mockReset();
+	mocks.restartAutonomousWorkflow.mockReset();
+	mocks.retryAutonomousAction.mockReset();
+	mocks.rerunAutonomousIssue.mockReset();
 });
 
 describe("ProjectDetail content tabs", () => {
@@ -429,32 +452,40 @@ describe("ProjectDetail content tabs", () => {
     expect(
       screen.queryByTestId("project-issue-surface"),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("autonomous-control-center"),
-    ).not.toBeInTheDocument();
   });
 
-  it("restores the Autonomous tab from the URL", () => {
+  it("routes the retired Autonomous Studio URL to Cockpit", () => {
     renderProjectDetail("tab=autonomous");
 
-    expect(screen.getByTestId("autonomous-control-center")).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("project-cockpit-view"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("project-issue-surface"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("project-cockpit-view")).toBeInTheDocument();
   });
 
-  it("stores the Autonomous tab in the URL while preserving existing location state", async () => {
+  it("stores the Reports tab in the URL while preserving existing location state", async () => {
     const user = userEvent.setup();
     renderProjectDetail("filter=open", "#workflow");
 
-    await user.click(screen.getByRole("button", { name: /autonomous/i }));
+    await user.click(screen.getByRole("button", { name: /reports/i }));
 
     expect(mocks.replace).toHaveBeenCalledWith(
-      "/test-workspace/projects/project-1?filter=open&tab=autonomous#workflow",
+      "/test-workspace/projects/project-1?filter=open&tab=report#workflow",
     );
+  });
+
+  it("opens Brain beside Reports and stores it in the URL", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("filter=open", "#workflow");
+
+    await user.click(screen.getByRole("button", { name: /^brain$/i }));
+
+    expect(mocks.replace).toHaveBeenCalledWith(
+      "/test-workspace/projects/project-1?filter=open&tab=brain#workflow",
+    );
+  });
+
+  it("renders Brain settings from the Brain tab", () => {
+    renderProjectDetail("tab=brain");
+
+    expect(screen.getByTestId("project-brain-settings")).toBeInTheDocument();
   });
 
   it("stores the Issues tab in the URL when navigating to Issues", async () => {

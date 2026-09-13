@@ -177,7 +177,7 @@ const MOCK_CHANGES: ProjectLeaderChangeRequest[] = [
 ];
 
 describe("ProjectCockpitView", () => {
-  it("renders all six cockpit widgets", () => {
+  it("puts project setup and management in the cockpit", () => {
     const onNavigateTab = vi.fn();
     const onOpenLeaderChat = vi.fn();
 
@@ -192,32 +192,76 @@ describe("ProjectCockpitView", () => {
       />,
     );
 
-    // 1. Widget 1: Live Squad
+    expect(screen.getByText("Project setup")).toBeInTheDocument();
+    expect(screen.getByText("Team planning")).toBeInTheDocument();
+    expect(screen.getByText("Project Manager thinking")).toBeInTheDocument();
+
+    // Live squad stays in the management surface.
     expect(screen.getByText("Autonomous Squad")).toBeInTheDocument();
     expect(screen.getByText("Mika (Lead)")).toBeInTheDocument();
     expect(screen.getByText("Nexus (Backend)")).toBeInTheDocument();
 
-    // 2. Widget 2: Execution Loop & Feed
-    expect(screen.getByText("Execution Loop & Live Feed")).toBeInTheDocument();
-    expect(screen.getByText("Implement Stripe Webhook Idempotency")).toBeInTheDocument();
-
-    // 3. Widget 3: Decision Gate (Human in the Loop)
+    // Decision gate remains where human approval is needed.
     expect(screen.getByText("Human-in-the-Loop & Approvals")).toBeInTheDocument();
     expect(screen.getByText("Add Caching Layer to Product Catalog")).toBeInTheDocument();
 
-    // 4. Widget 4: Issues Velocity
+    // Issue progress remains one click from the setup flow.
     expect(screen.getByText("Sprint & Issue Velocity")).toBeInTheDocument();
     expect(screen.getByText("60%")).toBeInTheDocument();
 
-    // 5. Widget 5: Telemetry & Budget
-    expect(screen.getByText("Telemetry & Budget")).toBeInTheDocument();
-    expect(screen.getAllByText(/125(\.4)?k/i).length).toBeGreaterThan(0);
-    expect(screen.getByText("$4.80")).toBeInTheDocument();
+  });
 
-    // 6. Widget 6: Brain & Quality
-    expect(screen.getByText("Project Brain & Quality")).toBeInTheDocument();
-    expect(screen.getByText("18")).toBeInTheDocument();
-    expect(screen.getByText("3 / 3 (100%)")).toBeInTheDocument();
+  it("requires an explicit approval before task planning begins", async () => {
+    const user = userEvent.setup();
+    const onStartProjectPlanning = vi.fn();
+
+    renderWithI18n(
+      <ProjectCockpitView
+        project={MOCK_PROJECT}
+        snapshot={MOCK_SNAPSHOT}
+        canControl={true}
+        onNavigateTab={vi.fn()}
+        onOpenLeaderChat={vi.fn()}
+        onStartProjectPlanning={onStartProjectPlanning}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Start task planning" }));
+    expect(onStartProjectPlanning).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts a paused execution and its next action at the top of the cockpit", async () => {
+    const user = userEvent.setup();
+    const onResumeExecution = vi.fn();
+
+    renderWithI18n(
+      <ProjectCockpitView
+        project={MOCK_PROJECT}
+        snapshot={{
+          ...MOCK_SNAPSHOT,
+          control: { paused: true },
+          diagnostics: [
+            {
+              code: "project_paused",
+              severity: "warning",
+              title: "Execution is paused",
+              detail: "Dispatch is waiting for an operator.",
+              can_resume: true,
+              resume_action: "resume_project",
+              updated_at: "2026-06-01T02:00:00Z",
+            },
+          ],
+        } as unknown as AutonomousProjectSnapshot}
+        canControl={true}
+        onNavigateTab={vi.fn()}
+        onOpenLeaderChat={vi.fn()}
+        onResumeExecution={onResumeExecution}
+      />,
+    );
+
+    expect(screen.getByText("Why work is waiting")).toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: "Resume Loop" })[0]!);
+    expect(onResumeExecution).toHaveBeenCalledTimes(1);
   });
 
   it("handles decision approval and tab navigation triggers", async () => {

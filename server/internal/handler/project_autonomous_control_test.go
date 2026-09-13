@@ -51,6 +51,45 @@ func TestAutonomousPauseResumePersistsControlState(t *testing.T) {
 	}
 }
 
+func TestStartProjectAutonomousPlanningRequiresExplicitHumanGate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	project := createProjectPermissionTestProject(t, "autonomous planning gate project")
+	_, err := testPool.Exec(context.Background(), `
+		INSERT INTO autonomous_project_team_draft (
+			project_id, workspace_id, plan, planner_name, status, confirmed_at, confirmed_by
+		)
+		VALUES ($1, $2, '{}'::jsonb, 'Mika', 'applied', now(), $3)
+	`, project.ID, testWorkspaceID, testUserID)
+	if err != nil {
+		t.Fatalf("seed provisioned team draft: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM autonomous_project_team_draft WHERE project_id = $1`, project.ID)
+	})
+
+	req := withURLParam(newRequest("POST", "/api/projects/"+project.ID+"/autonomous/planning/start", nil), "id", project.ID)
+	w := httptest.NewRecorder()
+	testHandler.StartProjectAutonomousPlanning(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start planning status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+
+	var startedAt pgtype.Timestamptz
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT continuation_started_at
+		FROM autonomous_project_team_draft
+		WHERE project_id = $1
+	`, project.ID).Scan(&startedAt); err != nil {
+		t.Fatalf("read planning gate: %v", err)
+	}
+	if !startedAt.Valid {
+		t.Fatal("planning gate did not persist the explicit start")
+	}
+}
+
 func TestAutonomousRestartHandlerInvokesProjectScopedRecovery(t *testing.T) {
 	project := createProjectPermissionTestProject(t, "autonomous restart project")
 

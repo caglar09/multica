@@ -3694,6 +3694,12 @@ export class ApiClient {
     });
   }
 
+  async startProjectAutonomousPlanning(id: string): Promise<{ planning: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/planning/start`, {
+      method: "POST",
+    });
+  }
+
   async retryProjectAutonomousAction(
     id: string,
     actionId: string,

@@ -1011,7 +1011,7 @@ function ActivityRow({
           </div>
         ) : null}
         <div className="mt-1 flex flex-wrap gap-2">
-          {item.issue_id ? (
+          {item.issue_id && onOpenIssue ? (
             <button
               type="button"
               onClick={onOpenIssue}
@@ -1020,7 +1020,7 @@ function ActivityRow({
               Open issue
             </button>
           ) : null}
-          {item.agent_id ? (
+          {item.agent_id && onOpenAgent ? (
             <button
               type="button"
               onClick={onOpenAgent}
@@ -1111,11 +1111,13 @@ function BrainConfigurator({
   canControl,
   isPending,
   onSave,
+  showMetrics = true,
 }: {
   snapshot: AutonomousProjectSnapshot;
   canControl: boolean;
   isPending: boolean;
   onSave: (config: UpdateAutonomousBrainConfig) => void;
+  showMetrics?: boolean;
 }) {
   const brain = snapshot.brain;
   const [enabled, setEnabled] = useState(brain?.enabled ?? true);
@@ -1275,31 +1277,204 @@ function BrainConfigurator({
         </CardContent>
       </Card>
 
+      {showMetrics ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            title="Active memories"
+            value={brain?.active_memories ?? 0}
+            description="Current recall candidates"
+            icon={<Brain className="size-4" />}
+          />
+          <MetricCard
+            title="Superseded"
+            value={brain?.superseded_memories ?? 0}
+            description="Retained revision history"
+            icon={<RotateCcw className="size-4" />}
+          />
+          <MetricCard
+            title="Learning queue"
+            value={brain?.pending_learning_jobs ?? 0}
+            description="Pending or running extraction"
+            icon={<Activity className="size-4" />}
+          />
+          <MetricCard
+            title="Deferred"
+            value={brain?.deferred_learning_jobs ?? 0}
+            description="Needs runtime/config attention"
+            icon={<AlertTriangle className="size-4" />}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BrainProjectData({ snapshot }: { snapshot: AutonomousProjectSnapshot }) {
+  const { t } = useT("projects");
+  const brain = snapshot.brain;
+  const plan = snapshot.plan;
+  const activity = snapshot.activity ?? [];
+  const decisions = snapshot.decisions ?? [];
+
+  return (
+    <div className="space-y-5">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
-          title="Active memories"
+          title={t(($) => $.cockpit.brain_active_memories)}
           value={brain?.active_memories ?? 0}
-          description="Current recall candidates"
+          description={t(($) => $.cockpit.brain_active_memories_description)}
           icon={<Brain className="size-4" />}
         />
         <MetricCard
-          title="Superseded"
+          title={t(($) => $.cockpit.brain_superseded_memories)}
           value={brain?.superseded_memories ?? 0}
-          description="Retained revision history"
+          description={t(($) => $.cockpit.brain_superseded_memories_description)}
           icon={<RotateCcw className="size-4" />}
         />
         <MetricCard
-          title="Learning queue"
+          title={t(($) => $.cockpit.brain_learning_queue)}
           value={brain?.pending_learning_jobs ?? 0}
-          description="Pending or running extraction"
+          description={t(($) => $.cockpit.brain_learning_queue_description)}
           icon={<Activity className="size-4" />}
         />
         <MetricCard
-          title="Deferred"
+          title={t(($) => $.cockpit.brain_deferred)}
           value={brain?.deferred_learning_jobs ?? 0}
-          description="Needs runtime/config attention"
+          description={t(($) => $.cockpit.brain_deferred_description)}
           icon={<AlertTriangle className="size-4" />}
         />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t(($) => $.cockpit.brain_context_title)}</CardTitle>
+          <CardDescription>{t(($) => $.cockpit.brain_context_description)}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {plan ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">{t(($) => $.cockpit.brain_plan_revision, { revision: plan.revision })}</Badge>
+                <span className="text-caption text-muted-foreground">
+                  {plan.planner_name}
+                  {plan.planner_model ? ` · ${plan.planner_model}` : ""}
+                </span>
+              </div>
+              <p className="font-medium">{plan.goal}</p>
+              {plan.specification.summary ? (
+                <p className="text-body text-muted-foreground">{plan.specification.summary}</p>
+              ) : null}
+              {plan.specification.requirements?.length ? (
+                <details className="rounded-lg border bg-muted/20 px-3 py-2">
+                  <summary className="cursor-pointer text-sm font-medium">
+                    {t(($) => $.cockpit.brain_requirements, { count: plan.specification.requirements?.length ?? 0 })}
+                  </summary>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-body text-muted-foreground">
+                    {plan.specification.requirements.map((requirement) => (
+                      <li key={requirement}>{requirement}</li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+            </div>
+          ) : (
+            <div className="py-6 text-center text-muted-foreground">
+              {t(($) => $.cockpit.brain_context_empty)}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t(($) => $.cockpit.brain_decisions_title)}</CardTitle>
+          <CardDescription>{t(($) => $.cockpit.brain_decisions_description)}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {decisions.length > 0 ? (
+            decisions.map((decision) => <DecisionCard key={decision.id} decision={decision} />)
+          ) : (
+            <div className="py-6 text-center text-muted-foreground">
+              {t(($) => $.cockpit.brain_decisions_empty)}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t(($) => $.cockpit.brain_signals_title)}</CardTitle>
+          <CardDescription>{t(($) => $.cockpit.brain_signals_description)}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {activity.length > 0 ? (
+            <div className="divide-y">{activity.map((item) => <ActivityRow key={item.id} item={item} />)}</div>
+          ) : (
+            <div className="py-6 text-center text-muted-foreground">
+              {t(($) => $.cockpit.brain_signals_empty)}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+export function ProjectBrainSettings({
+  projectId,
+  canControl = false,
+}: {
+  projectId: string;
+  canControl?: boolean;
+}) {
+  const wsId = useWorkspaceId();
+  const { t } = useT("projects");
+  const { data, isLoading, isError, refetch } = useQuery(
+    autonomousProjectOptions(wsId, projectId),
+  );
+  const updateBrain = useUpdateAutonomousBrain();
+
+  if (isLoading) {
+    return <div className="space-y-4 p-5"><Skeleton className="h-8 w-56" /><Skeleton className="h-72 w-full" /></div>;
+  }
+
+  if (isError || !data) {
+    return <div className="p-5"><Card><CardHeader><CardTitle>{t(($) => $.cockpit.settings_title)}</CardTitle><CardDescription>{t(($) => $.cockpit.settings_description)}</CardDescription></CardHeader><CardContent><Button onClick={() => void refetch()}>Retry</Button></CardContent></Card></div>;
+  }
+
+  return (
+    <div className="h-full overflow-y-auto p-4 md:p-6">
+      <div className="mx-auto max-w-4xl space-y-5">
+        <div>
+          <h2 className="text-title-lg font-semibold">{t(($) => $.cockpit.brain_title)}</h2>
+          <p className="mt-1 text-body text-muted-foreground">{t(($) => $.cockpit.brain_description)}</p>
+        </div>
+        <BrainProjectData snapshot={data} />
+        <details className="rounded-xl border bg-card">
+          <summary className="cursor-pointer list-none px-5 py-4">
+            <div>
+              <div className="font-medium">{t(($) => $.cockpit.brain_settings_title)}</div>
+              <p className="mt-1 text-caption text-muted-foreground">{t(($) => $.cockpit.brain_settings_description)}</p>
+            </div>
+          </summary>
+          <div className="border-t p-4">
+            <BrainConfigurator
+              snapshot={data}
+              canControl={canControl}
+              isPending={updateBrain.isPending}
+              showMetrics={false}
+              onSave={(config) =>
+                updateBrain.mutate(
+                  { projectId, config },
+                  {
+                    onSuccess: () => toast.success("Project Brain settings updated"),
+                    onError: () => toast.error("Could not update Project Brain settings"),
+                  },
+                )
+              }
+            />
+          </div>
+        </details>
       </div>
     </div>
   );

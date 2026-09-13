@@ -41,14 +41,16 @@ type AutonomousProjectBootstrapResponse struct {
 }
 
 type AutonomousTeamDraftResponse struct {
-	Status           string          `json:"status"`
-	PlannerName      string          `json:"planner_name"`
-	PlannerModel     *string         `json:"planner_model"`
-	Plan             json.RawMessage `json:"plan"`
-	DefaultRuntimeID *string         `json:"default_runtime_id"`
-	DefaultSkillIDs  []string        `json:"default_skill_ids"`
-	CreatedAt        string          `json:"created_at"`
-	UpdatedAt        string          `json:"updated_at"`
+	Status                  string          `json:"status"`
+	PlannerName             string          `json:"planner_name"`
+	PlannerModel            *string         `json:"planner_model"`
+	Plan                    json.RawMessage `json:"plan"`
+	DefaultRuntimeID        *string         `json:"default_runtime_id"`
+	DefaultSkillIDs         []string        `json:"default_skill_ids"`
+	CreatedAt               string          `json:"created_at"`
+	UpdatedAt               string          `json:"updated_at"`
+	ContinuationStartedAt   *string         `json:"continuation_started_at"`
+	ContinuationCompletedAt *string         `json:"continuation_completed_at"`
 }
 
 type AutonomousRuntimeOptionResponse struct {
@@ -519,10 +521,11 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	var draftCreatedAt, draftUpdatedAt time.Time
 	var draftConfirmedAt pgtype.Timestamptz
 	var continuationTaskID pgtype.UUID
+	var continuationStartedAt pgtype.Timestamptz
 	var continuationCompletedAt pgtype.Timestamptz
 	draftErr := h.DB.QueryRow(r.Context(), `
 		SELECT plan, planner_name, planner_model, status, created_at, updated_at,
-		       confirmed_at, continuation_task_id, continuation_completed_at
+		       confirmed_at, continuation_task_id, continuation_started_at, continuation_completed_at
 		FROM autonomous_project_team_draft
 		WHERE workspace_id = $1 AND project_id = $2
 	`, workspaceID, projectID).Scan(
@@ -534,27 +537,30 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		&draftUpdatedAt,
 		&draftConfirmedAt,
 		&continuationTaskID,
+		&continuationStartedAt,
 		&continuationCompletedAt,
 	)
 	if draftErr != nil && !errors.Is(draftErr, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to load autonomous team draft")
 		return
 	}
-	if draftErr == nil && (draftStatus == "awaiting_configuration" || draftStatus == "provisioning") {
+	if draftErr == nil && (draftStatus == "awaiting_configuration" || draftStatus == "provisioning" || draftStatus == "applied") {
 		defaultSkillIDs := make([]string, 0, len(resp.Skills))
 		for _, skill := range resp.Skills {
 			defaultSkillIDs = append(defaultSkillIDs, skill.ID)
 		}
 		resp.Enabled = true
 		resp.Draft = &AutonomousTeamDraftResponse{
-			Status:           draftStatus,
-			PlannerName:      draftPlannerName,
-			PlannerModel:     nullableTextString(draftPlannerModel),
-			Plan:             append(json.RawMessage(nil), draftPlan...),
-			DefaultRuntimeID: nullableUUIDString(mikaRuntimeID),
-			DefaultSkillIDs:  defaultSkillIDs,
-			CreatedAt:        draftCreatedAt.UTC().Format(time.RFC3339Nano),
-			UpdatedAt:        draftUpdatedAt.UTC().Format(time.RFC3339Nano),
+			Status:                  draftStatus,
+			PlannerName:             draftPlannerName,
+			PlannerModel:            nullableTextString(draftPlannerModel),
+			Plan:                    append(json.RawMessage(nil), draftPlan...),
+			DefaultRuntimeID:        nullableUUIDString(mikaRuntimeID),
+			DefaultSkillIDs:         defaultSkillIDs,
+			CreatedAt:               draftCreatedAt.UTC().Format(time.RFC3339Nano),
+			UpdatedAt:               draftUpdatedAt.UTC().Format(time.RFC3339Nano),
+			ContinuationStartedAt:   nullableTimestampString(continuationStartedAt),
+			ContinuationCompletedAt: nullableTimestampString(continuationCompletedAt),
 		}
 	}
 
@@ -2125,6 +2131,49 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"provisioning": true})
+}
+
+// StartProjectAutonomousPlanning is the explicit human gate between team
+// provisioning and task creation. The Project Manager conversation happens in
+// the dedicated leader session; this action is the user's approval to turn the
+// agreed scope into the durable task plan.
+func (h *Handler) StartProjectAutonomousPlanning(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
+		return
+	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	tag, err := h.DB.Exec(r.Context(), `
+		UPDATE autonomous_project_team_draft
+		SET continuation_started_at = now(),
+		    continuation_completed_at = NULL,
+		    updated_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND status = 'applied'
+		  AND confirmed_at IS NOT NULL
+		  AND continuation_started_at IS NULL
+	`, workspaceID, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start project task planning")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusConflict, "project task planning is not ready or has already started")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"planning": true})
 }
 
 func (h *Handler) ReplanProjectAutonomous(w http.ResponseWriter, r *http.Request) {

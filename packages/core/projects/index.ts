@@ -29,6 +29,7 @@ export {
   useRerunAutonomousIssue,
   useRestartAutonomousWorkflow,
   useConfirmAutonomousTeam,
+  useStartAutonomousProjectPlanning,
   useRetryAutonomousAction,
   useResolveAutonomousEscalation,
   useUpdateAutonomousBrain,

@@ -113,7 +113,7 @@ export interface AutonomousProjectBootstrap {
 }
 
 export interface AutonomousTeamDraft {
-  status: "awaiting_configuration" | "provisioning";
+  status: "awaiting_configuration" | "provisioning" | "applied";
   planner_name: string;
   planner_model: string | null;
   plan: AutonomousTeamPlan;
@@ -121,6 +121,8 @@ export interface AutonomousTeamDraft {
   default_skill_ids: string[];
   created_at: string;
   updated_at: string;
+  continuation_started_at: string | null;
+  continuation_completed_at: string | null;
 }
 
 export interface AutonomousRuntimeOption {

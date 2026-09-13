@@ -181,6 +181,12 @@ export function useConfirmAutonomousTeam() {
   });
 }
 
+export function useStartAutonomousProjectPlanning() {
+  return useAutonomousControlMutation((projectId) =>
+    api.startProjectAutonomousPlanning(projectId),
+  );
+}
+
 export function useResolveAutonomousEscalation() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();

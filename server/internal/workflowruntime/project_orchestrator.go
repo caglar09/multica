@@ -183,6 +183,8 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 		FROM autonomous_project_team_draft d
 		WHERE d.status = 'applied'
 		  AND d.confirmed_at IS NOT NULL
+		  AND d.continuation_started_at IS NOT NULL
+		  AND d.continuation_completed_at IS NULL
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM autonomous_project_plan p
@@ -235,6 +237,14 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 			`, item.projectID, item.workspaceID, "Project planning failed: "+message)
 			continue
 		}
+		_, _ = r.pool.Exec(ctx, `
+			UPDATE autonomous_project_team_draft
+			SET continuation_completed_at = now(), updated_at = now()
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND continuation_started_at IS NOT NULL
+			  AND continuation_completed_at IS NULL
+		`, item.workspaceID, item.projectID)
 		_, _ = r.pool.Exec(ctx, `
 			INSERT INTO autonomous_project_control (project_id, workspace_id, last_error, updated_at)
 			VALUES ($1, $2, NULL, now())
