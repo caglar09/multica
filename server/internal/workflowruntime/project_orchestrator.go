@@ -1771,10 +1771,46 @@ blockedNodeLoop:
 			// resolving the escalation leaves it permanently blocked. A resolved
 			// escalation is only a retry signal for the block that preceded it;
 			// historical resolutions must not resurrect a newer quality failure.
+			if node.MaterializedIssueID != "" {
+				issueID, err := util.ParseUUID(node.MaterializedIssueID)
+				if err != nil {
+					return err
+				}
+				if err := r.reconcileCompletedProjectQuality(ctx, db.Issue{ID: issueID, WorkspaceID: workspaceID}); err != nil {
+					return err
+				}
+			}
 			if node.ID != "" {
 				var nodeID pgtype.UUID
 				if parsed, parseErr := util.ParseUUID(node.ID); parseErr == nil {
 					nodeID = parsed
+					if err := r.pool.QueryRow(ctx, `
+						SELECT EXISTS (
+							SELECT 1 FROM autonomous_project_quality_gate_run
+							WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3 AND required=TRUE
+						)
+						AND NOT EXISTS (
+							SELECT 1 FROM autonomous_project_quality_gate_run
+							WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
+							  AND required=TRUE AND status <> 'passed'
+						)
+					`, workspaceID, projectID, nodeID).Scan(&resolved); err != nil {
+						return err
+					}
+					if resolved {
+						_, err := r.pool.Exec(ctx, `
+							UPDATE autonomous_project_escalation
+							SET status='resolved', resolution=jsonb_build_object('decision','quality_evidence_passed'), resolved_at=now()
+							WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
+							  AND category='quality_policy' AND status IN ('open','acknowledged')
+						`, workspaceID, projectID, nodeID)
+						if err != nil {
+							return err
+						}
+					}
+					if resolved {
+						break
+					}
 					if err := r.pool.QueryRow(ctx, `
 						SELECT EXISTS (
 							SELECT 1

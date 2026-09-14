@@ -27,6 +27,19 @@ export interface DecisionGateWidgetProps {
   className?: string;
 }
 
+export function hasPendingDecisions(
+  snapshot?: AutonomousProjectSnapshot | null,
+  changeRequests: ProjectLeaderChangeRequest[] = [],
+) {
+  return (
+    changeRequests.some((request) => request.state === "approval_required") ||
+    (snapshot?.escalations ?? []).some((escalation) =>
+      escalation.category === "approval_required" &&
+      ["open", "opened", "pending"].includes(escalation.status),
+    )
+  );
+}
+
 export function DecisionGateWidget({
   snapshot,
   changeRequests = [],
@@ -47,7 +60,11 @@ export function DecisionGateWidget({
   );
 
   const pendingEscalations = useMemo(
-    () => (snapshot?.escalations ?? []).filter((e) => e.status === "opened" || e.status === "pending"),
+    () =>
+      (snapshot?.escalations ?? []).filter((e) =>
+        e.category === "approval_required" &&
+        ["open", "opened", "pending"].includes(e.status),
+      ),
     [snapshot?.escalations],
   );
 

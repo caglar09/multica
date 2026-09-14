@@ -311,6 +311,11 @@ func definition() workflow.Definition {
 			// issue workflow leave its durable Blocked state and enqueue a fresh
 			// implementation task instead of remaining deadlocked.
 			{From: issuestatus.Blocked, Event: "issue.retry_requested", To: issuestatus.InProgress},
+			// Repair & continue can reopen a terminal workflow when its materialized
+			// Project OS node is still non-terminal (for example after a lost
+			// completion event). The explicit recovery event reuses the normal
+			// implementation OnEnter action and remains idempotent at the store.
+			{From: issuestatus.Done, Event: "issue.retry_requested", To: issuestatus.InProgress},
 			// An explicit terminal issue status is authoritative even if the
 			// workflow was previously blocked. This is also crash-reconcilable
 			// from the durable issue row.
@@ -730,6 +735,9 @@ func (r *Runtime) RestartProjectWorkflow(
 
 	workspaceIDString := util.UUIDToString(workspaceID)
 	for _, issueID := range issueIDs {
+		if err := r.reconcileCompletedProjectQuality(ctx, db.Issue{ID: issueID, WorkspaceID: workspaceID}); err != nil {
+			return fmt.Errorf("reconcile completed project quality during repair: %w", err)
+		}
 		run, exists, err := r.store.FindRun(
 			ctx,
 			softwareDevelopmentWorkflow,
@@ -751,6 +759,44 @@ func (r *Runtime) RestartProjectWorkflow(
 				"error", err,
 			)
 			continue
+		}
+		if r.projectStore != nil && run.State == issuestatus.Done {
+			var nodeKey string
+			err := r.pool.QueryRow(ctx, `
+				SELECT n.node_key
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				WHERE n.workspace_id = $1
+				  AND n.project_id = $2
+				  AND n.materialized_issue_id = $3
+				  AND n.status = 'running'
+				  AND p.status IN ('active', 'blocked')
+				  AND NOT EXISTS (
+					  SELECT 1
+					  FROM agent_task_queue t
+					  WHERE t.issue_id = n.materialized_issue_id
+					    AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+				  )
+				ORDER BY p.revision DESC
+				LIMIT 1
+			`, workspaceID, projectID, issueID).Scan(&nodeKey)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("find stale terminal project node for repair: %w", err)
+			}
+			if err := r.projectStore.ReleaseNodeClaim(ctx, workspaceID, projectID, nodeKey, "terminal workflow requires repair"); err != nil {
+				return fmt.Errorf("release stale terminal project node for repair: %w", err)
+			}
+			if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, issuestatus.Todo); err != nil {
+				return fmt.Errorf("requeue stale terminal project issue for repair: %w", err)
+			}
+			slog.Info("requeued stale terminal autonomous project node",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"node", nodeKey,
+			)
 		}
 	}
 
@@ -1767,12 +1813,12 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		return err
 	}
 	if exists {
-		if run.State == issuestatus.Blocked {
-			// A Blocked workflow and a now-In-Progress issue is an explicit
+		if run.State == issuestatus.Blocked || run.State == issuestatus.Done {
+			// A terminal workflow and a now-In-Progress issue is an explicit
 			// resume signal. Project OS reaches this point after it claims a
-			// resumed node; a member/agent can also request the retry directly.
+			// recovered node; a member/agent can also request the retry directly.
 			// Without this transition the Project OS node can be running while
-			// the issue workflow remains permanently Blocked.
+			// the issue workflow remains permanently terminal.
 			result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
 				ID:                issueEventID("issue-retry-requested", snapshot),
 				Type:              "issue.retry_requested",

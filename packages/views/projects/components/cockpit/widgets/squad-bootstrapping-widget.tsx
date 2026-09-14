@@ -38,7 +38,8 @@ export function SquadBootstrappingWidget({
     Record<string, { runtime_id: string; model: string }>
   >({});
 
-  // Initialize assignments with fallback runtime and suggested models
+  // The planner model belongs to the planning run, not necessarily to the
+  // selected worker runtime. Leave workers on their runtime default.
   useEffect(() => {
     if (!draft) {
       setAssignments({});
@@ -54,7 +55,7 @@ export function SquadBootstrappingWidget({
     for (const role of draft.plan?.roles ?? []) {
       next[role.role] = {
         runtime_id: fallbackRuntime,
-        model: draft.planner_model ?? "",
+        model: "",
       };
     }
     setAssignments(next);

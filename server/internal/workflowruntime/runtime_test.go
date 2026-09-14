@@ -39,6 +39,7 @@ func TestSoftwareDevelopmentWorkflowDefinition(t *testing.T) {
 		"blocked/review.retry_completed":         "done",
 		"blocked/review.retry_changes_requested": "in_progress",
 		"blocked/issue.retry_requested":          "in_progress",
+		"done/issue.retry_requested":             "in_progress",
 		"blocked/issue.completed":                "done",
 	}
 	for _, tr := range def.Transitions {

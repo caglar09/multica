@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   Project,
@@ -8,6 +8,8 @@ import type {
 } from "@multica/core/types";
 import { renderWithI18n } from "../../../test/i18n";
 import { ProjectCockpitView } from "./project-cockpit-view";
+import { DecisionGateWidget } from "./widgets/decision-gate-widget";
+import { WorkWaitingWidget } from "./widgets/execution-overview-widgets";
 
 vi.mock("@multica/core/projects", () => ({
   usePauseAutonomousProject: () => ({
@@ -185,7 +187,6 @@ describe("ProjectCockpitView", () => {
       <ProjectCockpitView
         project={MOCK_PROJECT}
         snapshot={MOCK_SNAPSHOT}
-        changeRequests={MOCK_CHANGES}
         canControl={true}
         onNavigateTab={onNavigateTab}
         onOpenLeaderChat={onOpenLeaderChat}
@@ -200,10 +201,6 @@ describe("ProjectCockpitView", () => {
     expect(screen.getByText("Autonomous Squad")).toBeInTheDocument();
     expect(screen.getByText("Mika (Lead)")).toBeInTheDocument();
     expect(screen.getByText("Nexus (Backend)")).toBeInTheDocument();
-
-    // Decision gate remains where human approval is needed.
-    expect(screen.getByText("Human-in-the-Loop & Approvals")).toBeInTheDocument();
-    expect(screen.getByText("Add Caching Layer to Product Catalog")).toBeInTheDocument();
 
     // Issue progress remains one click from the setup flow.
     expect(screen.getByText("Sprint & Issue Velocity")).toBeInTheDocument();
@@ -235,8 +232,7 @@ describe("ProjectCockpitView", () => {
     const onResumeExecution = vi.fn();
 
     renderWithI18n(
-      <ProjectCockpitView
-        project={MOCK_PROJECT}
+      <WorkWaitingWidget
         snapshot={{
           ...MOCK_SNAPSHOT,
           control: { paused: true },
@@ -253,8 +249,6 @@ describe("ProjectCockpitView", () => {
           ],
         } as unknown as AutonomousProjectSnapshot}
         canControl={true}
-        onNavigateTab={vi.fn()}
-        onOpenLeaderChat={vi.fn()}
         onResumeExecution={onResumeExecution}
       />,
     );
@@ -262,6 +256,136 @@ describe("ProjectCockpitView", () => {
     expect(screen.getByText("Why work is waiting")).toBeInTheDocument();
     await user.click(screen.getAllByRole("button", { name: "Resume Loop" })[0]!);
     expect(onResumeExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets an operator run a scheduled retry now", async () => {
+    const user = userEvent.setup();
+    const onRerunIssue = vi.fn();
+
+    renderWithI18n(
+      <WorkWaitingWidget
+        snapshot={{
+          ...MOCK_SNAPSHOT,
+          activity: [
+            {
+              id: "deferred-review",
+              type: "task.deferred",
+              title: "Code Reviewer · deferred",
+              detail: "Provider quota reached.",
+              issue_id: "issue-review",
+              metadata: {
+                task_id: "task-review",
+                fire_at: "2026-06-01T03:00:00Z",
+              },
+              created_at: "2026-06-01T02:00:00Z",
+            },
+          ],
+          plan: {
+            nodes: [
+              { id: "node-review", key: "review", status: "pending" },
+              { id: "node-migration", key: "migration", status: "blocked" },
+            ],
+          },
+        } as unknown as AutonomousProjectSnapshot}
+        canControl={true}
+        onRerunIssue={onRerunIssue}
+      />,
+    );
+
+    expect(screen.getByText("Scheduled work")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+    expect(onRerunIssue).toHaveBeenCalledWith("issue-review", "task-review");
+  });
+
+  it("shows a run-now action when approved plan work has not started", async () => {
+    const user = userEvent.setup();
+    const onRestartWorkflow = vi.fn();
+
+    renderWithI18n(
+      <WorkWaitingWidget
+        snapshot={{
+          ...MOCK_SNAPSHOT,
+          plan: {
+            status: "active",
+            nodes: [
+              { id: "node-1", key: "design", status: "pending" },
+              { id: "node-2", key: "build", status: "ready" },
+            ],
+          },
+          diagnostics: [],
+        } as unknown as AutonomousProjectSnapshot}
+        canControl={true}
+        onRestartWorkflow={onRestartWorkflow}
+      />,
+    );
+
+    expect(screen.getByText("Planned work")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Run planned work now" }));
+    expect(onRestartWorkflow).toHaveBeenCalledTimes(1);
+  });
+
+  it("groups waiting diagnostics by severity", () => {
+    renderWithI18n(
+      <WorkWaitingWidget
+        snapshot={{
+          ...MOCK_SNAPSHOT,
+          diagnostics: [
+            { code: "worker_failed", severity: "error", title: "Worker failed", detail: "The worker stopped.", can_resume: false, updated_at: "2026-06-01T03:00:00Z" },
+            { code: "approval_wait", severity: "warning", title: "Approval needed", detail: "A migration needs approval.", can_resume: false, updated_at: "2026-06-01T02:00:00Z" },
+            { code: "dependency_wait", severity: "info", title: "Waiting on review", detail: "The review is still running.", can_resume: false, updated_at: "2026-06-01T01:00:00Z" },
+          ],
+        } as unknown as AutonomousProjectSnapshot}
+        canControl={true}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Errors" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Warnings" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Information" })).toBeInTheDocument();
+  });
+
+  it("keeps errors in the header and warning information in Cockpit", () => {
+    const snapshot = {
+      ...MOCK_SNAPSHOT,
+      diagnostics: [
+        { code: "worker_failed", severity: "error", title: "Worker failed", detail: "The worker stopped.", updated_at: "2026-06-01T03:00:00Z" },
+        { code: "scheduler_stall", severity: "warning", title: "Scheduler waiting", detail: "A task is pending.", updated_at: "2026-06-01T02:00:00Z" },
+        { code: "dependency_wait", severity: "info", title: "Waiting on review", detail: "The review is still running.", updated_at: "2026-06-01T01:00:00Z" },
+      ],
+    } as unknown as AutonomousProjectSnapshot;
+
+    renderWithI18n(
+      <>
+        <WorkWaitingWidget snapshot={snapshot} mode="urgent" scrollable={false} idPrefix="header" />
+        <WorkWaitingWidget snapshot={snapshot} mode="nonurgent" idPrefix="cockpit" />
+      </>,
+    );
+
+    const panels = screen.getAllByRole("group");
+    const headerPanel = panels[0]!;
+    const cockpitPanel = panels[1]!;
+    expect(within(headerPanel).getByText("Worker failed")).toBeInTheDocument();
+    expect(within(headerPanel).queryByText("Scheduler waiting")).not.toBeInTheDocument();
+    expect(within(cockpitPanel).getByText("Scheduler waiting")).toBeInTheDocument();
+    expect(within(cockpitPanel).getByText("Waiting on review")).toBeInTheDocument();
+  });
+
+  it("allows the waiting panel to collapse", async () => {
+    const user = userEvent.setup();
+
+    renderWithI18n(
+      <WorkWaitingWidget
+        snapshot={{
+          ...MOCK_SNAPSHOT,
+          diagnostics: [{ code: "approval_wait", severity: "warning", title: "Approval needed", detail: "A decision is required.", can_resume: false, updated_at: "2026-06-01T02:00:00Z" }],
+        } as unknown as AutonomousProjectSnapshot}
+      />,
+    );
+
+    const panel = screen.getByRole("group");
+    expect(panel).toHaveAttribute("open");
+    await user.click(screen.getByRole("heading", { name: "Why work is waiting" }));
+    expect(panel).not.toHaveAttribute("open");
   });
 
   it("handles decision approval and tab navigation triggers", async () => {
@@ -272,16 +396,22 @@ describe("ProjectCockpitView", () => {
     const onOpenLeaderChat = vi.fn();
 
     renderWithI18n(
-      <ProjectCockpitView
-        project={MOCK_PROJECT}
-        snapshot={MOCK_SNAPSHOT}
-        changeRequests={MOCK_CHANGES}
-        canControl={true}
-        onNavigateTab={onNavigateTab}
-        onOpenLeaderChat={onOpenLeaderChat}
-        onApproveChange={onApproveChange}
-        onRejectChange={onRejectChange}
-      />,
+      <>
+        <ProjectCockpitView
+          project={MOCK_PROJECT}
+          snapshot={MOCK_SNAPSHOT}
+          canControl={true}
+          onNavigateTab={onNavigateTab}
+          onOpenLeaderChat={onOpenLeaderChat}
+        />
+        <DecisionGateWidget
+          snapshot={MOCK_SNAPSHOT}
+          changeRequests={MOCK_CHANGES}
+          canControl={true}
+          onApproveChange={onApproveChange}
+          onRejectChange={onRejectChange}
+        />
+      </>,
     );
 
     // Click Approve on decision card
@@ -294,6 +424,33 @@ describe("ProjectCockpitView", () => {
     await user.click(viewIssuesButton);
     expect(onNavigateTab).toHaveBeenCalledWith("issues");
 
+  });
+
+  it("shows an open human approval escalation", async () => {
+    const user = userEvent.setup();
+    const onResolveEscalation = vi.fn();
+
+    renderWithI18n(
+      <DecisionGateWidget
+        snapshot={{
+          ...MOCK_SNAPSHOT,
+          escalations: [
+            {
+              id: "escalation-1",
+              category: "approval_required",
+              status: "open",
+              severity: "high",
+              summary: "Database migration requires approval",
+            },
+          ],
+        } as unknown as AutonomousProjectSnapshot}
+        canControl={true}
+        onResolveEscalation={onResolveEscalation}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Resolve Escalation" }));
+    expect(onResolveEscalation).toHaveBeenCalledWith("escalation-1");
   });
 
   it("renders squad bootstrapping proposal card when snapshot.draft is present and handles confirmation", async () => {
@@ -371,8 +528,8 @@ describe("ProjectCockpitView", () => {
     expect(onConfirmTeam).toHaveBeenCalledTimes(1);
     expect(onConfirmTeam).toHaveBeenCalledWith(
       expect.arrayContaining([
-        expect.objectContaining({ role: "lead", runtime_id: "rt-1" }),
-        expect.objectContaining({ role: "backend", runtime_id: "rt-1" }),
+        expect.objectContaining({ role: "lead", runtime_id: "rt-1", model: undefined }),
+        expect.objectContaining({ role: "backend", runtime_id: "rt-1", model: undefined }),
       ]),
     );
   });

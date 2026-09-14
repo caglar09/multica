@@ -84,6 +84,11 @@ import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { ProjectReport } from "./project-report";
 import { ProjectBrainSettings } from "./autonomous-control-center";
 import { ProjectCockpitView } from "./cockpit";
+import { WorkWaitingWidget } from "./cockpit/widgets/execution-overview-widgets";
+import {
+	DecisionGateWidget,
+	hasPendingDecisions,
+} from "./cockpit/widgets/decision-gate-widget";
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -424,6 +429,21 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 				: tabParam === "brain"
 					? "brain"
 				: "cockpit";
+	const hasPendingApproval = hasPendingDecisions(
+		autonomousSnapshot,
+		leaderChanges.data?.items,
+	);
+	const hasUrgentWaiting = Boolean(
+		autonomousSnapshot?.control.paused ||
+		autonomousSnapshot?.control.last_error ||
+		autonomousSnapshot?.diagnostics?.some((item) => item.severity === "error") ||
+		autonomousSnapshot?.activity?.some(
+			(item) =>
+				item.type === "task.deferred" &&
+				Boolean(item.issue_id) &&
+				typeof item.metadata?.task_id === "string",
+		),
+	);
 
 	const handleContentViewChange = useCallback(
 		(view: "cockpit" | "issues" | "report" | "brain") => {
@@ -1347,12 +1367,50 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 							) : null}
 						</div>
 
+						{autonomousSnapshot?.enabled && (hasUrgentWaiting || hasPendingApproval) ? (
+							<div className="max-h-[36rem] overflow-y-auto border-b bg-muted/10 px-4 py-3 md:px-6">
+								<div className="space-y-3">
+									<WorkWaitingWidget
+										snapshot={autonomousSnapshot}
+										mode="urgent"
+										scrollable={false}
+										idPrefix="header-work-waiting"
+										canControl={isWorkspaceAdmin}
+										onRestartWorkflow={handleRestartWorkflow}
+										onResumeExecution={handleResumeExecution}
+										onReplan={handleReplanExecution}
+										onRetryAction={handleRetryWorkflowAction}
+										onRerunIssue={handleRerunIssue}
+										pending={restartAutonomousWorkflow.isPending || retryAutonomousAction.isPending || rerunAutonomousIssue.isPending}
+									/>
+									{hasPendingApproval ? (
+										<DecisionGateWidget
+											snapshot={autonomousSnapshot}
+											changeRequests={leaderChanges.data?.items}
+											canControl={isWorkspaceAdmin}
+											onApproveChange={(id) =>
+												approveLeaderChange.mutate({ projectId, changeRequestId: id })
+											}
+											onRejectChange={(id) =>
+												rejectLeaderChange.mutate({ projectId, changeRequestId: id })
+											}
+											onResolveEscalation={(id) =>
+												resolveEscalation.mutate({ projectId, escalationId: id, decision: "approved" })
+											}
+											onOpenLeaderChat={handleOpenLeaderChat}
+											isApproving={approveLeaderChange.isPending}
+											isRejecting={rejectLeaderChange.isPending}
+										/>
+									) : null}
+								</div>
+							</div>
+						) : null}
+
 						<div className="flex h-full min-h-0 flex-1 flex-col">
 							{contentView === "cockpit" ? (
 								<ProjectCockpitView
 									project={project}
 									snapshot={autonomousSnapshot}
-									changeRequests={leaderChanges.data?.items}
 									canControl={isWorkspaceAdmin}
 									onNavigateTab={handleContentViewChange}
 									onOpenLeaderChat={handleOpenLeaderChat}
@@ -1361,31 +1419,22 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 									isConfirmingTeam={confirmTeam.isPending}
 									onStartProjectPlanning={handleStartProjectPlanning}
 									isStartingProjectPlanning={startProjectPlanning.isPending}
+									changeRequests={leaderChanges.data?.items}
 									onApproveChange={(id) =>
-										approveLeaderChange.mutate({
-											projectId,
-											changeRequestId: id,
-										})
+										approveLeaderChange.mutate({ projectId, changeRequestId: id })
 									}
 									onRejectChange={(id) =>
-										rejectLeaderChange.mutate({
-											projectId,
-											changeRequestId: id,
-										})
+										rejectLeaderChange.mutate({ projectId, changeRequestId: id })
 									}
 									onResolveEscalation={(id) =>
-										resolveEscalation.mutate({
-											projectId,
-											escalationId: id,
-											decision: "approved",
-										})
+										resolveEscalation.mutate({ projectId, escalationId: id, decision: "approved" })
 									}
-									isApproving={approveLeaderChange.isPending}
-									isRejecting={rejectLeaderChange.isPending}
 									onRestartWorkflow={handleRestartWorkflow}
 									onResumeExecution={handleResumeExecution}
 									onRetryAction={handleRetryWorkflowAction}
 									onRerunIssue={handleRerunIssue}
+									isApproving={approveLeaderChange.isPending}
+									isRejecting={rejectLeaderChange.isPending}
 									isRepairing={restartAutonomousWorkflow.isPending}
 									isRetryingAction={retryAutonomousAction.isPending}
 									isRerunningIssue={rerunAutonomousIssue.isPending}

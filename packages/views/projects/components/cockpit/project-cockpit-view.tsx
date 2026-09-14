@@ -9,7 +9,7 @@ import type {
 import { cn } from "@multica/ui/lib/utils";
 
 import { LiveSquadWidget } from "./widgets/live-squad-widget";
-import { DecisionGateWidget } from "./widgets/decision-gate-widget";
+import { DecisionGateWidget, hasPendingDecisions } from "./widgets/decision-gate-widget";
 import { IssuesVelocityWidget } from "./widgets/issues-velocity-widget";
 import {
   ActivityTimelineWidget,
@@ -21,7 +21,6 @@ import { ProjectBootstrapFlow } from "./project-bootstrap-flow";
 export interface ProjectCockpitViewProps {
   project: Project;
   snapshot?: AutonomousProjectSnapshot | null;
-  changeRequests?: ProjectLeaderChangeRequest[];
   canControl?: boolean;
   onNavigateTab: (tab: "cockpit" | "issues" | "report") => void;
   onOpenLeaderChat: () => void;
@@ -30,6 +29,7 @@ export interface ProjectCockpitViewProps {
   isConfirmingTeam?: boolean;
   onStartProjectPlanning?: () => void;
   isStartingProjectPlanning?: boolean;
+  changeRequests?: ProjectLeaderChangeRequest[];
   onApproveChange?: (id: string) => void;
   onRejectChange?: (id: string) => void;
   onResolveEscalation?: (id: string) => void;
@@ -48,7 +48,6 @@ export interface ProjectCockpitViewProps {
 export function ProjectCockpitView({
   project,
   snapshot,
-  changeRequests = [],
   canControl = false,
   onNavigateTab,
   onOpenLeaderChat,
@@ -57,6 +56,7 @@ export function ProjectCockpitView({
   isConfirmingTeam,
   onStartProjectPlanning,
   isStartingProjectPlanning,
+  changeRequests = [],
   onApproveChange,
   onRejectChange,
   onResolveEscalation,
@@ -71,21 +71,10 @@ export function ProjectCockpitView({
   isRerunningIssue,
   className,
 }: ProjectCockpitViewProps) {
+  const showDecisionGate = !hasPendingDecisions(snapshot, changeRequests);
+
   return (
     <div className={cn("flex-1 overflow-y-auto p-4 md:p-6 space-y-6", className)}>
-      {snapshot?.enabled && (
-        <WorkWaitingWidget
-          snapshot={snapshot}
-          canControl={canControl}
-          onRestartWorkflow={onRestartWorkflow}
-          onResumeExecution={onResumeExecution}
-          onReplan={onReplanTeam}
-          onRetryAction={onRetryAction}
-          onRerunIssue={onRerunIssue}
-          pending={isRepairing || isRetryingAction || isRerunningIssue}
-        />
-      )}
-
       {snapshot?.enabled && (
         <ProjectBootstrapFlow
           snapshot={snapshot}
@@ -99,6 +88,21 @@ export function ProjectCockpitView({
         />
       )}
 
+      {snapshot?.enabled ? (
+        <WorkWaitingWidget
+          snapshot={snapshot}
+          mode="nonurgent"
+          idPrefix="cockpit-work-waiting"
+          canControl={canControl}
+          onRestartWorkflow={onRestartWorkflow}
+          onResumeExecution={onResumeExecution}
+          onReplan={onReplanTeam}
+          onRetryAction={onRetryAction}
+          onRerunIssue={onRerunIssue}
+          pending={isRepairing || isRetryingAction || isRerunningIssue}
+        />
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-2 lg:gap-6">
         <LiveSquadWidget
           snapshot={snapshot}
@@ -107,18 +111,20 @@ export function ProjectCockpitView({
 
         <WorkflowQueueWidget snapshot={snapshot} className="min-h-[240px]" />
 
-        <DecisionGateWidget
-          snapshot={snapshot}
-          changeRequests={changeRequests}
-          canControl={canControl}
-          onApproveChange={onApproveChange}
-          onRejectChange={onRejectChange}
-          onResolveEscalation={onResolveEscalation}
-          onOpenLeaderChat={onOpenLeaderChat}
-          isApproving={isApproving}
-          isRejecting={isRejecting}
-          className="min-h-[240px]"
-        />
+        {showDecisionGate ? (
+          <DecisionGateWidget
+            snapshot={snapshot}
+            changeRequests={changeRequests}
+            canControl={canControl}
+            onApproveChange={onApproveChange}
+            onRejectChange={onRejectChange}
+            onResolveEscalation={onResolveEscalation}
+            onOpenLeaderChat={onOpenLeaderChat}
+            isApproving={isApproving}
+            isRejecting={isRejecting}
+            className="min-h-[180px]"
+          />
+        ) : null}
 
         <ActivityTimelineWidget snapshot={snapshot} className="min-h-[240px]" />
 

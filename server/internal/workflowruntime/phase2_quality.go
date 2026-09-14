@@ -309,13 +309,51 @@ func structuredTestsPassed(gateType string, artifact map[string]any) (int, bool)
 	if len(tests) == 0 {
 		return 0, false
 	}
+	findings, _ := result["findings"].([]any)
 	for _, item := range tests {
 		test, _ := item.(map[string]any)
-		if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(test["status"])), "passed") {
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(test["status"])), "passed") {
+			continue
+		}
+		if !nonBlockingTestFailure(test, findings) {
 			return len(tests), false
 		}
 	}
 	return len(tests), true
+}
+
+func nonBlockingTestFailure(test map[string]any, findings []any) bool {
+	evidence := strings.TrimSpace(fmt.Sprint(test["evidence"]))
+	if evidence == "" {
+		return false
+	}
+	testName := strings.ToLower(strings.TrimSpace(fmt.Sprint(test["name"])))
+	for _, item := range findings {
+		finding, _ := item.(map[string]any)
+		if blocking, _ := finding["blocking"].(bool); blocking {
+			continue
+		}
+		findingEvidence := strings.TrimSpace(fmt.Sprint(finding["evidence"]))
+		if findingEvidence == evidence {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(test["status"])), "skipped") && strings.EqualFold(strings.TrimSpace(fmt.Sprint(finding["category"])), "test") {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(finding["category"])), "migration") && strings.Contains(testName, "migration") && sharedNumericToken(evidence, fmt.Sprint(finding["description"])) {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(evidence), "outside this change")
+}
+
+func sharedNumericToken(left, right string) bool {
+	for _, token := range strings.FieldsFunc(left, func(r rune) bool { return r < '0' || r > '9' }) {
+		if len(token) >= 3 && strings.Contains(right, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func reviewApproved(artifact map[string]any) bool {
