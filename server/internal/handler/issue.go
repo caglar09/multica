@@ -73,12 +73,20 @@ type IssueResponse struct {
 	// Stage groups sub-issues under the same parent into ordered barrier
 	// groups (null = unstaged). See issue_child_done.go for how a closed
 	// stage gates the child-done -> parent wake.
-	Stage     *int32  `json:"stage"`
-	StartDate *string `json:"start_date"`
-	DueDate   *string `json:"due_date"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-	Revision  int64   `json:"revision"`
+	Stage *int32 `json:"stage"`
+	// Dependency fields are derived from issue_dependency. The directed lists
+	// make ordering explicit: blocked_by must finish before this issue; blocks
+	// lists the work that waits on this issue.
+	BlockedBy              []IssueDependencyResponse `json:"blocked_by,omitempty"`
+	Blocks                 []IssueDependencyResponse `json:"blocks,omitempty"`
+	IsBlocked              bool                      `json:"is_blocked"`
+	UnresolvedBlockerCount int                       `json:"unresolved_blocker_count"`
+	DependencyState        string                    `json:"dependency_state,omitempty"`
+	StartDate              *string                   `json:"start_date"`
+	DueDate                *string                   `json:"due_date"`
+	CreatedAt              string                    `json:"created_at"`
+	UpdatedAt              string                    `json:"updated_at"`
+	Revision               int64                     `json:"revision"`
 	// LastActivityAt is the latest semantic issue activity. It stays nullable
 	// while the operator-run historical backfill is incomplete.
 	LastActivityAt *string `json:"last_activity_at"`
@@ -1085,6 +1093,14 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		resp[i] = sir
 	}
+	dependencyResponses := make([]*IssueResponse, len(resp))
+	for i := range resp {
+		dependencyResponses[i] = &resp[i].IssueResponse
+	}
+	if err := h.fillIssueDependencyStates(ctx, wsUUID, dependencyResponses); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
@@ -1241,6 +1257,10 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 				labels = []LabelResponse{}
 			}
 			resp[i].Labels = &labels
+		}
+		if err := h.fillIssueDependencyStates(ctx, wsUUID, issueResponsePointers(resp)); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -1656,6 +1676,10 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 		resp[i].Labels = &labels
 	}
 	h.fillStatusCategories(ctx, wsUUID, resp)
+	if err := h.fillIssueDependencyStates(ctx, wsUUID, issueResponsePointers(resp)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
@@ -2286,6 +2310,16 @@ ORDER BY
 		issue.Labels = &labels
 		groups[idx].Issues = append(groups[idx].Issues, issue)
 	}
+	var dependencyResponses []*IssueResponse
+	for groupIndex := range groups {
+		for issueIndex := range groups[groupIndex].Issues {
+			dependencyResponses = append(dependencyResponses, &groups[groupIndex].Issues[issueIndex])
+		}
+	}
+	if err := h.fillIssueDependencyStates(ctx, wsUUID, dependencyResponses); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, GroupedIssuesResponse{Groups: groups})
 }
@@ -2304,6 +2338,10 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		detailLabels = []LabelResponse{}
 	}
 	resp.Labels = &detailLabels
+	if err := h.fillIssueDependencyStates(r.Context(), issue.WorkspaceID, []*IssueResponse{&resp}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
+	}
 
 	// Fetch issue reactions.
 	reactions, err := h.Queries.ListIssueReactions(r.Context(), issue.ID)
@@ -2373,6 +2411,10 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 			labels = []LabelResponse{}
 		}
 		resp[i].Labels = &labels
+	}
+	if err := h.fillIssueDependencyStates(r.Context(), issue.WorkspaceID, issueResponsePointers(resp)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
@@ -2459,6 +2501,10 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 			labels = []LabelResponse{}
 		}
 		resp[i].Labels = &labels
+	}
+	if err := h.fillIssueDependencyStates(r.Context(), wsUUID, issueResponsePointers(resp)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
@@ -3008,6 +3054,43 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	// Determine creator identity: agent (via X-Agent-ID header) or member.
 	creatorType, actualCreatorID := h.resolveActor(r, creatorID, workspaceID)
 
+	// Autonomous software projects use a two-phase bootstrap: Mika creates the
+	// project, the runtime-backed planner proposes the Technology Team, and a
+	// human chooses the runtime/skills before any implementation backlog exists.
+	// Enforce that ordering at the write boundary instead of trusting Mika's
+	// prompt alone. Other explicit agents/member actions remain valid overrides.
+	if creatorType == "agent" && projectID.Valid {
+		var actualCreatorUUID pgtype.UUID
+		agentErr := actualCreatorUUID.Scan(actualCreatorID)
+		var agent db.Agent
+		if agentErr == nil {
+			agent, agentErr = h.Queries.GetAgent(r.Context(), actualCreatorUUID)
+		}
+		if agentErr == nil &&
+			agent.WorkspaceID == wsUUID &&
+			agent.SystemKey.Valid &&
+			agent.SystemKey.String == service.MikaSystemKey {
+			var draftStatus string
+			draftErr := h.DB.QueryRow(r.Context(), `
+				SELECT status
+				FROM autonomous_project_team_draft
+				WHERE workspace_id = $1 AND project_id = $2
+			`, wsUUID, projectID).Scan(&draftStatus)
+			if draftErr == nil && (draftStatus == "awaiting_configuration" || draftStatus == "provisioning") {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"code": "autonomous_team_configuration_required",
+					"error": "Configure the proposed Technology Team runtimes and Skills in Project > Autonomous before creating the implementation backlog.",
+				})
+				return
+			}
+			if draftErr != nil && !errors.Is(draftErr, pgx.ErrNoRows) {
+				slog.Warn("autonomous team draft gate failed", "project_id", uuidToString(projectID), "error", draftErr)
+				writeError(w, http.StatusInternalServerError, "failed to verify autonomous team configuration")
+				return
+			}
+		}
+	}
+
 	// Optional origin stamping (quick-create / autopilot). Only the
 	// allowed origin types are accepted; anything else is rejected so a
 	// rogue caller can't mint arbitrary origin labels. Both fields must
@@ -3476,6 +3559,24 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		statusKeyForGuard = statusKey
 		params.Status = pgtype.Text{String: statusKey, Valid: true}
+		effectiveStatus := issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, statusKey)
+		if effectiveStatus != "backlog" && effectiveStatus != "blocked" && effectiveStatus != "cancelled" {
+			blocked, dependencyErr := h.Queries.IssueHasUnresolvedDependencies(r.Context(), db.IssueHasUnresolvedDependenciesParams{
+				WorkspaceID: prevIssue.WorkspaceID,
+				IssueID:     prevIssue.ID,
+			})
+			if dependencyErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to check issue dependencies")
+				return
+			}
+			if blocked {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"code":    "dependency_blocked",
+					"message": "issue cannot progress until all blocked-by issues are done",
+				})
+				return
+			}
+		}
 	}
 	if req.Priority != nil {
 		if !validateIssueEnum(w, "priority", *req.Priority, validIssuePriorities) {

@@ -82,6 +82,7 @@ type BusinessMetrics struct {
 	agentRuntimeLookup            *prometheus.CounterVec
 	issueMetadataMutation         *prometheus.CounterVec
 	issueMetadataMutationDuration *prometheus.HistogramVec
+	deployment                    *DeploymentMetrics
 
 	activeMu    sync.Mutex
 	activeTasks map[string]activeTaskLabels
@@ -297,6 +298,7 @@ func NewBusinessMetrics() *BusinessMetrics {
 			Namespace: "multica", Subsystem: "issue_metadata", Name: "mutation_duration_seconds",
 			Help: "Duration of issue metadata database work by operation and bounded result, including fallback reads after conditional no-ops.", Buckets: chatClaimResumeQueryDurationBuckets,
 		}, metricLabels("multica_issue_metadata_mutation_duration_seconds")),
+		deployment:  NewDeploymentMetrics(),
 		activeTasks: map[string]activeTaskLabels{},
 		events:      newBusinessEventMetrics(),
 	}
@@ -354,7 +356,7 @@ func (m *BusinessMetrics) Collectors() []prometheus.Collector {
 		m.agentRuntimeLookup,
 		m.issueMetadataMutation,
 		m.issueMetadataMutationDuration,
-	}, m.events.collectors()...)
+	}, append(m.events.collectors(), m.deployment.Collectors()...)...)
 }
 
 // RecordIssueMetadataMutation records the UPDATE and, for a no-row result, its
@@ -377,6 +379,54 @@ func (m *BusinessMetrics) RecordIssueMetadataMutation(op, result string, duratio
 	}
 	m.issueMetadataMutation.WithLabelValues(op, result).Inc()
 	m.issueMetadataMutationDuration.WithLabelValues(op, result).Observe(duration.Seconds())
+}
+
+func (m *BusinessMetrics) RecordDeploymentConnectionValidation(provider, result string, duration time.Duration) {
+	if m != nil {
+		m.deployment.RecordConnectionValidation(provider, result, duration)
+	}
+}
+
+func (m *BusinessMetrics) RecordDeploymentProviderRequest(provider, operation, result string, duration time.Duration) {
+	if m != nil {
+		m.deployment.RecordProviderRequest(provider, operation, result, duration)
+	}
+}
+
+func (m *BusinessMetrics) RecordDeploymentTrigger(provider, result string) {
+	if m != nil {
+		m.deployment.RecordTrigger(provider, result)
+	}
+}
+
+func (m *BusinessMetrics) RecordDeploymentOperationState(provider, state string) {
+	if m != nil {
+		m.deployment.RecordOperationState(provider, state)
+	}
+}
+
+func (m *BusinessMetrics) RecordDeploymentWebhook(provider, result string) {
+	if m != nil {
+		m.deployment.RecordWebhook(provider, result)
+	}
+}
+
+func (m *BusinessMetrics) RecordDeploymentReconciliation(provider, result string) {
+	if m != nil {
+		m.deployment.RecordReconciliation(provider, result)
+	}
+}
+
+func (m *BusinessMetrics) RecordDeploymentLongRunning(provider, state string) {
+	if m != nil {
+		m.deployment.RecordLongRunning(provider, state)
+	}
+}
+
+func (m *BusinessMetrics) RecordDeploymentRateLimit(provider, operation string) {
+	if m != nil {
+		m.deployment.RecordRateLimit(provider, operation)
+	}
 }
 
 func (m *BusinessMetrics) RecordEntitlementConfigError() {

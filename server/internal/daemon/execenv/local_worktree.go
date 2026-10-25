@@ -271,6 +271,13 @@ type LocalWorktreeOutcome struct {
 	// no changes at all (a read-only run) — in that case the branch is deleted
 	// so it never shows up in the user's `git branch` as an empty artifact.
 	Branch string
+	// BaseSHA and CommitSHA are daemon-observed Git identities. They are the
+	// authoritative ChangeSet boundary; agent prose/JSON is never trusted for
+	// merge identity.
+	BaseSHA   string
+	CommitSHA string
+	// ChangedFiles is derived from git diff base..tip after finalization.
+	ChangedFiles []string
 	// AutoCommitted is true when the agent left uncommitted changes that
 	// Finalize committed so they would survive the worktree's removal.
 	AutoCommitted bool
@@ -525,7 +532,7 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	if w == nil {
 		return LocalWorktreeOutcome{}, nil
 	}
-	outcome := LocalWorktreeOutcome{Branch: w.Branch}
+	outcome := LocalWorktreeOutcome{Branch: w.Branch, BaseSHA: w.BaseCommit}
 
 	unlock, err := lockGitRoot(w.GitRoot, logger)
 	if err != nil {
@@ -618,6 +625,20 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	tip, err := runGitTrimmed(w.Path, "rev-parse", "--verify", "HEAD")
 	producedWork := err != nil || tip != w.BaseCommit
 	dropped := !producedWork && w.createdBranch
+	if err == nil && !dropped {
+		outcome.CommitSHA = tip
+		if diffOut, diffErr := runGit(w.Path, "diff", "--name-only", "--no-renames", w.BaseCommit+".."+tip); diffErr == nil {
+			for _, path := range strings.Split(diffOut, "\n") {
+				if path = strings.TrimSpace(path); path != "" {
+					outcome.ChangedFiles = append(outcome.ChangedFiles, path)
+				}
+			}
+		} else {
+			outcome.Branch = ""
+			outcome.PreservedPath = w.Path
+			return outcome, fmt.Errorf("derive authoritative changed files for %s: %w; worktree preserved at %s", w.Branch, diffErr, w.Path)
+		}
+	}
 
 	// A turn that started mid-merge only gets to advance the branch's recorded
 	// state if it committed something after resolving. When the branch is still

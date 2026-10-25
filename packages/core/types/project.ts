@@ -2,6 +2,60 @@ export type ProjectStatus = "planned" | "in_progress" | "paused" | "completed" |
 
 export type ProjectPriority = "urgent" | "high" | "medium" | "low" | "none";
 
+export type ProjectAutonomyMode = "standard" | "autonomous";
+export type ProjectAutonomyLevel =
+  | "assisted"
+  | "development"
+  | "delivery"
+  | "closed_loop";
+
+export interface ProjectBootstrapKnowledgeItem {
+  kind:
+    | "prd"
+    | "requirements"
+    | "architecture"
+    | "design"
+    | "api_spec"
+    | "reference"
+    | "note";
+  title: string;
+  content: string;
+}
+
+export interface ProjectBootstrapConfig {
+  autonomy_mode: ProjectAutonomyMode;
+  autonomy_level?: ProjectAutonomyLevel;
+  brief?: string;
+  knowledge?: ProjectBootstrapKnowledgeItem[];
+  approvals?: {
+    database_migration?: boolean;
+    production_deploy?: boolean;
+    major_dependency?: boolean;
+    critical_risk?: boolean;
+  };
+  budget?: {
+    max_parallel_nodes?: number;
+    max_total_attempts?: number;
+    token_limit?: number;
+    runtime_seconds_limit?: number;
+    cost_microunits_limit?: number;
+  };
+}
+
+export interface ProjectWorkingDirectory {
+  /** Absolute path reported by the daemon that executed the project task. */
+  path: string;
+  /** Privacy-safe display form for non-local surfaces. */
+  relative_path: string;
+  /** Machine identity: absolute paths are only valid on this daemon's host. */
+  daemon_id: string;
+  /** Loopback health/open-directory port reported by this daemon. */
+  health_port?: number;
+  runtime_id: string;
+  task_id: string;
+  status: string;
+}
+
 export interface Project {
   id: string;
   workspace_id: string;
@@ -21,6 +75,8 @@ export interface Project {
   issue_count: number;
   done_count: number;
   resource_count: number;
+  /** Detail-only daemon-owned working directories, newest per machine. */
+  working_directories?: ProjectWorkingDirectory[];
 }
 
 export interface CreateProjectRequest {
@@ -36,6 +92,7 @@ export interface CreateProjectRequest {
   // Resources to attach in the same transaction as the project. Server returns
   // 4xx (and rolls back) if any one is invalid or duplicate.
   resources?: CreateProjectResourceRequest[];
+  bootstrap?: ProjectBootstrapConfig;
 }
 
 export interface UpdateProjectRequest {

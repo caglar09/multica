@@ -425,6 +425,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		VCSIntegrationEnabled:    os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
 		PublicURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
 		AppURL:                   appURLFromEnv(),
+		VercelOAuthClientID:      strings.TrimSpace(os.Getenv("MULTICA_DEPLOYMENT_VERCEL_CLIENT_ID")),
+		VercelOAuthClientSecret:  strings.TrimSpace(os.Getenv("MULTICA_DEPLOYMENT_VERCEL_CLIENT_SECRET")),
+		VercelOAuthRedirectURL:   strings.TrimSpace(os.Getenv("MULTICA_DEPLOYMENT_VERCEL_OAUTH_REDIRECT_URL")),
 		TrustedProxies:           parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
 		CloudURL:                 strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
 		CloudTimeout:             35 * time.Second,
@@ -449,6 +452,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
+	if opts.BusinessMetrics != nil {
+		if provider, err := h.DeploymentProviders.Get("vercel"); err == nil {
+			if observable, ok := provider.(interface {
+				SetRequestObserver(func(string, string, time.Duration))
+			}); ok {
+				observable.SetRequestObserver(func(operation, result string, duration time.Duration) {
+					opts.BusinessMetrics.RecordDeploymentProviderRequest("vercel", operation, result, duration)
+					if result == "rate_limited" {
+						opts.BusinessMetrics.RecordDeploymentRateLimit("vercel", operation)
+					}
+				})
+			}
+		}
+	}
 	entitlementClient, entitlementErr := entitlement.New(entitlement.Config{
 		BaseURL:  signupConfig.CloudURL,
 		Observer: opts.BusinessMetrics,
@@ -1188,6 +1205,25 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("vcs integration disabled (MULTICA_VCS_SECRET_KEY not set)")
 	}
 
+	// Deployment provider credentials use their own key so rotating deployment
+	// access does not require rotating unrelated integration secrets.
+	if deploymentKeyRing, err := secretbox.LoadKeyRing(os.Getenv("MULTICA_DEPLOYMENT_SECRET_KEYRING"), os.Getenv("MULTICA_DEPLOYMENT_SECRET_PRIMARY_KEY")); err == nil {
+		h.DeploymentKeyRing = deploymentKeyRing
+	}
+	if deploymentKey, err := secretbox.LoadKey("MULTICA_DEPLOYMENT_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(deploymentKey)
+		if err != nil {
+			slog.Error("deployment: secretbox.New failed; provider connections disabled", "error", err)
+		} else {
+			h.DeploymentSecretBox = box
+			if h.DeploymentKeyRing == nil {
+				h.DeploymentKeyRing, _ = secretbox.NewKeyRing(1, map[uint8][]byte{1: deploymentKey}, deploymentKey)
+			}
+		}
+	} else if h.DeploymentKeyRing == nil {
+		slog.Info("deployment provider connections disabled (MULTICA_DEPLOYMENT_SECRET_KEY not set)")
+	}
+
 	// Plugin secrets use a dedicated deployment key. Keeping this separate from
 	// VCS and channel secrets gives operators an isolated rotation and blast
 	// radius; without it, saving a `secret` config field fails closed rather
@@ -1412,6 +1448,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// the connection id in the path selects the workspace, provider, and
 	// decryption secret.
 	r.Post("/api/webhooks/vcs/{connectionId}", h.HandleVCSWebhook)
+	// Deployment provider webhooks use the per-connection canonical scope. They
+	// are authenticated via provider-specific HMAC signatures before mutation.
+	r.Post("/api/webhooks/deployments/{workspaceId}/{connectionId}", h.HandleDeploymentWebhook)
+	// Vercel redirects the browser here after the state-bound Cloud OAuth flow.
+	// It intentionally sits outside the session middleware; the one-time state
+	// record supplies workspace ownership and PKCE verifier binding.
+	r.Get("/api/integrations/deployment/vercel/callback", h.VercelOAuthCallback)
 	// Stripe webhook (no Multica auth — Stripe signs the raw body
 	// with a shared secret, the multica-cloud upstream verifies. We
 	// only forward the bytes + the Stripe-Signature header; see
@@ -1440,6 +1483,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Get("/ws", h.DaemonWebSocket)
 		r.Get("/workspaces", h.ListDaemonWorkspaces)
 		r.Get("/workspaces/{workspaceId}/repos", h.GetDaemonWorkspaceRepos)
+		r.Post("/workspaces/{workspaceId}/projects/{projectId}/deployment-source-revision", h.ReportDaemonDeploymentSourceRevision)
 		r.Get("/workspaces/{workspaceId}/runtime-profiles", h.DaemonListRuntimeProfiles)
 
 		// Agent-triggered plugin hooks. The daemon's local MCP server calls
@@ -1594,6 +1638,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// The payload is names and transports only; the stored
 					// entries are write-only.
 					r.Get("/mcp-servers", h.ListWorkspaceMcpServers)
+					// Deployment reads are workspace-member scoped; mutation and
+					// provider credential routes are registered in the admin group.
+					r.Get("/deployment-targets", h.ListDeploymentTargets)
+					r.Get("/deployment-targets/{targetId}", h.GetDeploymentTarget)
+					r.Get("/deployment-targets/{targetId}/operations", h.ListDeploymentOperations)
+					r.Get("/deployment-operations/{operationId}", h.GetDeploymentOperation)
+					r.Get("/deployment-operations/{operationId}/logs", h.GetDeploymentLogs)
+					r.Post("/deployment-operations/{operationId}/cancel", h.CancelDeployment)
+					r.Post("/deployment-targets", h.CreateDeploymentTarget)
+					r.Put("/deployment-targets/{targetId}", h.UpdateDeploymentTarget)
+					r.Patch("/deployment-targets/{targetId}", h.UpdateDeploymentTarget)
+					r.Delete("/deployment-targets/{targetId}", h.DeleteDeploymentTarget)
+					r.Post("/deployment-targets/{targetId}/deploy", h.TriggerDeployment)
+					r.Post("/deployment-targets/{targetId}/promote", h.PromoteDeployment)
+					r.Post("/deployment-targets/{targetId}/rollback", h.RollbackDeployment)
 					// Installed Plugins are member-visible so a member can
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
@@ -1671,6 +1730,40 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/vcs/connections", h.ConnectVCS)
 					r.Post("/vcs/connections/{connectionId}/rotate-webhook", h.RotateVCSConnectionWebhook)
 					r.Delete("/vcs/connections/{connectionId}", h.DeleteVCSConnection)
+					// Deployment provider connections are admin-only because their
+					// credentials authorize access to external infrastructure.
+					r.Route("/deployment-providers", func(r chi.Router) {
+						r.Get("/vercel/oauth/start", h.StartVercelOAuth)
+						r.Route("/connections", func(r chi.Router) {
+							r.Get("/", h.ListDeploymentConnections)
+							r.Post("/", h.CreateDeploymentConnection)
+							r.Route("/{connectionId}", func(r chi.Router) {
+								r.Get("/", h.GetDeploymentConnection)
+								r.Post("/validate", h.ValidateDeploymentConnection)
+								r.Post("/oauth/refresh", h.RefreshVercelOAuthConnection)
+								r.Post("/oauth/revoke", h.RevokeVercelOAuthConnection)
+								r.Put("/webhook-secret", h.SetDeploymentWebhookSecret)
+								r.Delete("/", h.DeleteDeploymentConnection)
+								r.Get("/projects", h.ListDeploymentProviderTargets)
+								r.Get("/targets", h.ListDeploymentProviderTargets)
+								r.Post("/targets", h.CreateDeploymentProviderTarget)
+							})
+						})
+					})
+					// Keep the shorter connection path used by the deployment client
+					// as a compatibility alias; it has the same admin middleware.
+					r.Get("/deployment-connections", h.ListDeploymentConnections)
+					r.Post("/deployment-connections", h.CreateDeploymentConnection)
+					r.Route("/deployment-connections/{connectionId}", func(r chi.Router) {
+						r.Get("/", h.GetDeploymentConnection)
+						r.Post("/validate", h.ValidateDeploymentConnection)
+						r.Post("/oauth/refresh", h.RefreshVercelOAuthConnection)
+						r.Post("/oauth/revoke", h.RevokeVercelOAuthConnection)
+						r.Put("/webhook-secret", h.SetDeploymentWebhookSecret)
+						r.Delete("/", h.DeleteDeploymentConnection)
+						r.Get("/targets", h.ListDeploymentProviderTargets)
+						r.Post("/targets", h.CreateDeploymentProviderTarget)
+					})
 				})
 
 				// Lark integration. Every endpoint here only requires
@@ -1858,6 +1951,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
 
+			// Experimental deployment diagnostics. Raw service logs can contain
+			// project text, paths and operator details, so task-token actors are
+			// blocked and only workspace owners/admins can read or export them.
+			r.Group(func(r chi.Router) {
+				r.Use(handler.RequireHumanActor)
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner", "admin"))
+				r.Get("/api/diagnostics/logs", h.ListDiagnosticLogs)
+				r.Get("/api/diagnostics/logs/export", h.ExportDiagnosticLogs)
+			})
+
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 
@@ -1882,6 +1985,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/batch-delete", h.BatchDeleteIssues)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
+					r.Get("/dependencies", h.GetIssueDependencies)
+					r.Post("/dependencies", h.CreateIssueDependency)
+					r.Delete("/dependencies/{dependencyId}", h.DeleteIssueDependency)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
 					r.Delete("/", h.DeleteIssue)
@@ -1974,7 +2080,23 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetProject)
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
+					r.Get("/autonomous", h.GetProjectAutonomousControlCenter)
+					r.Get("/autonomous/leader-chat", h.GetProjectLeaderChat)
+					r.Get("/autonomous/change-requests", h.ListProjectLeaderChanges)
+					r.Get("/report", h.GetProjectReport)
+					r.With(handler.RequireHumanActor).Post("/autonomous/pause", h.PauseProjectAutonomous)
+					r.With(handler.RequireHumanActor).Post("/autonomous/resume", h.ResumeProjectAutonomous)
+					r.With(handler.RequireHumanActor).Post("/autonomous/replan", h.ReplanProjectAutonomous)
+					r.With(handler.RequireHumanActor).Post("/autonomous/workflow/restart", h.RestartProjectAutonomousWorkflow)
+					r.With(handler.RequireHumanActor).Put("/autonomous/brain/config", h.UpdateProjectAutonomousBrainConfig)
+					r.With(handler.RequireHumanActor).Post("/autonomous/team/confirm", h.ConfirmProjectAutonomousTeam)
+					r.With(handler.RequireHumanActor).Post("/autonomous/planning/start", h.StartProjectAutonomousPlanning)
+					r.With(handler.RequireHumanActor).Post("/autonomous/change-requests/{changeRequestId}/approve", h.ApproveProjectLeaderChange)
+					r.With(handler.RequireHumanActor).Post("/autonomous/change-requests/{changeRequestId}/reject", h.RejectProjectLeaderChange)
+					r.With(handler.RequireHumanActor).Post("/autonomous/actions/{actionId}/retry", h.RetryProjectAutonomousAction)
+					r.With(handler.RequireHumanActor).Post("/autonomous/escalations/{escalationId}/resolve", h.ResolveProjectAutonomousEscalation)
 					r.Get("/resources", h.ListProjectResources)
+					r.Get("/deployment-source-revision", h.GetProjectDeploymentSourceRevision)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
 					r.Delete("/resources/{resourceId}", h.DeleteProjectResource)

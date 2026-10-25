@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS autonomous_project_brain_entry_fts_idx;

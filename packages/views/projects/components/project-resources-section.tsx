@@ -46,6 +46,7 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import {
   isDesktopShell,
+  openLocalDirectory,
   pickDirectory,
   useLocalDaemonStatus,
   validateLocalDirectory,
@@ -696,6 +697,7 @@ function LocalDirectoryRow({
   // belongs to the owning device. Delete stays available so the user can
   // drop a stale registration from any device.
   const mismatch = isForeignDaemon || isLocalUnknown;
+  const canOpen = canEdit && !mismatch;
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(display);
@@ -711,6 +713,16 @@ function LocalDirectoryRow({
   const cancel = () => {
     setEditing(false);
     setDraft(display);
+  };
+
+  const handleOpen = async () => {
+    if (!canOpen) return;
+    const result = await openLocalDirectory(ref.local_path);
+    if (!result.ok) {
+      toast.error(
+        result.error ?? t(($) => $.resources.toast_local_open_failed),
+      );
+    }
   };
 
   return (
@@ -739,25 +751,32 @@ function LocalDirectoryRow({
           aria-label={t(($) => $.resources.local_rename_label)}
         />
       ) : (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span className="truncate flex-1">{display}</span>
-            }
-          />
-          <TooltipContent side="top">
-            <div className="space-y-0.5 text-micro">
-              <div className="font-mono">{ref.local_path}</div>
-              {mismatch && (
-                <div className="text-muted-foreground">
-                  {isLocalUnknown
-                    ? t(($) => $.resources.local_no_daemon_tooltip)
-                    : t(($) => $.resources.local_other_machine_tooltip)}
-                </div>
-              )}
-            </div>
-          </TooltipContent>
-        </Tooltip>
+        <button
+          type="button"
+          aria-disabled={!canOpen}
+          onClick={() => {
+            void handleOpen();
+          }}
+          title={
+            canOpen
+              ? t(($) => $.resources.local_open_tooltip)
+              : isLocalUnknown
+                ? t(($) => $.resources.local_no_daemon_tooltip)
+                : isForeignDaemon
+                  ? t(($) => $.resources.local_other_machine_tooltip)
+                  : undefined
+          }
+          className={`min-w-0 flex-1 text-left transition-colors ${
+            canOpen
+              ? "cursor-pointer hover:text-foreground"
+              : "cursor-default"
+          }`}
+        >
+          <span className="block truncate">{display}</span>
+          <span className="block truncate font-mono text-micro text-muted-foreground">
+            {ref.local_path}
+          </span>
+        </button>
       )}
       {/* Always visible, unlike the hover-only actions: without it there is no
           way to tell whether tasks on this folder edit it directly or hand back

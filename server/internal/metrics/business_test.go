@@ -188,6 +188,14 @@ func TestBusinessMetricsRegistryExposesAllFamilies(t *testing.T) {
 	m.RecordEntitlementVersionRegression()
 	m.RecordAutopilotQuotaDecision("observe", "manual", "admitted")
 	m.ObserveRuntimeSweepStage(RuntimeSweepStageLiveness, time.Second, 2, 1)
+	m.RecordDeploymentConnectionValidation("vercel", "success", time.Second)
+	m.RecordDeploymentProviderRequest("vercel", "trigger", "success", time.Second)
+	m.RecordDeploymentTrigger("vercel", "success")
+	m.RecordDeploymentOperationState("vercel", "queued")
+	m.RecordDeploymentWebhook("vercel", "verified")
+	m.RecordDeploymentReconciliation("all", "success")
+	m.RecordDeploymentLongRunning("all", "deadline")
+	m.RecordDeploymentRateLimit("vercel", "trigger")
 
 	families, err := registry.Gather()
 	if err != nil {

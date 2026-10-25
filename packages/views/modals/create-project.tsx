@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { CalendarClock, CalendarDays, ChevronRight, FolderOpen, GitBranch, Maximize2, Minimize2, MoreHorizontal, Pencil, Search, X as XIcon, UserMinus } from "lucide-react";
+import { Brain, CalendarClock, CalendarDays, ChevronRight, FileText, FolderOpen, GitBranch, Maximize2, Minimize2, MoreHorizontal, Pencil, Plus, Search, ShieldCheck, Sparkles, Trash2, X as XIcon, UserMinus } from "lucide-react";
 
 /**
  * GitHub mark — lucide-react v1 dropped brand icons, so we inline the
@@ -33,7 +33,12 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import { useActorName } from "@multica/core/workspace/hooks";
-import type { ProjectStatus, ProjectPriority } from "@multica/core/types";
+import type {
+  ProjectAutonomyLevel,
+  ProjectBootstrapKnowledgeItem,
+  ProjectStatus,
+  ProjectPriority,
+} from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogTitle } from "@multica/ui/components/ui/dialog";
@@ -162,6 +167,51 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
+
+  // Project Bootstrap. Explicit mode separates normal project tracking from
+  // Project OS orchestration; development remains the safe/default autonomous
+  // level and server policy clamps any stronger project request.
+  const [autonomous, setAutonomous] = useState(false);
+  const [autonomyLevel, setAutonomyLevel] =
+    useState<ProjectAutonomyLevel>("development");
+  const [bootstrapBrief, setBootstrapBrief] = useState("");
+  const [bootstrapKnowledge, setBootstrapKnowledge] = useState<
+    ProjectBootstrapKnowledgeItem[]
+  >([
+    {
+      kind: "prd",
+      title: "Product requirements",
+      content: "",
+    },
+  ]);
+  const updateBootstrapKnowledge = (
+    index: number,
+    patch: Partial<ProjectBootstrapKnowledgeItem>,
+  ) => {
+    setBootstrapKnowledge((current) =>
+      current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    );
+  };
+  const addBootstrapKnowledge = () => {
+    setBootstrapKnowledge((current) => [
+      ...current,
+      { kind: "reference", title: "", content: "" },
+    ]);
+  };
+  const removeBootstrapKnowledge = (index: number) => {
+    setBootstrapKnowledge((current) =>
+      current.filter((_, itemIndex) => itemIndex !== index),
+    );
+  };
+
+  const [approvalDatabaseMigration, setApprovalDatabaseMigration] = useState(true);
+  const [approvalProductionDeploy, setApprovalProductionDeploy] = useState(true);
+  const [approvalMajorDependency, setApprovalMajorDependency] = useState(true);
+  const [approvalCriticalRisk, setApprovalCriticalRisk] = useState(true);
+  const [maxParallelNodes, setMaxParallelNodes] = useState(4);
+  const [maxProjectAttempts, setMaxProjectAttempts] = useState(100);
   // Repos selected to attach as github_repo resources after the project is
   // created. Stored as URLs (not full ProjectResource rows) — they're not
   // persisted until handleSubmit fires the createProjectResource calls.
@@ -362,6 +412,28 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
         due_date: dueDate || undefined,
         // Server attaches these in the same transaction as the project.
         resources,
+        bootstrap: {
+          autonomy_mode: autonomous ? "autonomous" : "standard",
+          autonomy_level: autonomyLevel,
+          brief: bootstrapBrief.trim() || undefined,
+          knowledge: bootstrapKnowledge
+            .map((item) => ({
+              ...item,
+              title: item.title.trim(),
+              content: item.content.trim(),
+            }))
+            .filter((item) => item.title && item.content),
+          approvals: {
+            database_migration: approvalDatabaseMigration,
+            production_deploy: approvalProductionDeploy,
+            major_dependency: approvalMajorDependency,
+            critical_risk: approvalCriticalRisk,
+          },
+          budget: {
+            max_parallel_nodes: maxParallelNodes,
+            max_total_attempts: maxProjectAttempts,
+          },
+        },
       });
       clearDraft();
       onClose();
@@ -491,6 +563,194 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
           <p className="mt-1 text-caption text-muted-foreground">
             {t(($) => $.create_project.description_hint)}
           </p>
+
+          {autonomous ? (
+            <div className="mt-4 mb-3 rounded-xl border border-primary/25 bg-muted/10 p-3">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 text-body font-medium">
+                    <Sparkles className="size-4" />
+                    Autonomous Project Bootstrap
+                  </div>
+                  <p className="mt-1 text-caption text-muted-foreground">
+                    This intake becomes durable Project Brain context before the
+                    Technology Team and Project OS plan are created.
+                  </p>
+                </div>
+                <span className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
+                  {autonomyLevel.replace("_", " ")}
+                </span>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-caption font-medium">
+                    Project brief
+                  </span>
+                  <textarea
+                    value={bootstrapBrief}
+                    onChange={(event) => setBootstrapBrief(event.target.value)}
+                    placeholder="Outcome, users, business intent, hard constraints…"
+                    className="min-h-24 w-full resize-y rounded-md border bg-background px-2.5 py-2 text-body outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  />
+                </label>
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1 text-caption font-medium">
+                      <Brain className="size-3.5" />
+                      Project knowledge
+                    </span>
+                    <button
+                      type="button"
+                      onClick={addBootstrapKnowledge}
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <Plus className="size-3" />
+                      Add document
+                    </button>
+                  </div>
+                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                    {bootstrapKnowledge.map((item, index) => (
+                      <div
+                        key={index}
+                        className="rounded-md border bg-background p-2"
+                      >
+                        <div className="mb-2 grid grid-cols-[120px_1fr_auto] gap-2">
+                          <select
+                            value={item.kind}
+                            onChange={(event) =>
+                              updateBootstrapKnowledge(index, {
+                                kind: event.target
+                                  .value as ProjectBootstrapKnowledgeItem["kind"],
+                              })
+                            }
+                            className="h-8 rounded-md border bg-background px-2 text-caption"
+                          >
+                            <option value="prd">PRD</option>
+                            <option value="requirements">Requirements</option>
+                            <option value="architecture">Architecture</option>
+                            <option value="design">Design</option>
+                            <option value="api_spec">API spec</option>
+                            <option value="reference">Reference</option>
+                            <option value="note">Note</option>
+                          </select>
+                          <input
+                            value={item.title}
+                            onChange={(event) =>
+                              updateBootstrapKnowledge(index, {
+                                title: event.target.value,
+                              })
+                            }
+                            placeholder="Document title"
+                            className="h-8 min-w-0 rounded-md border bg-background px-2 text-caption"
+                          />
+                          <button
+                            type="button"
+                            aria-label="Remove knowledge document"
+                            onClick={() => removeBootstrapKnowledge(index)}
+                            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </div>
+                        <textarea
+                          value={item.content}
+                          onChange={(event) =>
+                            updateBootstrapKnowledge(index, {
+                              content: event.target.value,
+                            })
+                          }
+                          placeholder="Paste requirements, decisions, contracts, constraints, or reference material…"
+                          className="min-h-20 w-full resize-y rounded-md border-0 bg-muted/20 px-2.5 py-2 text-caption outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        />
+                      </div>
+                    ))}
+                    {bootstrapKnowledge.length === 0 ? (
+                      <button
+                        type="button"
+                        onClick={addBootstrapKnowledge}
+                        className="flex min-h-24 w-full items-center justify-center gap-2 rounded-md border border-dashed text-caption text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                      >
+                        <FileText className="size-4" />
+                        Add PRD, architecture, API spec, or reference
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_220px]">
+                <div>
+                  <div className="mb-1.5 flex items-center gap-1 text-caption font-medium">
+                    <ShieldCheck className="size-3.5" />
+                    Approval guardrails
+                  </div>
+                  <div className="grid gap-1.5 sm:grid-cols-2">
+                    {[
+                      ["Database migrations", approvalDatabaseMigration, setApprovalDatabaseMigration],
+                      ["Production deployment", approvalProductionDeploy, setApprovalProductionDeploy],
+                      ["Major dependencies", approvalMajorDependency, setApprovalMajorDependency],
+                      ["Critical risk", approvalCriticalRisk, setApprovalCriticalRisk],
+                    ].map(([label, checked, setter]) => (
+                      <label
+                        key={label as string}
+                        className="flex cursor-pointer items-center gap-2 rounded-md border bg-background px-2.5 py-2 text-caption"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked as boolean}
+                          onChange={(event) =>
+                            (setter as (value: boolean) => void)(event.target.checked)
+                          }
+                        />
+                        <span>{label as string}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-1.5 text-caption font-medium">
+                    Execution budget
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-[11px] text-muted-foreground">
+                      Parallel nodes
+                      <input
+                        type="number"
+                        min={1}
+                        max={32}
+                        value={maxParallelNodes}
+                        onChange={(event) =>
+                          setMaxParallelNodes(
+                            Math.max(1, Number(event.target.value) || 1),
+                          )
+                        }
+                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-body text-foreground"
+                      />
+                    </label>
+                    <label className="text-[11px] text-muted-foreground">
+                      Max attempts
+                      <input
+                        type="number"
+                        min={1}
+                        max={1000}
+                        value={maxProjectAttempts}
+                        onChange={(event) =>
+                          setMaxProjectAttempts(
+                            Math.max(1, Number(event.target.value) || 1),
+                          )
+                        }
+                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-body text-foreground"
+                      />
+                    </label>
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">
+                    Server limits remain the hard ceiling.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Property toolbar — mirrors the create-issue footer: a wrapping pill
@@ -500,6 +760,45 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
             support more resource types (Linear / Notion / Figma / Slack), pull
             them out into a dedicated Resources strip above this footer. */}
         <div className="flex items-center gap-1.5 px-4 py-2 shrink-0 flex-wrap">
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <PillButton>
+                  <Sparkles className="size-3" />
+                  <span>
+                    {autonomous
+                      ? `Autonomous · ${autonomyLevel.replace("_", " ")}`
+                      : "Standard project"}
+                  </span>
+                </PillButton>
+              }
+            />
+            <DropdownMenuContent align="start" className="w-56">
+              <DropdownMenuItem onClick={() => setAutonomous(false)}>
+                Standard project
+              </DropdownMenuItem>
+              {(
+                [
+                  ["assisted", "Autonomous · Assisted"],
+                  ["development", "Autonomous · Development"],
+                  ["delivery", "Autonomous · Delivery"],
+                  ["closed_loop", "Autonomous · Closed loop"],
+                ] as Array<[ProjectAutonomyLevel, string]>
+              ).map(([level, label]) => (
+                <DropdownMenuItem
+                  key={level}
+                  onClick={() => {
+                    setAutonomous(true);
+                    setAutonomyLevel(level);
+                    if (!isExpanded) setIsExpanded(true);
+                  }}
+                >
+                  {label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <DropdownMenu>
             <DropdownMenuTrigger
               render={

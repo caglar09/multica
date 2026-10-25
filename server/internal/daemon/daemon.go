@@ -222,15 +222,18 @@ const (
 // reportTerminalTask gives the durable outbox one insertion point without
 // revisiting every task exit when it is added.
 type terminalTaskReport struct {
-	kind           terminalTaskReportKind
-	taskID         string
-	output         string
-	branchName     string
-	errorMessage   string
-	sessionID      string
-	workDir        string
-	durableWorkDir string
-	failureReason  string
+	kind                 terminalTaskReportKind
+	taskID               string
+	output               string
+	branchName           string
+	worktreeBaseSHA      string
+	worktreeCommitSHA    string
+	worktreeChangedFiles []string
+	errorMessage         string
+	sessionID            string
+	workDir              string
+	durableWorkDir       string
+	failureReason        string
 	// sessionRolloutMissing is true when the daemon withheld this task's Codex
 	// session because its rollout was not in the store (MUL-5305). The server
 	// clears the resume pointer and flags the continuity gap for the next claim.
@@ -302,15 +305,16 @@ var (
 // surfaced each project repo so two projects using the same URL don't leak refs
 // into each other.
 type workspaceState struct {
-	workspaceID     string
-	runtimeIDs      []string
-	reposVersion    string // stored for future use: skip refresh when version unchanged
-	allowedRepoURLs map[string]struct{}
-	taskRepoURLs    map[string]struct{}
-	taskRepoRefs    map[string]map[string]string // taskID -> repo URL -> checkout ref
-	settings        json.RawMessage              // workspace settings (JSONB)
-	lastRepoSyncErr string
-	repoRefreshMu   contextLock
+	workspaceID       string
+	runtimeIDs        []string
+	reposVersion      string // stored for future use: skip refresh when version unchanged
+	allowedRepoURLs   map[string]struct{}
+	taskRepoURLs      map[string]struct{}
+	taskRepoRefs      map[string]map[string]string // taskID -> repo URL -> checkout ref
+	deploymentSources []DeploymentSourceBinding
+	settings          json.RawMessage // workspace settings (JSONB)
+	lastRepoSyncErr   string
+	repoRefreshMu     contextLock
 	// coAuthorPublishMu serializes publication of the Co-authored-by verdict
 	// for this workspace. Unlike the fields above it is NOT guarded by
 	// Daemon.mu: it exists precisely so the verdict can be read and written as
@@ -382,11 +386,12 @@ type repoCacheBackend interface {
 
 // Daemon is the local agent runtime that polls for and executes tasks.
 type Daemon struct {
-	cfg        Config
-	client     *Client
-	repoCache  repoCacheBackend
-	skillCache *SkillBundleCache
-	logger     *slog.Logger
+	cfg            Config
+	client         *Client
+	terminalOutbox *terminalOutbox
+	repoCache      repoCacheBackend
+	skillCache     *SkillBundleCache
+	logger         *slog.Logger
 
 	mu           sync.Mutex
 	workspaces   map[string]*workspaceState
@@ -688,6 +693,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	d := &Daemon{
 		cfg:                       cfg,
 		client:                    client,
+		terminalOutbox:            newTerminalOutbox(filepath.Join(cfg.WorkspacesRoot, ".terminal-outbox")),
 		repoCache:                 repocache.New(cacheRoot, logger),
 		skillCache:                NewSkillBundleCache(skillCacheRoot),
 		logger:                    logger,
@@ -1538,6 +1544,9 @@ func (d *Daemon) applyRegisterResponseInPlace(workspaceID string, resp *Register
 		ws.reposVersion = resp.ReposVersion
 		ws.allowedRepoURLs = repoAllowlist(resp.Repos)
 	}
+	if resp.DeploymentSources != nil {
+		ws.deploymentSources = append([]DeploymentSourceBinding(nil), resp.DeploymentSources...)
+	}
 	if len(resp.Settings) > 0 {
 		ws.settings = resp.Settings
 	}
@@ -1638,6 +1647,9 @@ func (d *Daemon) mergeBuiltinRegisterResponse(workspaceID string, resp *Register
 	if resp.ReposVersion != "" {
 		ws.reposVersion = resp.ReposVersion
 		ws.allowedRepoURLs = repoAllowlist(resp.Repos)
+	}
+	if resp.DeploymentSources != nil {
+		ws.deploymentSources = append([]DeploymentSourceBinding(nil), resp.DeploymentSources...)
 	}
 	if len(resp.Settings) > 0 {
 		ws.settings = resp.Settings
@@ -2137,6 +2149,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
+	go d.terminalOutboxLoop(ctx)
 
 	// Preflight succeeded and the background loops are up: the daemon has
 	// registered its runtimes and can now claim and run tasks. Flip /health
@@ -2144,7 +2157,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// readiness wait blocks on, so success is reported only after startup
 	// actually completed, not merely because the health port came up.
 	d.ready.Store(true)
-	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal); health now reporting ready")
+	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal, terminal-outbox); health now reporting ready")
 	err = d.pollLoop(ctx, taskWakeups)
 	d.logger.Debug("daemon main loop returning", "error", err)
 	return err
@@ -2944,6 +2957,7 @@ func (d *Daemon) registerRuntimesForWorkspaceBatchLocked(ctx context.Context, wo
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
+		"health_port":       d.cfg.HealthPort,
 		"runtimes":          runtimes,
 		"failed_profiles":   failedProfiles,
 	}
@@ -2989,6 +3003,7 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
+		"health_port":       d.cfg.HealthPort,
 		"runtimes":          runtimes,
 		// Deliberately empty: this call carries no profiles, so it must not
 		// report profile failures either.
@@ -3431,7 +3446,14 @@ func (d *Daemon) syncWorkspaceRepos(workspaceID string, repos []RepoData) {
 }
 
 func (d *Daemon) syncWorkspaceReposContext(ctx context.Context, workspaceID string, repos []RepoData) {
+	var sources []DeploymentSourceBinding
+	d.mu.Lock()
+	if ws, ok := d.workspaces[workspaceID]; ok {
+		sources = append([]DeploymentSourceBinding(nil), ws.deploymentSources...)
+	}
+	d.mu.Unlock()
 	if d.repoCache == nil {
+		d.reportDeploymentSources(ctx, workspaceID, sources)
 		return
 	}
 	var err error
@@ -3445,9 +3467,11 @@ func (d *Daemon) syncWorkspaceReposContext(ctx context.Context, workspaceID stri
 	if err != nil {
 		d.setWorkspaceRepoSyncError(workspaceID, err.Error())
 		d.logger.Warn("repo cache sync failed", "workspace_id", workspaceID, "error", err)
+		d.reportDeploymentSources(ctx, workspaceID, sources)
 		return
 	}
 	d.setWorkspaceRepoSyncError(workspaceID, "")
+	d.reportDeploymentSources(ctx, workspaceID, sources)
 }
 
 func (d *Daemon) refreshWorkspaceRepos(ctx context.Context, workspaceID string) (*WorkspaceReposResponse, error) {
@@ -3463,6 +3487,9 @@ func (d *Daemon) refreshWorkspaceRepos(ctx context.Context, workspaceID string) 
 	if ws, ok := d.workspaces[workspaceID]; ok {
 		ws.reposVersion = resp.ReposVersion
 		ws.allowedRepoURLs = repoAllowlist(resp.Repos)
+		if resp.DeploymentSources != nil {
+			ws.deploymentSources = append([]DeploymentSourceBinding(nil), resp.DeploymentSources...)
+		}
 		// Keep the cached settings in sync with the server. The daemon's
 		// feature gates (e.g. workspaceCoAuthoredByEnabled) read directly from
 		// this field, so toggling a Setting in the web UI must update it here
@@ -3477,6 +3504,7 @@ func (d *Daemon) refreshWorkspaceRepos(ctx context.Context, workspaceID string) 
 	// what makes a toggled-off setting apply to checkouts that already exist
 	// instead of only to the next one (MUL-6921).
 	d.persistCoAuthoredByState(workspaceID)
+	go d.reportDeploymentSources(context.Background(), workspaceID, resp.DeploymentSources)
 
 	return resp, nil
 }
@@ -4298,6 +4326,7 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 				d.logger.Info("registered runtime", "workspace_id", id, "runtime_id", rt.ID, "provider", rt.Provider)
 			}
 			ws := newWorkspaceState(id, runtimeIDs, resp.ReposVersion, resp.Repos, resp.Settings)
+			ws.deploymentSources = append([]DeploymentSourceBinding(nil), resp.DeploymentSources...)
 			// Seed the profile signature so later on-demand change notifications can
 			// detect drift without re-registering on duplicates (empty sig is the
 			// explicit "unknown — keep the previous value" sentinel from
@@ -4341,6 +4370,7 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 		if d.repoCache != nil && len(resp.Repos) > 0 {
 			go d.syncWorkspaceRepos(id, resp.Repos)
 		}
+		go d.reportDeploymentSources(context.Background(), id, resp.DeploymentSources)
 
 		// Tell the server about any tasks the previous daemon process was
 		// running on these runtimes. Without this, an issue can stay stuck
@@ -6217,6 +6247,9 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			taskID:                taskID,
 			output:                result.Comment,
 			branchName:            result.BranchName,
+			worktreeBaseSHA:       result.WorktreeBaseSHA,
+			worktreeCommitSHA:     result.WorktreeCommitSHA,
+			worktreeChangedFiles:  append([]string(nil), result.WorktreeChangedFiles...),
 			sessionID:             result.SessionID,
 			workDir:               result.WorkDir,
 			durableWorkDir:        result.DurableWorkDir,
@@ -6226,19 +6259,13 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 		if err == nil {
 			return
 		}
-		// CompleteTask retries transient errors internally. A transient
-		// error reaching us here means the schedule was exhausted while
-		// the upstream was still 5xx / unreachable. Converting that into
-		// a fail would lose the agent's actual result and surface a
-		// misleading red badge in the UI — leave the task in running
-		// instead so a future fix (server-side stuck-task reaper, or a
-		// daemon-side persistent pending queue) can recover it. Only
-		// permanent server-side rejections (4xx other than 408/429)
-		// warrant the legacy fallback, because at that point the server
-		// has already refused this task and the only useful UI signal
-		// left is a concrete failure.
-		if isTransientError(err) {
-			taskLog.Error("complete task failed after retries; leaving task in running rather than falling back to fail", "error", err)
+		// A completed result stays completed when delivery is interrupted.
+		// reportTerminalTask has already persisted it to the durable outbox;
+		// retry it after a server restart or token renewal rather than replacing
+		// a successful run with a failure. A 401 is recoverable here because a
+		// daemon may finish exactly while the server rotates its runtime token.
+		if isTransientError(err) || isUnauthorizedError(err) {
+			taskLog.Error("complete task delivery deferred to terminal outbox", "error", err)
 			return
 		}
 		taskLog.Error("complete task rejected by server, falling back to fail", "error", err)
@@ -6259,6 +6286,9 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			// rejected. Its branch is real and already committed, so it must
 			// survive the downgrade to a failure report.
 			branchName:            result.BranchName,
+			worktreeBaseSHA:       result.WorktreeBaseSHA,
+			worktreeCommitSHA:     result.WorktreeCommitSHA,
+			worktreeChangedFiles:  append([]string(nil), result.WorktreeChangedFiles...),
 			sessionID:             result.SessionID,
 			workDir:               result.WorkDir,
 			durableWorkDir:        result.DurableWorkDir,
@@ -6317,10 +6347,23 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTaskReport) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), terminalTaskReportTimeout)
 	defer cancel()
+	if err := d.sendTerminalTaskReport(ctx, report); err != nil {
+		if d.terminalOutbox != nil {
+			if outboxErr := d.terminalOutbox.Put(report); outboxErr != nil {
+				d.logger.Error("persist terminal task report failed", "task", shortID(report.taskID), "error", outboxErr)
+			}
+		}
+		return err
+	}
+	return nil
+}
 
+func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTaskReport) error {
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.CompleteTask(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir)
+		return d.client.CompleteTask(ctx, report.taskID, report.output, report.branchName,
+			report.worktreeBaseSHA, report.worktreeCommitSHA, report.worktreeChangedFiles,
+			report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir)
 	case terminalTaskReportFail:
 		return d.client.FailTask(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir)
 	default:
@@ -7778,8 +7821,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var agentMcpConfig json.RawMessage
 	var effectiveMcpConfig json.RawMessage
 	var cursorMcpAuthSource string
+	readOnlyTask := task.Agent != nil && task.Agent.ReadOnly
+	if readOnlyTask && provider != "antigravity" && provider != "claude" && provider != "codex" {
+		return TaskResult{}, fmt.Errorf("project manager requires a provider read-only mode; %s is unsupported", provider)
+	}
+	remoteMCPConnections := task.RemoteMCPConnections
+	if readOnlyTask {
+		remoteMCPConnections = nil
+		task.PluginHookTools = nil
+	}
 	remoteMCPConfig, remoteMCPDiagnostics, remoteMCPBrokers, remoteMCPErr := startTaskRemoteMCPBrokers(
-		prepareCtx, ctx, task.ID, provider, task.RemoteMCPConnections,
+		prepareCtx, ctx, task.ID, provider, remoteMCPConnections,
 		func(resolveCtx context.Context, contributionID string) (http.Header, error) {
 			return d.client.ResolveRemoteMCPCredential(resolveCtx, task.RemoteMCPDaemonToken, task.ID, contributionID)
 		},
@@ -7821,7 +7873,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			remoteMCPConfig = merged
 		}
 	}
-	if task.Agent != nil {
+	if task.Agent != nil && !readOnlyTask {
 		agentMcpConfig = task.Agent.McpConfig
 		effectiveMcpConfig = agentMcpConfig
 		if merged, mergeErr := mergeRuntimeAndAgentMcpConfig(provider, agentMcpConfig); mergeErr != nil {
@@ -8162,6 +8214,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			outcome, finalizeErr := env.LocalWorktree.Finalize(taskLog)
 			if outcome.Branch != "" {
 				taskResult.BranchName = outcome.Branch
+				taskResult.WorktreeBaseSHA = outcome.BaseSHA
+				taskResult.WorktreeCommitSHA = outcome.CommitSHA
+				taskResult.WorktreeChangedFiles = append([]string(nil), outcome.ChangedFiles...)
 			}
 			if finalizeErr == nil {
 				// The configured local_directory becomes authoritative only after
@@ -8549,7 +8604,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
 
 	var idleWatchdogTimeout time.Duration
-	if provider == "opencode" || provider == "codearts" {
+	if provider == "opencode" || provider == "codearts" || provider == "antigravity" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
 	execOpts := agent.ExecOptions{
@@ -8585,6 +8640,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		OpenclawMode:           openclawMode,
 		ClaudeSettingsPath:     env.ClaudeSettingsPath,
 		QwenpawWorkspace:       env.QwenpawWorkspace,
+		ReadOnly:               readOnlyTask,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:

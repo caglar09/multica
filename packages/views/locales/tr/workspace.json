@@ -1,0 +1,34 @@
+{
+  "create_form": {
+    "name_label": "Çalışma Alanı Adı",
+    "name_placeholder": "Çalışma Alanım",
+    "url_label": "Çalışma Alanı URL'si",
+    "url_placeholder": "calisma-alanim",
+    "submit": "Çalışma alanı oluştur",
+    "submitting": "Oluşturuluyor...",
+    "errors": {
+      "slug_format": "Yalnızca küçük harf, rakam ve tire kullanılabilir",
+      "slug_taken": "Bu çalışma alanı URL'si zaten kullanılıyor.",
+      "slug_reserved": "Bu çalışma alanı URL'si rezerve edilmiş ve kullanılamaz.",
+      "slug_conflict_toast": "Farklı bir çalışma alanı URL'si seçin",
+      "create_failed": "Çalışma alanı oluşturulamadı"
+    }
+  },
+  "new_page": {
+    "back": "Geri",
+    "log_out": "Çıkış yap",
+    "title": "Multica'ya Hoş Geldiniz",
+    "description": "Siz ve yapay zeka iş arkadaşlarınızın yan yana çalıştığı tek bir çalışma alanı — görevler alın, yorumlar bırakın, aynı bağlamı paylaşın.",
+    "invite_hint": "Çalışma alanınız hazır olduğunda iş arkadaşlarınızı davet edebilirsiniz."
+  },
+  "creation_disabled": {
+    "title": "Çalışma alanı oluşturma devre dışı",
+    "description": "Bu Multica örneği yeni çalışma alanı oluşturulmasına izin vermiyor. Mevcut bir çalışma alanına davet için yöneticinizle iletişime geçin."
+  },
+  "no_access": {
+    "title": "Çalışma alanı mevcut değil",
+    "description": "Bu çalışma alanı mevcut değil veya erişim izniniz yok.",
+    "go_to_workspaces": "Çalışma alanlarıma git",
+    "sign_in_different": "Farklı bir kullanıcı olarak giriş yap"
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "page": {
+    "title": "Takımlar",
+    "new_button": "Yeni Takım",
+    "empty_no_squads": "Henüz takım yok. Başlamak için bir tane oluşturun.",
+    "empty_no_match": "Filtrelerinizle eşleşen takım yok.",
+    "table": {
+      "name": "Takım",
+      "leader": "Lider",
+      "members": "Üyeler",
+      "creator": "Oluşturan",
+      "created": "Oluşturuldu"
+    },
+    "no_matches": "Eşleşen takım yok",
+    "row_menu": "Takım işlemleri",
+    "archive_action": "Arşivle"
+  },
+  "inspector": {
+    "details_section": "Ayrıntılar",
+    "archive_button": "Arşivle"
+  },
+  "member_type": {
+    "agent": "Ajan",
+    "member": "Üye"
+  },
+  "archive_dialog": {
+    "title": "Bu takım arşivlensin mi?",
+    "description": "\"{{name}}\" arşivlenecek. Bu takıma atanmış görevler liderine devredilecektir. Bu işlem geri alınamaz — yönlendirmeyi geri almak istiyorsanız yeni bir takım oluşturun.",
+    "cancel": "İptal",
+    "confirm": "Arşivle",
+    "archiving": "Arşivleniyor…",
+    "success": "Takım arşivlendi"
+  },
+  "name_editor": {
+    "title": "Takımı yeniden adlandır",
+    "placeholder": "Takım adı",
+    "required": "Ad zorunludur",
+    "cancel": "İptal",
+    "save": "Kaydet",
+    "saved": "Kaydedildi",
+    "save_failed": "Kaydedilemedi"
+  },
+  "add_member_dialog": {
+    "title": "Üye Ekle",
+    "description": "Bu takıma bir çalışma alanı üyesi veya ajan ekleyin.",
+    "label_member": "Üye",
+    "label_role": "Rol",
+    "label_optional": "(isteğe bağlı)",
+    "cancel": "İptal",
+    "select_target": "Bir üye veya ajan seçin",
+    "search_placeholder": "Üye veya ajan ara...",
+    "members_section": "Üyeler",
+    "agents_section": "Ajanlar",
+    "role_placeholder": "örn. İnceleyici, Frontend Lideri",
+    "add": "Ekle"
+  },
+  "role_editor": {
+    "empty": "Rol ekle…",
+    "placeholder": "Rol (örn. İnceleyici)"
+  },
+  "description_dialog": {
+    "title": "Açıklamayı düzenle",
+    "placeholder_empty": "Açıklama ekle",
+    "cancel": "İptal",
+    "responsibility_placeholder": "Bu takım ne için sorumlu?",
+    "save": "Kaydet"
+  },
+  "discard_changes_dialog": {
+    "title": "Kaydedilmemiş değişiklikler atılsın mı?",
+    "description": "Bu sekmede kaydedilmemiş değişiklikleriniz var. Sekme değiştirirseniz bu değişiklikler kaybolur.",
+    "keep_editing": "Düzenlemeye devam et",
+    "discard_button": "At"
+  },
+  "members_tab": {
+    "section_title": "Üyeler",
+    "section_count_one": "Bu takımda {{count}} üye",
+    "section_count_other": "Bu takımda {{count}} üye",
+    "add_member_button": "Üye Ekle",
+    "create_agent_button": "Ajan Oluştur",
+    "leader_chip": "Lider",
+    "view_agent_tooltip": "Ajan ayrıntısını aç",
+    "make_leader_tooltip": "Takım lideri yap",
+    "remove_member_tooltip": "Takımdan çıkar",
+    "status_working": "Çalışıyor",
+    "status_idle": "Boşta",
+    "status_offline": "Çevrimdışı",
+    "status_unstable": "Kararsız",
+    "status_archived": "Arşivlendi",
+    "issue_status_blocked": "engellendi",
+    "active_issue_more": "ve {{count}} tane daha",
+    "last_active_label": "son aktif {{time}}"
+  },
+  "detail_tabs": {
+    "members": "Üyeler",
+    "instructions": "Talimatlar"
+  },
+  "details": {
+    "leader": "Lider",
+    "members": "Üyeler",
+    "created_by": "Oluşturan",
+    "created": "Oluşturuldu",
+    "updated": "Güncellendi"
+  },
+  "toasts": {
+    "member_added": "Üye eklendi",
+    "member_add_failed": "Üye eklenemedi",
+    "member_removed": "Üye kaldırıldı",
+    "member_remove_failed": "Üye kaldırılamadı",
+    "role_updated": "Rol güncellendi",
+    "role_update_failed": "Rol güncellenemedi",
+    "leader_updated": "Lider güncellendi",
+    "leader_update_failed": "Lider güncellenemedi",
+    "archive_failed": "Takım arşivlenemedi",
+    "instructions_saved": "Talimatlar kaydedildi"
+  },
+  "profile_card": {
+    "unavailable": "Takım kullanılamıyor",
+    "detail_link": "Ayrıntı →",
+    "archived": "Arşivlendi",
+    "member_count_one": "{{count}} üye",
+    "member_count_other": "{{count}} üye",
+    "members_section": "Üyeler",
+    "more_members_one": "+{{count}} daha",
+    "more_members_other": "+{{count}} daha"
+  },
+  "instructions_tab": {
+    "description": "Takım talimatları, lider ajan bu takıma atanmış bir görev üzerinde çalışırken onun istemine eklenir. Liderin her görevde uyması gereken takım genelindeki yönergeleri, çalışma anlaşmalarını veya bağlamı burada belirtin.",
+    "unsaved_changes": "Kaydedilmemiş değişiklikler",
+    "save_button": "Kaydet",
+    "placeholder": "örn. Her zaman önce başarısız bir test yazarak başlayın. Küçük ve atomik commit'leri tercih edin."
+  },
+  "scope": {
+    "mine": "Benimkiler",
+    "all": "Tümü"
+  },
+  "toolbar": {
+    "display": "Görünüm",
+    "sort_by": "Sırala",
+    "direction_asc": "Artan",
+    "direction_desc": "Azalan",
+    "section_columns": "Sütunlar",
+    "result_count_title": "Eşleşen takımlar / tüm takımlar",
+    "filter_label": "Filtrele",
+    "filter_active_count_one": "{{count}} filtre",
+    "filter_active_count_other": "{{count}} filtre",
+    "clear_filters": "Filtreleri temizle"
+  }
+}

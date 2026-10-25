@@ -1,4 +1,4 @@
-export type { Issue, IssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, SourceContextAuthorState, IssueSourceContext } from "./issue";
+export type { Issue, IssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, IssueDependency, IssueDependencyIssue, IssueDependencyState, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, SourceContextAuthorState, IssueSourceContext } from "./issue";
 export type {
   IssueStatusCategory,
   IssueStatusEntry,
@@ -19,7 +19,6 @@ export type {
   TaskUsage,
   TaskAttribution,
   AttributionUser,
-  TaskCancellationActor,
   TaskEvidence,
   AgentActivityBucket,
   AgentRunCount,
@@ -173,6 +172,10 @@ export type {
   Project,
   ProjectStatus,
   ProjectPriority,
+  ProjectAutonomyMode,
+  ProjectAutonomyLevel,
+  ProjectBootstrapKnowledgeItem,
+  ProjectBootstrapConfig,
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,
@@ -331,3 +334,73 @@ export type {
   WorkspaceSubscriptionSeatReconcileResult,
   CreateWorkspaceSubscriptionPortalResponse,
 } from "./billing";
+
+export type {
+  AutonomousHealthStatus,
+  AutonomousProjectControl,
+  AutonomousProjectBootstrap,
+  AutonomousTeamMember,
+  AutonomousTeam,
+  AutonomousWorkflowRun,
+  AutonomousWorkflowAction,
+  AutonomousActivityItem,
+  AutonomousTeamPlanRole,
+  AutonomousTeamPlan,
+  AutonomousTeamDraft,
+  AutonomousRuntimeOption,
+  AutonomousSkillOption,
+  AutonomousSkillMode,
+  AutonomousRoleRuntimeAssignment,
+  AutonomousDecision,
+  AutonomousProjectHealth,
+  AutonomousProjectSnapshot,
+  AutonomousProjectPlanNode,
+  AutonomousProjectPlanEdge,
+  AutonomousProjectPlanSnapshot,
+  AutonomousQualityGate,
+  AutonomousEscalation,
+  AutonomousDiagnostic,
+  AutonomousBudget,
+  AutonomousBrainRuntimeMode,
+  AutonomousBrainLearningMode,
+  AutonomousBrainConfig,
+  UpdateAutonomousBrainConfig,
+  ProjectLeaderChat,
+  ProjectLeaderChangeRequest,
+} from "./autonomous";
+
+export type {
+  ProjectReportSummary,
+  ProjectReportTask,
+  ProjectReportAgent,
+  ProjectReportRuntime,
+  ProjectReportDay,
+  ProjectReportSnapshot,
+} from "./project-report";
+export type {
+  DiagnosticLogSource,
+  DiagnosticLogLevel,
+  DiagnosticLogEntry,
+  DiagnosticLogsResponse,
+  DiagnosticLogQuery,
+} from "./diagnostics";
+export type {
+  DeploymentProvider,
+  DeploymentEnvironment,
+  DeploymentOperationStatus,
+  CapabilitySet,
+  DeploymentProviderConnection,
+  CreateDeploymentConnectionInput,
+  VercelTargetConfig,
+  DeploymentTarget,
+  DeploymentOperation,
+  DeploymentLogResult,
+  DeploymentSourceRevision,
+  DiscoveredVercelProject,
+  DeploymentRecipe,
+  CreateDeploymentTargetInput,
+  TriggerDeploymentInput,
+  PromoteDeploymentInput,
+  RollbackDeploymentInput,
+} from "./deployment";
+export { DEFAULT_VERCEL_CAPABILITIES } from "./deployment";

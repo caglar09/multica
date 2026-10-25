@@ -75,6 +75,24 @@ func TestBuildAntigravityArgsModel(t *testing.T) {
 	}
 }
 
+func TestBuildAntigravityArgsReadOnlyCannotBeOverridden(t *testing.T) {
+	args := buildAntigravityArgs(
+		"status",
+		"/tmp/agy.log",
+		20*time.Minute,
+		ExecOptions{ReadOnly: true, CustomArgs: []string{"--mode", "accept-edits"}},
+		quietAntigravityLogger(),
+	)
+	for i := range args {
+		if args[i] == "--mode" && i+1 < len(args) && args[i+1] != "plan" {
+			t.Fatalf("read-only mode was overridden: %v", args)
+		}
+	}
+	if !slices.Contains(args, "plan") {
+		t.Fatalf("read-only Antigravity task must use plan mode: %v", args)
+	}
+}
+
 func TestBuildAntigravityArgsNoCapUsesLargePrintTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -236,6 +254,8 @@ func TestBuildAntigravityArgsFiltersBlockedCustomArgs(t *testing.T) {
 				"--output-format", "text",
 				"--dangerously-skip-permissions",
 				"--print-timeout", "1h",
+				"--output-format", "text",
+				"--input-format", "stream-json",
 				"--log-file", "/elsewhere.log",
 				"--settings=/tmp/agent-settings.json",
 				"--add-dir", "/extra", // user-added workspace dir should survive
@@ -273,6 +293,12 @@ func TestBuildAntigravityArgsFiltersBlockedCustomArgs(t *testing.T) {
 	}
 	if strings.Contains(joined, "/elsewhere.log") {
 		t.Errorf("custom --log-file value leaked through filter: %v", args)
+	}
+	if strings.Contains(joined, "--output-format text") || strings.Contains(joined, "--input-format") {
+		t.Errorf("custom structured-transport flags leaked through filter: %v", args)
+	}
+	if !strings.Contains(joined, "--output-format stream-json") {
+		t.Errorf("daemon-owned stream-json output format missing: %v", args)
 	}
 	if strings.Contains(joined, "--settings") || strings.Contains(joined, "biz-gate.json") || strings.Contains(joined, "agent-settings.json") {
 		t.Errorf("Antigravity-incompatible --settings flag leaked through filter: %v", args)

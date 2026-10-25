@@ -1,6 +1,8 @@
 import { configStore } from "../config";
 import type {
   Issue,
+  IssueDependencyState,
+  CreateIssueDependencyRequest,
   IssuePriority,
   CreateIssueRequest,
   MoveIssueRequest,
@@ -96,6 +98,14 @@ import type {
   StartMikaOnboardingResponse,
   CancelTaskResponse,
   Project,
+  AutonomousProjectSnapshot,
+  ProjectLeaderChat,
+  ProjectLeaderChangeRequest,
+  ProjectReportSnapshot,
+  DiagnosticLogsResponse,
+  DiagnosticLogQuery,
+  AutonomousRoleRuntimeAssignment,
+  UpdateAutonomousBrainConfig,
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,
@@ -221,6 +231,17 @@ import type {
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
+  DeploymentProviderConnection,
+  CreateDeploymentConnectionInput,
+  DeploymentTarget,
+  DeploymentOperation,
+  DeploymentLogResult,
+  DeploymentSourceRevision,
+  DiscoveredVercelProject,
+  CreateDeploymentTargetInput,
+  TriggerDeploymentInput,
+  PromoteDeploymentInput,
+  RollbackDeploymentInput,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
@@ -308,6 +329,8 @@ import {
   ListIssuesResponseSchema,
   CreateIssueResponseSchema,
   IssueSchema,
+  IssueDependenciesResponseSchema,
+  IssueDependencyMutationResponseSchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
   CommentSubIssueTaskResponseSchema,
@@ -420,6 +443,10 @@ import {
   IssueViewSchema,
   IssueViewListSchema,
   IssueViewPreferenceSchema,
+  DeploymentProviderConnectionSchema,
+  EMPTY_DEPLOYMENT_PROVIDER_CONNECTION,
+  DeploymentLogResultSchema,
+  EMPTY_DEPLOYMENT_LOG_RESULT,
   EMPTY_ISSUE_VIEW_PREFERENCE,
   EMPTY_PLUGIN_INSTALLATION,
   EMPTY_WORKSPACE_MCP_SERVER,
@@ -788,6 +815,33 @@ export class ApiClient {
     return res.json() as Promise<T>;
   }
 
+  async getDiagnosticLogs(params: DiagnosticLogQuery = {}): Promise<DiagnosticLogsResponse> {
+    const search = new URLSearchParams();
+    if (params.source) search.set("source", params.source);
+    if (params.search) search.set("search", params.search);
+    if (params.tail !== undefined) search.set("tail", String(params.tail));
+    if (params.since !== undefined && params.since > 0) {
+      search.set("since", String(params.since));
+    }
+    const query = search.toString();
+    return this.fetch("/api/diagnostics/logs" + (query ? "?" + query : ""));
+  }
+
+  async exportDiagnosticLogs(params: DiagnosticLogQuery = {}): Promise<Blob> {
+    const search = new URLSearchParams();
+    if (params.source) search.set("source", params.source);
+    if (params.search) search.set("search", params.search);
+    if (params.tail !== undefined) search.set("tail", String(params.tail));
+    if (params.since !== undefined && params.since > 0) {
+      search.set("since", String(params.since));
+    }
+    const query = search.toString();
+    const res = await this.fetchRaw(
+      "/api/diagnostics/logs/export" + (query ? "?" + query : ""),
+    );
+    return res.blob();
+  }
+
   // Auth
   async sendCode(email: string): Promise<void> {
     await this.fetch("/auth/send-code", {
@@ -1077,6 +1131,42 @@ export class ApiClient {
       throw new Error("GET /api/issues/:id returned a malformed issue");
     }
     return issue;
+  }
+
+  async getIssueDependencies(id: string): Promise<IssueDependencyState> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${encodeURIComponent(id)}/dependencies`,
+    );
+    return parseWithFallback(raw, IssueDependenciesResponseSchema, {
+      blocked_by: [],
+      blocks: [],
+      is_blocked: false,
+      unresolved_blocker_count: 0,
+      dependency_state: "unblocked",
+    }, { endpoint: "GET /api/issues/:id/dependencies" });
+  }
+
+  async createIssueDependency(
+    id: string,
+    data: CreateIssueDependencyRequest,
+  ): Promise<{ id: string; issue_id: string; depends_on_issue_id: string; type: string }> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${encodeURIComponent(id)}/dependencies`,
+      { method: "POST", body: JSON.stringify(data) },
+    );
+    return parseWithFallback(raw, IssueDependencyMutationResponseSchema, {
+      id: "",
+      issue_id: "",
+      depends_on_issue_id: "",
+      type: "blocked_by",
+    }, { endpoint: "POST /api/issues/:id/dependencies" });
+  }
+
+  async deleteIssueDependency(issueId: string, dependencyId: string): Promise<void> {
+    await this.fetch<unknown>(
+      `/api/issues/${encodeURIComponent(issueId)}/dependencies/${encodeURIComponent(dependencyId)}`,
+      { method: "DELETE" },
+    );
   }
 
   async createIssue(data: CreateIssueRequest): Promise<Issue> {
@@ -3365,14 +3455,17 @@ export class ApiClient {
     sessionId: string,
     content: string,
     attachmentIds?: string[],
+    clientMessageId?: string,
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
+      client_message_id?: string;
     } = { content };
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }
+    if (clientMessageId) body.client_message_id = clientMessageId;
     const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/messages`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -3585,6 +3678,101 @@ export class ApiClient {
     return this.fetch(`/api/projects/${id}`);
   }
 
+  async getProjectAutonomous(id: string): Promise<AutonomousProjectSnapshot> {
+    return this.fetch(`/api/projects/${id}/autonomous`);
+  }
+
+  async getProjectLeaderChat(id: string): Promise<ProjectLeaderChat> {
+    return this.fetch(`/api/projects/${id}/autonomous/leader-chat`);
+  }
+
+  async listProjectLeaderChanges(id: string): Promise<{ items: ProjectLeaderChangeRequest[] }> {
+    return this.fetch(`/api/projects/${id}/autonomous/change-requests`);
+  }
+
+  async approveProjectLeaderChange(id: string, changeRequestId: string, idempotencyKey?: string): Promise<{ queued: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/change-requests/${changeRequestId}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ idempotency_key: idempotencyKey }),
+    });
+  }
+
+  async rejectProjectLeaderChange(id: string, changeRequestId: string): Promise<{ rejected: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/change-requests/${changeRequestId}/reject`, { method: "POST" });
+  }
+
+  async getProjectReport(id: string): Promise<ProjectReportSnapshot> {
+    return this.fetch(`/api/projects/${id}/report`);
+  }
+
+  async pauseProjectAutonomous(id: string): Promise<{ paused: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/pause`, { method: "POST" });
+  }
+
+  async resumeProjectAutonomous(id: string): Promise<{ paused: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/resume`, { method: "POST" });
+  }
+
+  async replanProjectAutonomous(id: string): Promise<{ requested: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/replan`, { method: "POST" });
+  }
+
+  async restartProjectAutonomousWorkflow(id: string): Promise<{ restarted: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/workflow/restart`, {
+      method: "POST",
+    });
+  }
+
+  async updateProjectAutonomousBrain(
+    id: string,
+    config: UpdateAutonomousBrainConfig,
+  ): Promise<{ updated: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/brain/config`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
+  }
+
+  async confirmProjectAutonomousTeam(
+    id: string,
+    assignments: AutonomousRoleRuntimeAssignment[],
+  ): Promise<{ provisioning: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/team/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ assignments }),
+    });
+  }
+
+  async startProjectAutonomousPlanning(id: string): Promise<{ planning: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/planning/start`, {
+      method: "POST",
+    });
+  }
+
+  async retryProjectAutonomousAction(
+    id: string,
+    actionId: string,
+  ): Promise<{ retried: boolean }> {
+    return this.fetch(`/api/projects/${id}/autonomous/actions/${actionId}/retry`, {
+      method: "POST",
+    });
+  }
+
+  async resolveProjectAutonomousEscalation(
+    id: string,
+    escalationId: string,
+    decision: "approved" | "rejected",
+    note?: string,
+  ): Promise<{ resolved: boolean; decision: string }> {
+    return this.fetch(
+      `/api/projects/${id}/autonomous/escalations/${escalationId}/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ decision, note }),
+      },
+    );
+  }
+
   async createProject(data: CreateProjectRequest): Promise<Project> {
     return this.fetch("/api/projects", {
       method: "POST",
@@ -3608,6 +3796,12 @@ export class ApiClient {
     projectId: string,
   ): Promise<ListProjectResourcesResponse> {
     return this.fetch(`/api/projects/${projectId}/resources`);
+  }
+
+  async getDeploymentSourceRevision(
+    projectId: string,
+  ): Promise<DeploymentSourceRevision> {
+    return this.fetch(`/api/projects/${projectId}/deployment-source-revision`);
   }
 
   async createProjectResource(
@@ -3638,6 +3832,224 @@ export class ApiClient {
     await this.fetch(`/api/projects/${projectId}/resources/${resourceId}`, {
       method: "DELETE",
     });
+  }
+
+  // Deployments
+  async listDeploymentConnections(wsId: string): Promise<DeploymentProviderConnection[]> {
+    return this.fetch<DeploymentProviderConnection[]>(
+      `/api/workspaces/${wsId}/deployment-providers/connections`,
+    );
+  }
+
+  async createDeploymentConnection(
+    wsId: string,
+    data: CreateDeploymentConnectionInput,
+  ): Promise<DeploymentProviderConnection> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${wsId}/deployment-providers/connections`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      DeploymentProviderConnectionSchema,
+      EMPTY_DEPLOYMENT_PROVIDER_CONNECTION,
+      {
+        endpoint:
+          "POST /api/workspaces/{workspaceID}/deployment-providers/connections",
+      },
+    );
+  }
+
+  async setDeploymentWebhookSecret(
+    wsId: string,
+    connectionId: string,
+    webhookSecret: string,
+  ): Promise<DeploymentProviderConnection> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${wsId}/deployment-providers/connections/${connectionId}/webhook-secret`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ webhook_secret: webhookSecret }),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      DeploymentProviderConnectionSchema,
+      EMPTY_DEPLOYMENT_PROVIDER_CONNECTION,
+      {
+        endpoint:
+          "PUT /api/workspaces/{workspaceID}/deployment-providers/connections/{connectionID}/webhook-secret",
+      },
+    );
+  }
+
+  async listDiscoveredVercelProjects(
+    wsId: string,
+    connectionId: string,
+  ): Promise<DiscoveredVercelProject[]> {
+    return this.fetch<DiscoveredVercelProject[]>(
+      `/api/workspaces/${wsId}/deployment-providers/connections/${connectionId}/projects`,
+    );
+  }
+
+  async listDeploymentTargets(
+    wsId: string,
+    projectId?: string,
+  ): Promise<DeploymentTarget[]> {
+    const q = projectId ? `?project_id=${projectId}` : "";
+    return this.fetch<DeploymentTarget[]>(`/api/workspaces/${wsId}/deployment-targets${q}`);
+  }
+
+  async createDeploymentTarget(
+    wsId: string,
+    data: CreateDeploymentTargetInput,
+  ): Promise<DeploymentTarget> {
+    return this.fetch<DeploymentTarget>(`/api/workspaces/${wsId}/deployment-targets`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async createDeploymentProviderTarget(
+    wsId: string,
+    connectionId: string,
+    data: CreateDeploymentTargetInput,
+  ): Promise<DeploymentTarget> {
+    return this.fetch<DeploymentTarget>(
+      `/api/workspaces/${wsId}/deployment-providers/connections/${connectionId}/targets`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    );
+  }
+
+  async updateDeploymentTarget(
+    wsId: string,
+    targetId: string,
+    data: Partial<CreateDeploymentTargetInput>,
+  ): Promise<DeploymentTarget> {
+    return this.fetch<DeploymentTarget>(
+      `/api/workspaces/${wsId}/deployment-targets/${targetId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(data),
+      },
+    );
+  }
+
+  async deleteDeploymentTarget(
+    wsId: string,
+    targetId: string,
+  ): Promise<void> {
+    await this.fetch(`/api/workspaces/${wsId}/deployment-targets/${targetId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listDeploymentOperations(
+    wsId: string,
+    targetId: string,
+  ): Promise<DeploymentOperation[]> {
+    return this.fetch<DeploymentOperation[]>(
+      `/api/workspaces/${wsId}/deployment-targets/${targetId}/operations`,
+    );
+  }
+
+  async getDeploymentOperation(
+    wsId: string,
+    operationId: string,
+  ): Promise<DeploymentOperation> {
+    return this.fetch<DeploymentOperation>(
+      `/api/workspaces/${wsId}/deployment-operations/${operationId}`,
+    );
+  }
+
+  async getDeploymentLogs(
+    wsId: string,
+    operationId: string,
+  ): Promise<DeploymentLogResult> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${wsId}/deployment-operations/${operationId}/logs`,
+    );
+    return parseWithFallback(
+      raw,
+      DeploymentLogResultSchema,
+      EMPTY_DEPLOYMENT_LOG_RESULT,
+      {
+        endpoint:
+          "GET /api/workspaces/{workspaceID}/deployment-operations/{operationID}/logs",
+      },
+    );
+  }
+
+  async triggerDeployment(
+    wsId: string,
+    targetId: string,
+    data: TriggerDeploymentInput,
+  ): Promise<DeploymentOperation> {
+    return this.fetch<DeploymentOperation>(
+      `/api/workspaces/${wsId}/deployment-targets/${targetId}/deploy`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    );
+  }
+
+  async cancelDeployment(
+    wsId: string,
+    operationId: string,
+  ): Promise<DeploymentOperation> {
+    return this.fetch<DeploymentOperation>(
+      `/api/workspaces/${wsId}/deployment-operations/${operationId}/cancel`,
+      {
+        method: "POST",
+      },
+    );
+  }
+
+  async promoteDeployment(
+    wsId: string,
+    targetId: string,
+    data: PromoteDeploymentInput,
+  ): Promise<DeploymentOperation> {
+    return this.fetch<DeploymentOperation>(
+      `/api/workspaces/${wsId}/deployment-targets/${targetId}/promote`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    );
+  }
+
+  async rollbackDeployment(
+    wsId: string,
+    targetId: string,
+    data: RollbackDeploymentInput,
+  ): Promise<DeploymentOperation> {
+    return this.fetch<DeploymentOperation>(
+      `/api/workspaces/${wsId}/deployment-targets/${targetId}/rollback`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    );
+  }
+
+  async disconnectDeploymentConnection(
+    wsId: string,
+    connectionId: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${wsId}/deployment-connections/${connectionId}`,
+      {
+        method: "DELETE",
+      },
+    );
   }
 
   // Labels

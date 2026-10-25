@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS autonomous_project_brain_learning_task_idx
+ON autonomous_project_brain_learning_job (task_id);

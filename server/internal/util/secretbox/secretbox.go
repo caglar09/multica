@@ -75,10 +75,34 @@ func (b *Box) Seal(plaintext []byte) ([]byte, error) {
 	return b.aead.Seal(nonce, nonce, plaintext, nil), nil
 }
 
-// Open reverses Seal. Returns ErrCiphertextTooShort or an
-// authentication error (from GCM) if the input is malformed or
-// tampered.
+// SealVersioned encrypts plaintext and returns versioned wire format:
+// [VersionMagic (0x56)][keyID (1B)][nonce (12B)][ciphertext + tag].
+func (b *Box) SealVersioned(keyID uint8, plaintext []byte) ([]byte, error) {
+	raw, err := b.Seal(plaintext)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 2+len(raw))
+	out[0] = VersionMagic
+	out[1] = keyID
+	copy(out[2:], raw)
+	return out, nil
+}
+
+// Open reverses Seal. Supports both legacy unversioned payloads and
+// versioned payloads starting with VersionMagic (0x56). Returns ErrCiphertextTooShort
+// or an authentication error if the input is malformed or tampered.
 func (b *Box) Open(sealed []byte) ([]byte, error) {
+	if len(sealed) >= MinVersionedLength && sealed[0] == VersionMagic {
+		ns := b.aead.NonceSize()
+		if len(sealed) >= 2+ns+b.aead.Overhead() {
+			nonce := sealed[2 : 2+ns]
+			ciphertext := sealed[2+ns:]
+			if plain, err := b.aead.Open(nil, nonce, ciphertext, nil); err == nil {
+				return plain, nil
+			}
+		}
+	}
 	ns := b.aead.NonceSize()
 	if len(sealed) < ns+b.aead.Overhead() {
 		return nil, ErrCiphertextTooShort

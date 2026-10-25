@@ -1,0 +1,1 @@
+ALTER TABLE deployment_operation DROP CONSTRAINT IF EXISTS deployment_operation_status_check, ADD CONSTRAINT deployment_operation_status_check CHECK (status IN ('queued', 'dispatching', 'running', 'retry_wait', 'succeeded', 'failed', 'canceled'));

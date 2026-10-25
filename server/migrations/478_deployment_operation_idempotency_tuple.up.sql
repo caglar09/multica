@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_deployment_operation_idempotency_tuple ON deployment_operation (workspace_id, target_id, source_revision, environment, operation_kind, approval_reference);

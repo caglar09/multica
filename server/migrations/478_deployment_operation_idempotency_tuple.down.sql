@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_deployment_operation_idempotency_tuple;

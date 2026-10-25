@@ -1,0 +1,2748 @@
+// Package workflowruntime wires the deterministic workflow engine to Multica's
+// issue/task domain events and existing TaskService execution path.
+package workflowruntime
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/projectorchestration"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/teamprovision"
+	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/workflow"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+const softwareDevelopmentWorkflow = "software-development"
+
+const autonomousPlanningTimeout = 5 * time.Minute
+const blockedFailureRecoveryLookback = time.Minute
+
+type Config struct {
+	Enabled           bool
+	AutoConfigureTeam bool
+	ReviewerAgentID   string
+	ReviewerRole      string
+	MaxReviewCycles   int
+	PollInterval      time.Duration
+	ActionLease       time.Duration
+	ProjectPolicy     projectorchestration.Policy
+	AdapterConfig     projectorchestration.WebhookAdapterConfig
+}
+
+func ConfigFromEnv() Config {
+	cfg := Config{
+		ReviewerAgentID: strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_REVIEWER_AGENT_ID")),
+		ReviewerRole:    strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_REVIEWER_ROLE")),
+		MaxReviewCycles: 3,
+		PollInterval:    500 * time.Millisecond,
+		ActionLease:     30 * time.Second,
+		ProjectPolicy:   projectorchestration.DefaultPolicy(),
+		AdapterConfig: projectorchestration.WebhookAdapterConfig{
+			RepositoryURL:  strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_REPOSITORY_ANALYZER_WEBHOOK_URL")),
+			QualityURL:     strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_QUALITY_GATE_WEBHOOK_URL")),
+			DeploymentURL:  strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_DEPLOYMENT_WEBHOOK_URL")),
+			ObservationURL: strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_OBSERVATION_WEBHOOK_URL")),
+			BearerToken:    strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_WEBHOOK_BEARER_TOKEN")),
+			Timeout:        2 * time.Minute,
+		},
+	}
+	if cfg.ReviewerRole == "" {
+		cfg.ReviewerRole = "reviewer"
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_WORKFLOW_ENABLED")); raw != "" {
+		if enabled, err := strconv.ParseBool(raw); err == nil {
+			cfg.Enabled = enabled
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_WORKFLOW_ENABLED; autonomous workflow disabled", "value", raw)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_TEAM_AUTO_CONFIGURE")); raw != "" {
+		if enabled, err := strconv.ParseBool(raw); err == nil {
+			cfg.AutoConfigureTeam = enabled
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_TEAM_AUTO_CONFIGURE; using manual team configuration", "value", raw)
+		}
+	}
+	if raw := strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_LEVEL"))); raw != "" {
+		switch projectorchestration.AutonomyLevel(raw) {
+		case projectorchestration.AutonomyAssisted,
+			projectorchestration.AutonomyDevelopment,
+			projectorchestration.AutonomyDelivery,
+			projectorchestration.AutonomyClosedLoop:
+			cfg.ProjectPolicy.Autonomy = projectorchestration.AutonomyLevel(raw)
+		default:
+			slog.Warn("invalid MULTICA_AUTONOMOUS_LEVEL; using development autonomy", "value", raw)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_MAX_PARALLEL_NODES")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value >= 1 && value <= 64 {
+			cfg.ProjectPolicy.Budget.MaxParallelNodes = value
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_MAX_PARALLEL_NODES; using default", "value", raw)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_MAX_PROJECT_ATTEMPTS")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value >= 1 {
+			cfg.ProjectPolicy.Budget.MaxTotalAttempts = value
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_MAX_PROJECT_ATTEMPTS; using default", "value", raw)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value >= 0 && value <= 20 {
+			cfg.MaxReviewCycles = value
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_MAX_REVIEW_CYCLES; using default", "value", raw, "default", cfg.MaxReviewCycles)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_WEBHOOK_TIMEOUT")); raw != "" {
+		if value, err := time.ParseDuration(raw); err == nil && value > 0 && value <= 15*time.Minute {
+			cfg.AdapterConfig.Timeout = value
+		} else {
+			slog.Warn("invalid MULTICA_AUTONOMOUS_WEBHOOK_TIMEOUT; using default", "value", raw)
+		}
+	}
+	return cfg
+}
+
+type Runtime struct {
+	ctx                context.Context
+	pool               *pgxpool.Pool
+	taskSvc            *service.TaskService
+	issueSvc           *service.IssueService
+	store              *workflow.PostgresStore
+	engine             *workflow.Engine
+	team               *teamprovision.Provisioner
+	projectStore       *projectorchestration.Store
+	projectPlanner     *projectorchestration.Planner
+	projectLeader      *MikaProjectLeaderExecutor
+	brainExecutor      *BrainRuntimeExecutor
+	repositoryAnalyzer projectorchestration.RepositoryAnalyzer
+	qualityGateRunner  projectorchestration.QualityGateRunner
+	deploymentAdapter  projectorchestration.DeploymentAdapter
+	observationAdapter projectorchestration.ObservationAdapter
+	planningSem        chan struct{}
+	config             Config
+}
+
+func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config) (*Runtime, error) {
+	return RegisterWithPlanner(ctx, bus, pool, taskSvc, cfg, nil)
+}
+
+func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config, planner teamprovision.Planner) (*Runtime, error) {
+	if !cfg.Enabled {
+		slog.Info("autonomous workflow disabled")
+		return nil, nil
+	}
+	if bus == nil || pool == nil || taskSvc == nil {
+		return nil, errors.New("autonomous workflow requires event bus, database pool and task service")
+	}
+
+	store := workflow.NewPostgresStore(pool)
+	engine, err := workflow.New(store, definition())
+	if err != nil {
+		return nil, fmt.Errorf("build autonomous workflow engine: %w", err)
+	}
+	projectExecutor := NewMikaProjectPlanExecutor(pool, taskSvc)
+	projectPolicy := cfg.ProjectPolicy
+	if projectPolicy.Autonomy == "" {
+		projectPolicy = projectorchestration.DefaultPolicy()
+	}
+	r := &Runtime{
+		ctx:     ctx,
+		pool:    pool,
+		taskSvc: taskSvc,
+		issueSvc: func() *service.IssueService {
+			svc := service.NewIssueService(taskSvc.Queries, taskSvc.TxStarter, taskSvc.Bus, taskSvc.Analytics, taskSvc)
+			svc.Entitlements = taskSvc.Entitlements
+			svc.Metrics = taskSvc.Metrics
+			return svc
+		}(),
+		store:              store,
+		engine:             engine,
+		team:               teamprovision.New(pool, taskSvc.Queries, planner),
+		projectStore:       projectorchestration.NewStore(pool),
+		projectPlanner:     projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
+		projectLeader:      NewMikaProjectLeaderExecutor(pool, taskSvc),
+		brainExecutor:      NewBrainRuntimeExecutor(pool, taskSvc),
+		repositoryAnalyzer: projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
+		qualityGateRunner:  projectorchestration.NewWebhookQualityGateRunner(cfg.AdapterConfig),
+		deploymentAdapter:  projectorchestration.NewWebhookDeploymentAdapter(cfg.AdapterConfig),
+		observationAdapter: projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
+		planningSem:        make(chan struct{}, 4),
+		config:             cfg,
+	}
+
+	for _, eventType := range []string{protocol.EventIssueCreated, protocol.EventIssueUpdated} {
+		bus.Subscribe(eventType, r.onIssueEvent)
+	}
+	bus.Subscribe(protocol.EventTaskCompleted, r.onTaskCompleted)
+	bus.Subscribe(protocol.EventTaskFailed, r.onTaskFailed)
+	bus.Subscribe(protocol.EventIssueDeleted, r.onIssueDeleted)
+	bus.Subscribe(protocol.EventProjectCreated, r.onProjectCreated)
+	bus.Subscribe(protocol.EventProjectDeleted, r.onProjectDeleted)
+	bus.Subscribe(protocol.EventWorkspaceDeleted, r.onWorkspaceDeleted)
+
+	worker := workflow.NewActionWorker(store, r, workflow.WorkerOptions{
+		PollInterval: cfg.PollInterval,
+		Lease:        cfg.ActionLease,
+	})
+	go worker.Run(ctx)
+	go r.runReconciler(ctx)
+	go r.runBrainWorker(ctx)
+
+	slog.Info("autonomous workflow enabled",
+		"workflow", softwareDevelopmentWorkflow,
+		"reviewer_role", cfg.ReviewerRole,
+		"reviewer_agent_id_configured", cfg.ReviewerAgentID != "",
+		"max_review_cycles", cfg.MaxReviewCycles,
+		"auto_configure_team", cfg.AutoConfigureTeam,
+		"autonomy_level", projectPolicy.Autonomy,
+		"max_parallel_nodes", projectPolicy.Budget.MaxParallelNodes,
+		"max_project_attempts", projectPolicy.Budget.MaxTotalAttempts,
+	)
+	return r, nil
+}
+
+func (r *Runtime) EnsureProjectLeaderSession(ctx context.Context, workspaceID, projectID, creatorID pgtype.UUID) (db.ChatSession, db.Agent, error) {
+	if r == nil || r.projectLeader == nil {
+		return db.ChatSession{}, db.Agent{}, errors.New("project leader runtime is not configured")
+	}
+	return r.projectLeader.EnsureProjectLeaderSession(ctx, workspaceID, projectID, creatorID)
+}
+
+func (r *Runtime) ProcessProjectLeaderCompletion(ctx context.Context, taskID pgtype.UUID, result []byte) error {
+	if r == nil || r.projectLeader == nil {
+		return nil
+	}
+	return r.projectLeader.ProcessCompletion(ctx, taskID, result)
+}
+
+func (r *Runtime) ApproveProjectLeaderChange(ctx context.Context, workspaceID, projectID, changeID pgtype.UUID, idempotencyKey string) error {
+	if r == nil || r.projectLeader == nil {
+		return errors.New("project leader runtime is not configured")
+	}
+	return r.projectLeader.ApproveChange(ctx, workspaceID, projectID, changeID, idempotencyKey)
+}
+
+func definition() workflow.Definition {
+	return workflow.Definition{
+		Name:         softwareDevelopmentWorkflow,
+		Version:      2,
+		InitialState: issuestatus.InProgress,
+		States: map[string]workflow.State{
+			issuestatus.InProgress: {
+				OnEnter: []workflow.Action{
+					{Type: "set_issue_status", Params: map[string]string{"status": issuestatus.InProgress, "when_state": issuestatus.InProgress}},
+					{
+						Type: "trigger_agent",
+						Params: map[string]string{
+							"selector":     "owner",
+							"when_state":   issuestatus.InProgress,
+							"instructions": "Implement or revise the issue against its acceptance criteria and the structured handoff. Do not change issue status, post issue comments, route work, mention another agent, or encode workflow decisions in prose; the workflow consumes only your final response. Your FINAL response must be exactly one JSON object with keys: summary (string), decisions (string[]), artifacts ({type,ref,description}[]), changed_files (string[]), commit_sha (string), diff (string), tests ({name,status,evidence}[] where status is passed|failed|skipped|not_run), findings ({id,severity,category,description,evidence,blocking}[]), risks (string[]), blockers (string[]). No markdown fence or surrounding prose.",
+						},
+					},
+				},
+			},
+			issuestatus.InReview: {
+				OnEnter: []workflow.Action{
+					{Type: "set_issue_status", Params: map[string]string{"status": issuestatus.InReview, "when_state": issuestatus.InReview}},
+					{
+						Type: "trigger_agent",
+						Params: map[string]string{
+							"selector":     "reviewer",
+							"when_state":   issuestatus.InReview,
+							"instructions": "Independently review the structured implementation handoff, diff/artifacts, tests, acceptance criteria, and project standards. NEVER change issue status, post issue comments, or trigger another agent; the workflow consumes only your final response. Your FINAL response must be exactly one JSON object: {\"verdict\":\"approved|changes_requested\",\"summary\":\"...\",\"findings\":[{\"id\":\"F-001\",\"severity\":\"low|medium|high|critical\",\"category\":\"lower_snake_case\",\"description\":\"...\",\"evidence\":\"...\",\"blocking\":true}]}. changes_requested requires at least one blocking finding; approved may contain only non-blocking findings. No markdown fence or surrounding prose.",
+						},
+					},
+				},
+			},
+			issuestatus.Done: {
+				OnEnter: []workflow.Action{{
+					Type:   "set_issue_status",
+					Params: map[string]string{"status": issuestatus.Done, "when_state": issuestatus.Done},
+				}},
+			},
+			issuestatus.Blocked: {
+				OnEnter: []workflow.Action{{
+					Type:   "set_issue_status",
+					Params: map[string]string{"status": issuestatus.Blocked, "when_state": issuestatus.Blocked},
+				}},
+			},
+		},
+		Transitions: []workflow.Transition{
+			{From: issuestatus.InProgress, Event: "workflow.started", To: issuestatus.InProgress},
+			{From: issuestatus.InProgress, Event: "workflow.review_requested", To: issuestatus.InReview},
+			{From: issuestatus.InProgress, Event: "implementation.completed", To: issuestatus.InReview},
+			{From: issuestatus.InProgress, Event: "implementation.failed", To: issuestatus.Blocked},
+			{From: issuestatus.InProgress, Event: "issue.completed", To: issuestatus.Done},
+			{From: issuestatus.InReview, Event: "workflow.started", To: issuestatus.InReview},
+			{From: issuestatus.InReview, Event: "review.completed", To: issuestatus.Done},
+			{From: issuestatus.InReview, Event: "review.changes_requested", To: issuestatus.InProgress},
+			{From: issuestatus.InReview, Event: "review.exhausted", To: issuestatus.Blocked},
+			{From: issuestatus.InReview, Event: "review.failed", To: issuestatus.Blocked},
+			{From: issuestatus.InReview, Event: "issue.completed", To: issuestatus.Done},
+			// A human/system task retry is a recovery signal for a run that was
+			// durably blocked by the failed execution. We wait for the retry to
+			// complete before leaving Blocked, so the transition cannot enqueue a
+			// duplicate implementation/review task ahead of the already-running
+			// retry.
+			{From: issuestatus.Blocked, Event: "implementation.retry_completed", To: issuestatus.InReview},
+			{From: issuestatus.Blocked, Event: "review.retry_completed", To: issuestatus.Done},
+			{From: issuestatus.Blocked, Event: "review.retry_changes_requested", To: issuestatus.InProgress},
+			// Project OS can resume a blocked materialized issue by moving it back
+			// to In Progress. This transition is the missing handoff that lets the
+			// issue workflow leave its durable Blocked state and enqueue a fresh
+			// implementation task instead of remaining deadlocked.
+			{From: issuestatus.Blocked, Event: "issue.retry_requested", To: issuestatus.InProgress},
+			// Repair & continue can reopen a terminal workflow when its materialized
+			// Project OS node is still non-terminal (for example after a lost
+			// completion event). The explicit recovery event reuses the normal
+			// implementation OnEnter action and remains idempotent at the store.
+			{From: issuestatus.Done, Event: "issue.retry_requested", To: issuestatus.InProgress},
+			// An explicit terminal issue status is authoritative even if the
+			// workflow was previously blocked. This is also crash-reconcilable
+			// from the durable issue row.
+			{From: issuestatus.Blocked, Event: "issue.completed", To: issuestatus.Done},
+		},
+	}
+}
+
+func (r *Runtime) runAsync(timeout time.Duration, label string, event events.Event, fn func(context.Context) error) {
+	if r == nil || fn == nil {
+		return
+	}
+	go func() {
+		select {
+		case r.planningSem <- struct{}{}:
+			defer func() { <-r.planningSem }()
+		case <-r.ctx.Done():
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.ctx, timeout)
+		defer cancel()
+		if err := fn(ctx); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) && !errors.Is(err, context.Canceled) {
+			slog.Warn(label,
+				"event_type", event.Type,
+				"workspace_id", event.WorkspaceID,
+				"task_id", event.TaskID,
+				"error", err,
+			)
+		}
+	}()
+}
+
+// runReconciler repairs the only gap an in-process event bus cannot close:
+// a task/status DB commit can succeed and the API process can die before its
+// event is published. Durable runs are therefore periodically compared with
+// authoritative issue/task rows and missing terminal events are replayed.
+func (r *Runtime) runReconciler(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	cycle := 0
+	for {
+		if err := r.reconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous workflow reconciliation failed", "error", err)
+		}
+		if err := r.processProjectBootstrap(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous project bootstrap reconciliation failed", "error", err)
+		}
+		if err := r.processAutomaticTeamConfiguration(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous team automatic configuration failed", "error", err)
+		}
+		if err := r.processTeamDraftProvisioning(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous team draft provisioning failed", "error", err)
+		}
+		if err := r.processProjectPlanning(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous durable project planning failed", "error", err)
+		}
+		if err := r.processDiscoveredProjectWork(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous discovered project work reconciliation failed", "error", err)
+		}
+		if err := r.processProjectScheduling(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous project scheduling failed", "error", err)
+		}
+		if err := r.processRequestedReplans(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("autonomous project replan processing failed", "error", err)
+		}
+		if cycle%6 == 0 {
+			if err := r.reconcileUnstartedIssues(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Warn("autonomous unstarted issue reconciliation failed", "error", err)
+			}
+			if err := r.reconcileAllSupersededProjectIssues(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Warn("autonomous stale replan issue reconciliation failed", "error", err)
+			}
+		}
+		cycle++
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (r *Runtime) isProjectPaused(ctx context.Context, workspaceID, projectID pgtype.UUID) (bool, error) {
+	if !workspaceID.Valid || !projectID.Valid {
+		return false, nil
+	}
+	var paused bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT paused
+		FROM autonomous_project_control
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID).Scan(&paused)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return paused, err
+}
+
+func (r *Runtime) processTeamDraftProvisioning(ctx context.Context) error {
+	if r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT project_id, workspace_id, confirmed_by, selections
+		FROM autonomous_project_team_draft
+		WHERE status = 'provisioning'
+		ORDER BY updated_at ASC
+		LIMIT 10
+	`)
+	if err != nil {
+		return fmt.Errorf("query autonomous team drafts awaiting provisioning: %w", err)
+	}
+	type pendingDraft struct {
+		projectID   pgtype.UUID
+		workspaceID pgtype.UUID
+		confirmedBy pgtype.UUID
+		selections  []byte
+	}
+	pending := make([]pendingDraft, 0, 10)
+	for rows.Next() {
+		var item pendingDraft
+		if err := rows.Scan(&item.projectID, &item.workspaceID, &item.confirmedBy, &item.selections); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, item := range pending {
+		var raw map[string]struct {
+			RuntimeID string   `json:"runtime_id"`
+			Model     string   `json:"model"`
+			SkillMode string   `json:"skill_mode"`
+			SkillIDs  []string `json:"skill_ids"`
+		}
+		if err := json.Unmarshal(item.selections, &raw); err != nil {
+			return fmt.Errorf("decode autonomous team draft selections: %w", err)
+		}
+		assignments := make([]teamprovision.RoleRuntimeSelection, 0, len(raw))
+		for role, selected := range raw {
+			runtimeID, err := util.ParseUUID(selected.RuntimeID)
+			if err != nil {
+				return fmt.Errorf("parse selected runtime for role %s: %w", role, err)
+			}
+			skillIDs := make([]pgtype.UUID, 0, len(selected.SkillIDs))
+			for _, skillValue := range selected.SkillIDs {
+				skillID, err := util.ParseUUID(skillValue)
+				if err != nil {
+					return fmt.Errorf("parse selected skill for role %s: %w", role, err)
+				}
+				skillIDs = append(skillIDs, skillID)
+			}
+			assignments = append(assignments, teamprovision.RoleRuntimeSelection{
+				Role:      role,
+				RuntimeID: runtimeID,
+				Model:     strings.TrimSpace(selected.Model),
+				SkillIDs:  skillIDs,
+				SkillsSpecified: strings.EqualFold(strings.TrimSpace(selected.SkillMode), "custom") ||
+					(strings.TrimSpace(selected.SkillMode) == "" && len(skillIDs) > 0),
+			})
+		}
+
+		provisionCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		team, provisionErr := r.team.ProvisionDraft(
+			provisionCtx,
+			item.workspaceID,
+			item.projectID,
+			item.confirmedBy,
+			assignments,
+		)
+		cancel()
+		if provisionErr != nil {
+			message := provisionErr.Error()
+			if len(message) > 2000 {
+				message = message[:2000]
+			}
+			_, _ = r.pool.Exec(ctx, `
+				UPDATE autonomous_project_team_draft
+				SET status = 'awaiting_configuration', updated_at = now()
+				WHERE workspace_id = $1 AND project_id = $2 AND status = 'provisioning'
+			`, item.workspaceID, item.projectID)
+			_, _ = r.pool.Exec(ctx, `
+				INSERT INTO autonomous_project_control (
+					project_id, workspace_id, last_error, updated_at
+				)
+				VALUES ($1, $2, $3, now())
+				ON CONFLICT (project_id) DO UPDATE
+				SET last_error = EXCLUDED.last_error,
+				    updated_at = now()
+				WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
+			`, item.projectID, item.workspaceID, message)
+			continue
+		}
+		_, _ = r.pool.Exec(ctx, `
+			INSERT INTO autonomous_project_control (
+				project_id, workspace_id, last_error, updated_at
+			)
+			VALUES ($1, $2, NULL, now())
+			ON CONFLICT (project_id) DO UPDATE
+			SET last_error = NULL,
+			    updated_at = now()
+			WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
+		`, item.projectID, item.workspaceID)
+		slog.Info("autonomous project team provisioned from configured draft",
+			"project_id", util.UUIDToString(item.projectID),
+			"workspace_id", util.UUIDToString(item.workspaceID),
+			"squad_id", util.UUIDToString(team.SquadID),
+			"member_count", len(team.Members),
+		)
+	}
+	return nil
+}
+
+func (r *Runtime) processRequestedReplans(ctx context.Context) error {
+	if r.team == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT project_id, workspace_id, replan_requested_at
+		FROM autonomous_project_control
+		WHERE replan_requested_at IS NOT NULL
+		  AND (replan_completed_at IS NULL OR replan_completed_at < replan_requested_at)
+		  AND (last_error IS NULL OR updated_at < now() - interval '1 minute')
+		ORDER BY replan_requested_at ASC
+		LIMIT 10
+	`)
+	if err != nil {
+		return fmt.Errorf("query requested autonomous replans: %w", err)
+	}
+	type request struct {
+		projectID   pgtype.UUID
+		workspaceID pgtype.UUID
+		requestedAt time.Time
+	}
+	requests := make([]request, 0, 10)
+	for rows.Next() {
+		var item request
+		if err := rows.Scan(&item.projectID, &item.workspaceID, &item.requestedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		requests = append(requests, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, item := range requests {
+		revision := item.requestedAt.UTC().Format(time.RFC3339Nano)
+		planCtx, cancel := context.WithTimeout(ctx, autonomousPlanningTimeout)
+		// "Replan team" is intentionally scoped to staffing only. Replacing the
+		// Project OS plan here superseded the active DAG, created fresh unbound
+		// nodes and caused the scheduler to materialize duplicate Todo issues.
+		// Project-plan replanning must be an explicit, separate operation with
+		// state/issue carry-forward semantics.
+		_, _, replanErr := r.team.ReconcileProject(planCtx, item.workspaceID, item.projectID, revision)
+		cancel()
+		if replanErr != nil {
+			message := replanErr.Error()
+			if len(message) > 2000 {
+				message = message[:2000]
+			}
+			_, _ = r.pool.Exec(ctx, `
+				UPDATE autonomous_project_control
+				SET last_error = $4, updated_at = now()
+				WHERE workspace_id = $1
+				  AND project_id = $2
+				  AND replan_requested_at = $3
+			`, item.workspaceID, item.projectID, item.requestedAt, message)
+			continue
+		}
+		_, err := r.pool.Exec(ctx, `
+			UPDATE autonomous_project_control
+			SET replan_completed_at = now(),
+			    last_error = NULL,
+			    updated_at = now()
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND replan_requested_at = $3
+		`, item.workspaceID, item.projectID, item.requestedAt)
+		if err != nil {
+			return fmt.Errorf("mark autonomous replan completed: %w", err)
+		}
+	}
+	return nil
+}
+
+// RestartProjectWorkflow performs an immediate, project-scoped recovery pass.
+//
+// It deliberately does not register a second set of event-bus listeners or start
+// duplicate workers. The runtime workers are already supervised loops. What can
+// be lost across a process/daemon interruption is the in-process notification
+// between a durable DB commit and the listener. This method replays that durable
+// issue/task state immediately and releases only expired action leases.
+func (r *Runtime) RestartProjectWorkflow(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) error {
+	if r == nil || r.pool == nil || r.store == nil {
+		return errors.New("autonomous workflow runtime is not configured")
+	}
+	if !workspaceID.Valid || !projectID.Valid {
+		return errors.New("workspace_id and project_id are required")
+	}
+
+	// Repair can be requested after the last durable plan reached completed
+	// while older project workflows still need to be replayed. The scheduler
+	// deliberately ignores completed plans, so reactivate that exact plan before
+	// querying/reconciling its remaining workflow runs. This preserves node and
+	// issue identity and does not create a new DAG.
+	if r.projectStore != nil {
+		stored, exists, err := r.projectStore.LoadLatestPlan(ctx, workspaceID, projectID)
+		if err != nil {
+			return fmt.Errorf("load latest autonomous project plan for repair: %w", err)
+		}
+		if exists && stored.Status == "completed" {
+			planID, err := util.ParseUUID(stored.ID)
+			if err != nil {
+				return fmt.Errorf("parse latest autonomous project plan for repair: %w", err)
+			}
+			if err := r.projectStore.ResumeCompletedPlanForDiscoveredWork(ctx, workspaceID, projectID, planID); err != nil {
+				return fmt.Errorf("resume completed autonomous project plan for repair: %w", err)
+			}
+		}
+	}
+
+	// ActionWorker can reclaim expired running actions itself; resetting only
+	// expired leases here makes the operator action immediate without duplicating
+	// a healthy in-flight side effect.
+	// Repair Project OS ownership first. A stale issue from a superseded plan is
+	// not restartable workflow work; it must be retired before workflow replay
+	// so the operator gets a truthful "nothing left to run" state.
+	if err := r.reconcileSupersededProjectIssues(ctx, workspaceID, projectID); err != nil {
+		return fmt.Errorf("repair autonomous project ownership before restart: %w", err)
+	}
+
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_workflow_action a
+		SET status = 'pending',
+		    available_at = now(),
+		    lease_token = NULL,
+		    lease_expires_at = NULL,
+		    updated_at = now()
+		FROM autonomous_workflow_run wr
+		WHERE a.run_id = wr.id
+		  AND wr.workspace_id = $1
+		  AND wr.project_id = $2
+		  AND a.status = 'running'
+		  AND (a.lease_expires_at IS NULL OR a.lease_expires_at < now())
+	`, workspaceID, projectID); err != nil {
+		return fmt.Errorf("release expired autonomous workflow action leases: %w", err)
+	}
+
+	// Repair & continue is an explicit operator decision to retry a recoverable
+	// project failure. Without resolving these durable escalations, the blocked
+	// node reconciler correctly refuses to move the node back to Ready.
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_project_escalation
+		SET status = 'resolved',
+		    resolution = jsonb_build_object('decision', 'retry', 'note', 'repair and continue requested'),
+		    resolved_at = now()
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND status IN ('open', 'acknowledged')
+		  AND category IN ('technical_failure', 'contract_violation', 'quality_policy')
+	`, workspaceID, projectID); err != nil {
+		return fmt.Errorf("resolve recoverable project escalations before restart: %w", err)
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT issue_id
+		FROM autonomous_workflow_run
+		WHERE workspace_id = $1
+		  AND project_id = $2
+		  AND workflow_name = $3
+		  AND (
+			state NOT IN ('done', 'cancelled')
+			OR EXISTS (
+				SELECT 1
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				WHERE n.workspace_id = autonomous_workflow_run.workspace_id
+				  AND n.project_id = autonomous_workflow_run.project_id
+				  AND n.materialized_issue_id = autonomous_workflow_run.issue_id
+				  AND n.status NOT IN ('completed', 'cancelled')
+				  AND p.status IN ('active', 'blocked')
+			)
+		  )
+		ORDER BY updated_at ASC
+		LIMIT 500
+	`, workspaceID, projectID, softwareDevelopmentWorkflow)
+	if err != nil {
+		return fmt.Errorf("query project workflows for restart: %w", err)
+	}
+	issueIDs := make([]pgtype.UUID, 0, 32)
+	for rows.Next() {
+		var issueID pgtype.UUID
+		if err := rows.Scan(&issueID); err != nil {
+			rows.Close()
+			return err
+		}
+		issueIDs = append(issueIDs, issueID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	workspaceIDString := util.UUIDToString(workspaceID)
+	for _, issueID := range issueIDs {
+		if err := r.reconcileCompletedProjectQuality(ctx, db.Issue{ID: issueID, WorkspaceID: workspaceID}); err != nil {
+			return fmt.Errorf("reconcile completed project quality during repair: %w", err)
+		}
+		run, exists, err := r.store.FindRun(
+			ctx,
+			softwareDevelopmentWorkflow,
+			workspaceIDString,
+			util.UUIDToString(issueID),
+		)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if err := r.reconcileRun(ctx, run); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
+			slog.Warn("autonomous project repair skipped one workflow run",
+				"workspace_id", workspaceIDString,
+				"project_id", util.UUIDToString(projectID),
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"error", err,
+			)
+			continue
+		}
+		if r.projectStore != nil && run.State == issuestatus.Done {
+			var nodeKey string
+			err := r.pool.QueryRow(ctx, `
+				SELECT n.node_key
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				WHERE n.workspace_id = $1
+				  AND n.project_id = $2
+				  AND n.materialized_issue_id = $3
+				  AND n.status = 'running'
+				  AND p.status IN ('active', 'blocked')
+				  AND NOT EXISTS (
+					  SELECT 1
+					  FROM agent_task_queue t
+					  WHERE t.issue_id = n.materialized_issue_id
+					    AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+				  )
+				ORDER BY p.revision DESC
+				LIMIT 1
+			`, workspaceID, projectID, issueID).Scan(&nodeKey)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("find stale terminal project node for repair: %w", err)
+			}
+			if err := r.projectStore.ReleaseNodeClaim(ctx, workspaceID, projectID, nodeKey, "terminal workflow requires repair"); err != nil {
+				return fmt.Errorf("release stale terminal project node for repair: %w", err)
+			}
+			if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, issuestatus.Todo); err != nil {
+				return fmt.Errorf("requeue stale terminal project issue for repair: %w", err)
+			}
+			slog.Info("requeued stale terminal autonomous project node",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"node", nodeKey,
+			)
+		}
+	}
+
+	// Also recover an issue that reached In Progress while the process was down
+	// before the workflow run itself could be created.
+	unstartedRows, err := r.pool.Query(ctx, `
+		SELECT i.id, i.status, i.revision
+		FROM issue i
+		WHERE i.workspace_id = $1
+		  AND i.project_id = $2
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM autonomous_workflow_run wr
+			WHERE wr.issue_id = i.id
+			  AND wr.workspace_id = i.workspace_id
+			  AND wr.workflow_name = $3
+		  )
+		ORDER BY i.updated_at DESC
+		LIMIT 200
+	`, workspaceID, projectID, softwareDevelopmentWorkflow)
+	if err != nil {
+		return fmt.Errorf("query unstarted project workflows for restart: %w", err)
+	}
+	type unstartedIssue struct {
+		id       pgtype.UUID
+		status   string
+		revision int64
+	}
+	unstarted := make([]unstartedIssue, 0, 16)
+	for unstartedRows.Next() {
+		var item unstartedIssue
+		if err := unstartedRows.Scan(&item.id, &item.status, &item.revision); err != nil {
+			unstartedRows.Close()
+			return err
+		}
+		unstarted = append(unstarted, item)
+	}
+	if err := unstartedRows.Err(); err != nil {
+		unstartedRows.Close()
+		return err
+	}
+	unstartedRows.Close()
+
+	for _, item := range unstarted {
+		if issuestatus.Effective(ctx, r.taskSvc.Queries, workspaceID, item.status) != issuestatus.InProgress {
+			continue
+		}
+		event := events.Event{
+			Type:        protocol.EventIssueUpdated,
+			WorkspaceID: workspaceIDString,
+			ActorType:   "system",
+			Payload: map[string]any{
+				"issue": map[string]any{
+					"id":       util.UUIDToString(item.id),
+					"status":   item.status,
+					"revision": item.revision,
+				},
+			},
+		}
+		if err := r.handleIssueEvent(ctx, event); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
+			slog.Warn("autonomous project repair skipped one unstarted workflow",
+				"workspace_id", workspaceIDString,
+				"project_id", util.UUIDToString(projectID),
+				"issue_id", util.UUIDToString(item.id),
+				"error", err,
+			)
+			continue
+		}
+	}
+
+	// Recompute dependency readiness and run the scheduler immediately rather
+	// than waiting up to the next 10s conductor tick. Restart is therefore a
+	// genuine "continue from durable state" action, not just a workflow replay.
+	if r.projectStore != nil {
+		if err := r.projectStore.RefreshReady(ctx, workspaceID, projectID); err != nil {
+			return fmt.Errorf("refresh project readiness after restart: %w", err)
+		}
+		if err := r.processProjectSchedulingForProject(ctx, workspaceID, projectID); err != nil {
+			return fmt.Errorf("resume project scheduling after restart: %w", err)
+		}
+	}
+
+	slog.Info("autonomous project workflow restart completed",
+		"workspace_id", workspaceIDString,
+		"project_id", util.UUIDToString(projectID),
+		"run_count", len(issueIDs),
+	)
+	return nil
+}
+
+func (r *Runtime) reconcileOnce(ctx context.Context) error {
+	runs, err := r.store.ListActiveRuns(ctx, 200)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if err := r.reconcileRun(ctx, run); err != nil && !errors.Is(err, workflow.ErrRevisionConflict) {
+			slog.Warn("autonomous workflow run reconciliation failed",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"state", run.State,
+				"error", err,
+			)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) reconcileUnstartedIssues(ctx context.Context) error {
+	rows, err := r.pool.Query(ctx, `
+		SELECT i.id, i.workspace_id, i.status, i.revision
+		FROM issue i
+		LEFT JOIN autonomous_project_control pc
+		  ON pc.project_id = i.project_id
+		 AND pc.workspace_id = i.workspace_id
+		WHERE i.project_id IS NOT NULL
+		  AND COALESCE(pc.paused, FALSE) = FALSE
+		  AND i.updated_at < now() - interval '30 seconds'
+		  AND i.updated_at > now() - interval '14 days'
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM autonomous_workflow_run wr
+			WHERE wr.issue_id = i.id
+			  AND wr.workspace_id = i.workspace_id
+			  AND wr.workflow_name = $1
+		  )
+		ORDER BY i.updated_at DESC
+		LIMIT 50
+	`, softwareDevelopmentWorkflow)
+	if err != nil {
+		return fmt.Errorf("query unstarted autonomous issues: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var issueID, workspaceID pgtype.UUID
+		var status string
+		var revision int64
+		if err := rows.Scan(&issueID, &workspaceID, &status, &revision); err != nil {
+			return err
+		}
+		effective := issuestatus.Effective(ctx, r.taskSvc.Queries, workspaceID, status)
+		if effective != issuestatus.InProgress && effective != issuestatus.InReview && effective != issuestatus.Done {
+			continue
+		}
+		event := events.Event{
+			Type:        protocol.EventIssueUpdated,
+			WorkspaceID: util.UUIDToString(workspaceID),
+			ActorType:   "system",
+			Payload: map[string]any{
+				"issue": map[string]any{
+					"id":       util.UUIDToString(issueID),
+					"status":   status,
+					"revision": revision,
+				},
+			},
+		}
+		r.onIssueEvent(event)
+	}
+	return rows.Err()
+}
+
+func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
+	issueID, err := util.ParseUUID(run.IssueID)
+	if err != nil {
+		return err
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if issue.ProjectID.Valid {
+		paused, err := r.isProjectPaused(ctx, issue.WorkspaceID, issue.ProjectID)
+		if err != nil {
+			return fmt.Errorf("check reconciled project pause: %w", err)
+		}
+		if paused {
+			return nil
+		}
+	}
+	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+	if run.State == issuestatus.Blocked && effective == issuestatus.InProgress {
+		// The issue row may have committed its retry/resume transition while the
+		// process was down before issue:updated reached the in-process bus. Repair
+		// the durable workflow from the authoritative row so Blocked cannot become
+		// a terminal dead-end after a restart.
+		result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                fmt.Sprintf("reconcile-issue-retry:%s:%d", run.IssueID, issue.Revision),
+			Type:              "issue.retry_requested",
+			WorkspaceID:       run.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           run.IssueID,
+			AccountableUserID: run.AccountableUserID,
+			Payload:           map[string]any{"status": issue.Status},
+		})
+		if handleErr != nil {
+			return handleErr
+		}
+		if result.Applied {
+			slog.Info("reconciled blocked autonomous workflow from in-progress issue",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+			)
+		}
+		return nil
+	}
+	if effective == issuestatus.Done {
+		// Issue status is durable user/agent intent. If the process died after
+		// the issue row committed but before issue:updated was published, repair
+		// both the issue workflow and Project OS node from that row.
+		if run.State != issuestatus.Done {
+			result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                fmt.Sprintf("reconcile-issue-completed:%s:%d", run.IssueID, issue.Revision),
+				Type:              "issue.completed",
+				WorkspaceID:       run.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           run.IssueID,
+				AccountableUserID: run.AccountableUserID,
+				Payload:           map[string]any{"status": issue.Status},
+			})
+			if handleErr != nil {
+				return handleErr
+			}
+			if result.Applied {
+				slog.Info("reconciled terminal issue into autonomous workflow",
+					"run_id", run.ID,
+					"issue_id", run.IssueID,
+					"from", run.State,
+				)
+			}
+		}
+		if err := r.reconcileCompletedProjectQuality(ctx, issue); err != nil {
+			return fmt.Errorf("reconcile terminal project quality gates: %w", err)
+		}
+		if r.projectStore != nil {
+			if err := r.projectStore.CompleteNodeByIssue(ctx, issue.WorkspaceID, issue.ID); err != nil {
+				return fmt.Errorf("complete reconciled project node from terminal issue: %w", err)
+			}
+		}
+		return nil
+	}
+	// Do not infer review rejection from the current issue row alone. Project OS
+	// and other server-owned projections can also write issue status. The
+	// realtime issue event carries actor provenance, and a terminal reviewer task
+	// is durable evidence that can be reconciled below. Treating a bare
+	// in_review -> in_progress row as reviewer intent caused crash recovery to
+	// manufacture review cycles after daemon/server restarts.
+	// Blocked runs are normally terminal from the workflow's point of view, but
+	// task-level Retry/Rerun can create a durable successor after the blocking
+	// transition (notably after a daemon/server restart). Reconcile only explicit
+	// retry lineage here; an unrelated completed task must never resurrect a
+	// blocked workflow.
+	if run.State == issuestatus.Blocked {
+		var ownerID, reviewerID pgtype.UUID
+		if run.OwnerAgentID != "" {
+			ownerID, err = util.ParseUUID(run.OwnerAgentID)
+			if err != nil {
+				return err
+			}
+		}
+		if run.ReviewerAgentID != "" {
+			reviewerID, err = util.ParseUUID(run.ReviewerAgentID)
+			if err != nil {
+				return err
+			}
+		}
+		if !ownerID.Valid && !reviewerID.Valid {
+			return nil
+		}
+
+		var retryTaskID pgtype.UUID
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND status = 'completed'
+			  AND (
+				($2::uuid IS NOT NULL AND agent_id = $2)
+				OR ($3::uuid IS NOT NULL AND agent_id = $3)
+			  )
+			  AND (retry_of_task_id IS NOT NULL OR rerun_of_task_id IS NOT NULL)
+			  AND COALESCE(completed_at, created_at) > $4
+			ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+			LIMIT 1
+		`, issueID, ownerID, reviewerID, run.UpdatedAt).Scan(&retryTaskID)
+		if err == nil {
+			return r.handleTaskCompleted(ctx, events.Event{
+				Type:        protocol.EventTaskCompleted,
+				WorkspaceID: run.WorkspaceID,
+				TaskID:      util.UUIDToString(retryTaskID),
+			})
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		// A completed task can win the race with its structured comment. If the
+		// comment later becomes durable, recover only that recent owner/reviewer
+		// completion instead of leaving the run blocked forever.
+		var contractTaskID pgtype.UUID
+		recoverySince := run.UpdatedAt.Add(-blockedFailureRecoveryLookback)
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND status = 'completed'
+			  AND (
+				($2::uuid IS NOT NULL AND agent_id = $2)
+				OR ($3::uuid IS NOT NULL AND agent_id = $3)
+			  )
+			  AND retry_of_task_id IS NULL
+			  AND rerun_of_task_id IS NULL
+			  AND COALESCE(completed_at, created_at) >= $4
+			ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+			LIMIT 1
+		`, issueID, ownerID, reviewerID, recoverySince).Scan(&contractTaskID)
+		if err == nil {
+			contractTask, taskErr := r.taskSvc.Queries.GetAgentTask(ctx, contractTaskID)
+			if taskErr != nil {
+				return taskErr
+			}
+			contractTask, taskErr = r.normalizeTaskResultFromAgentComment(ctx, contractTask, issue)
+			if taskErr != nil {
+				return taskErr
+			}
+			switch {
+			case util.UUIDToString(contractTask.AgentID) == run.ReviewerAgentID:
+				verdict, parseErr := parseReviewVerdict(contractTask.Result)
+				if parseErr == nil {
+					if err := r.persistReviewVerdict(ctx, run, contractTask, issue, verdict); err != nil {
+						return fmt.Errorf("persist recovered review verdict: %w", err)
+					}
+					eventType := "review.retry_completed"
+					if verdict.Verdict == "changes_requested" {
+						eventType = "review.retry_changes_requested"
+					}
+					_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+						ID:                eventType + ":" + util.UUIDToString(contractTask.ID),
+						Type:              eventType,
+						WorkspaceID:       run.WorkspaceID,
+						ProjectID:         util.UUIDToString(issue.ProjectID),
+						IssueID:           util.UUIDToString(issueID),
+						AccountableUserID: run.AccountableUserID,
+						Payload:           map[string]any{"task_id": util.UUIDToString(contractTask.ID), "recovered_from": "contract_race"},
+					})
+					return err
+				}
+			case util.UUIDToString(contractTask.AgentID) == run.OwnerAgentID:
+				output, parseErr := parseImplementationHandoff(contractTask.Result)
+				if parseErr == nil {
+					if err := r.persistImplementationHandoff(ctx, run, contractTask, issue, output); err != nil {
+						return fmt.Errorf("persist recovered implementation handoff: %w", err)
+					}
+					_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+						ID:                "implementation.retry_completed:" + util.UUIDToString(contractTask.ID),
+						Type:              "implementation.retry_completed",
+						WorkspaceID:       run.WorkspaceID,
+						ProjectID:         util.UUIDToString(issue.ProjectID),
+						IssueID:           util.UUIDToString(issueID),
+						AccountableUserID: run.AccountableUserID,
+						Payload:           map[string]any{"task_id": util.UUIDToString(contractTask.ID), "recovered_from": "contract_race"},
+					})
+					return err
+				}
+			}
+			if isLegacyBlockedImplementationCompletion(run, contractTask) && issue.ProjectID.Valid && r.projectStore != nil {
+				// Older agents completed implementation work with prose instead of
+				// the current handoff contract. Do not promote that prose to review;
+				// release the blocked Project OS node and let the current workflow
+				// prompt rerun the implementation against the shared repository.
+				resumed, resumeErr := r.projectStore.ResumeNodeForWorkflowRetry(ctx, issue.WorkspaceID, issue.ID)
+				if resumeErr != nil {
+					return fmt.Errorf("resume legacy blocked implementation: %w", resumeErr)
+				}
+				if resumed {
+					result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+						ID:                "legacy-implementation-retry:" + util.UUIDToString(contractTask.ID),
+						Type:              "issue.retry_requested",
+						WorkspaceID:       run.WorkspaceID,
+						ProjectID:         util.UUIDToString(issue.ProjectID),
+						IssueID:           run.IssueID,
+						AccountableUserID: run.AccountableUserID,
+						Payload:           map[string]any{"task_id": util.UUIDToString(contractTask.ID), "recovered_from": "legacy_handoff"},
+					})
+					if handleErr != nil {
+						return handleErr
+					}
+					if result.Applied {
+						slog.Info("requeued legacy blocked implementation without handoff contract",
+							"run_id", run.ID,
+							"issue_id", run.IssueID,
+							"task_id", util.UUIDToString(contractTask.ID),
+						)
+					}
+				}
+				return nil
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		// Mixed-version/self-host recovery: an older server may have persisted a
+		// transient runtime/provider failure as terminal and moved this durable
+		// workflow to Blocked before the retry policy knew how to defer it. Re-run
+		// the canonical TaskService retry decision against the newest matching
+		// failure. This is intentionally narrow: MaybeRetryFailedTask creates a
+		// child only for retryable infrastructure failures or quota errors carrying
+		// an explicit reset window, and its pending-task guard makes this idempotent.
+		var failedTaskID pgtype.UUID
+		// The failure that CAUSED the blocked transition normally completes a few
+		// milliseconds BEFORE workflow_run.updated_at is written. Requiring
+		// completed_at > run.UpdatedAt therefore excludes the exact row recovery
+		// needs (CAGL-10 reproduced with a 16ms gap). Look back a bounded minute:
+		// enough to bridge the task-fail -> workflow-block commit ordering while
+		// still refusing to resurrect arbitrary historical failures.
+		failureRecoverySince := run.UpdatedAt.Add(-blockedFailureRecoveryLookback)
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND status = 'failed'
+			  AND (
+				($2::uuid IS NOT NULL AND agent_id = $2)
+				OR ($3::uuid IS NOT NULL AND agent_id = $3)
+			  )
+			  AND COALESCE(completed_at, created_at) >= $4
+			ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+			LIMIT 1
+		`, issueID, ownerID, reviewerID, failureRecoverySince).Scan(&failedTaskID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		failedTask, err := r.taskSvc.Queries.GetAgentTask(ctx, failedTaskID)
+		if err != nil {
+			return err
+		}
+		retryTask, err := r.taskSvc.MaybeRetryFailedTask(ctx, failedTask)
+		if err != nil {
+			return fmt.Errorf("recover blocked autonomous workflow retry: %w", err)
+		}
+		if retryTask != nil {
+			slog.Info("recovered blocked autonomous workflow with task retry",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"failed_task_id", util.UUIDToString(failedTask.ID),
+				"retry_task_id", util.UUIDToString(retryTask.ID),
+				"retry_status", retryTask.Status,
+			)
+		}
+		return nil
+	}
+
+	targetID := run.OwnerAgentID
+	if run.State == issuestatus.InReview {
+		targetID = run.ReviewerAgentID
+	}
+	if targetID == "" || run.UpdatedAt.IsZero() {
+		return nil
+	}
+	agentID, err := util.ParseUUID(targetID)
+	if err != nil {
+		return err
+	}
+
+	var terminalTaskID pgtype.UUID
+	var terminalStatus string
+	err = r.pool.QueryRow(ctx, `
+		SELECT id, status
+		FROM agent_task_queue
+		WHERE issue_id = $1
+		  AND agent_id = $2
+		  AND status IN ('completed', 'failed')
+		  AND COALESCE(completed_at, created_at) > $3
+		ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+		LIMIT 1
+	`, issueID, agentID, run.UpdatedAt).Scan(&terminalTaskID, &terminalStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// This recovery path rebuilds the project handoff envelope. Legacy issue
+		// workflows without a project must keep their existing action semantics.
+		if !issue.ProjectID.Valid {
+			return nil
+		}
+		runID, err := util.ParseUUID(run.ID)
+		if err != nil {
+			return err
+		}
+		var workPending bool
+		err = r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM agent_task_queue
+				WHERE issue_id = $1
+				  AND agent_id = $2
+				  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+			) OR EXISTS (
+				SELECT 1
+				FROM autonomous_workflow_action
+				WHERE run_id = $3
+				  AND status IN ('pending', 'running')
+			)`, issueID, agentID, runID).Scan(&workPending)
+		if err != nil {
+			return err
+		}
+		if workPending {
+			return nil
+		}
+
+		// A task can be cancelled after the workflow transition commits. Re-enter
+		// the current state so its OnEnter action recreates the missing agent task.
+		// The stable event id and pending-work guard keep this recovery idempotent.
+		result, err := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                fmt.Sprintf("reconcile-workflow-started:%s:%d:%s", run.ID, run.Revision, run.State),
+			Type:              "workflow.started",
+			WorkspaceID:       run.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           run.IssueID,
+			AccountableUserID: run.AccountableUserID,
+			Payload:           map[string]any{"recovered_from": "missing_agent_task"},
+		})
+		if err != nil {
+			return fmt.Errorf("requeue missing autonomous agent task: %w", err)
+		}
+		if result.Applied {
+			slog.Info("requeued autonomous workflow with missing agent task",
+				"run_id", run.ID,
+				"issue_id", run.IssueID,
+				"agent_id", targetID,
+				"state", run.State,
+			)
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if terminalStatus == "failed" {
+		var active bool
+		if err := r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM agent_task_queue
+				WHERE issue_id = $1
+				  AND agent_id = $2
+				  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+			)
+		`, issueID, agentID).Scan(&active); err != nil {
+			return err
+		}
+		if active {
+			return nil
+		}
+		return r.handleTaskFailed(ctx, events.Event{
+			Type:        protocol.EventTaskFailed,
+			WorkspaceID: run.WorkspaceID,
+			TaskID:      util.UUIDToString(terminalTaskID),
+			Payload:     map[string]any{"retry_pending": false},
+		})
+	}
+
+	return r.handleTaskCompleted(ctx, events.Event{
+		Type:        protocol.EventTaskCompleted,
+		WorkspaceID: run.WorkspaceID,
+		TaskID:      util.UUIDToString(terminalTaskID),
+	})
+}
+
+func (r *Runtime) onProjectCreated(event events.Event) {
+	r.runAsync(autonomousPlanningTimeout, "autonomous project team provisioning failed", event, func(ctx context.Context) error {
+		return r.handleProjectCreated(ctx, event)
+	})
+}
+
+func (r *Runtime) handleProjectCreated(ctx context.Context, event events.Event) error {
+	if r.team == nil || event.WorkspaceID == "" {
+		return nil
+	}
+	workspaceID, err := util.ParseUUID(event.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	projectIDValue := projectIDFromEvent(event)
+	if projectIDValue == "" {
+		return nil
+	}
+	projectID, err := util.ParseUUID(projectIDValue)
+	if err != nil {
+		return err
+	}
+	var autonomyMode string
+	err = r.pool.QueryRow(ctx, `
+		SELECT autonomy_mode
+		FROM autonomous_project_bootstrap
+		WHERE workspace_id = $1 AND project_id = $2 AND status <> 'cancelled'
+	`, workspaceID, projectID).Scan(&autonomyMode)
+	if errors.Is(err, pgx.ErrNoRows) || autonomyMode != "autonomous" {
+		// Standard projects deliberately stay outside the autonomous control
+		// plane. Autonomous entry must be explicit through bootstrap metadata.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load project bootstrap mode: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_project_bootstrap
+		SET status = 'started', updated_at = now()
+		WHERE workspace_id = $1 AND project_id = $2 AND status = 'ready'
+	`, workspaceID, projectID); err != nil {
+		return fmt.Errorf("mark autonomous bootstrap started: %w", err)
+	}
+	draft, err := r.team.PrepareProject(ctx, workspaceID, projectID)
+	if err != nil {
+		if errors.Is(err, teamprovision.ErrMikaUnavailable) {
+			return nil
+		}
+		return err
+	}
+	if draft.Status == "applied" {
+		return nil
+	}
+	slog.Info("autonomous project team draft ready",
+		"project_id", projectIDValue,
+		"workspace_id", event.WorkspaceID,
+		"planner", draft.PlannerName,
+		"planner_model", draft.PlannerModel,
+		"role_count", len(draft.Plan.Roles),
+		"status", draft.Status,
+	)
+	return nil
+}
+
+func (r *Runtime) onProjectDeleted(event events.Event) {
+	if r.team == nil || event.WorkspaceID == "" {
+		return
+	}
+	projectIDValue := projectIDFromEvent(event)
+	if projectIDValue == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	workspaceID, err := util.ParseUUID(event.WorkspaceID)
+	if err != nil {
+		return
+	}
+	projectID, err := util.ParseUUID(projectIDValue)
+	if err != nil {
+		return
+	}
+	if err := r.team.ArchiveProject(ctx, workspaceID, projectID); err != nil {
+		slog.Warn("autonomous project team archive failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
+	if r.projectStore != nil {
+		if err := r.projectStore.CleanupProject(ctx, workspaceID, projectID); err != nil {
+			slog.Warn("autonomous project os cleanup failed",
+				"project_id", projectIDValue,
+				"workspace_id", event.WorkspaceID,
+				"error", err,
+			)
+		}
+	}
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE agent
+		SET archived_at = COALESCE(archived_at, now()), updated_at = now()
+		WHERE workspace_id = $1
+		  AND kind = 'system'
+		  AND system_key = $2
+	`, workspaceID, "autonomous_project_brain:"+projectIDValue); err != nil {
+		slog.Warn("project brain carrier archive failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
+	if _, err := r.pool.Exec(ctx, `
+		DELETE FROM autonomous_project_team_draft
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID); err != nil {
+		slog.Warn("autonomous project team draft cleanup failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
+	if _, err := r.pool.Exec(ctx, `
+		DELETE FROM autonomous_project_control
+		WHERE workspace_id = $1 AND project_id = $2
+	`, workspaceID, projectID); err != nil {
+		slog.Warn("autonomous project control cleanup failed",
+			"project_id", projectIDValue,
+			"workspace_id", event.WorkspaceID,
+			"error", err,
+		)
+	}
+}
+
+func (r *Runtime) onIssueDeleted(event events.Event) {
+	payload, _ := event.Payload.(map[string]any)
+	issueID, _ := payload["issue_id"].(string)
+	if issueID == "" || event.WorkspaceID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.cleanupWorkflowIssue(ctx, event.WorkspaceID, issueID); err != nil {
+		slog.Warn("autonomous workflow issue cleanup failed", "issue_id", issueID, "error", err)
+	}
+	if r.projectStore != nil {
+		workspaceID, workspaceErr := util.ParseUUID(event.WorkspaceID)
+		deletedIssueID, issueErr := util.ParseUUID(issueID)
+		if workspaceErr == nil && issueErr == nil {
+			if err := r.projectStore.ResetDeletedIssue(ctx, workspaceID, deletedIssueID); err != nil {
+				slog.Warn("autonomous project node issue reset failed", "issue_id", issueID, "error", err)
+			}
+		}
+	}
+}
+
+func (r *Runtime) onWorkspaceDeleted(event events.Event) {
+	if event.WorkspaceID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	workspaceID, err := util.ParseUUID(event.WorkspaceID)
+	if err != nil {
+		return
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		slog.Warn("autonomous workflow workspace cleanup begin failed", "error", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_workflow_action
+		WHERE run_id IN (SELECT id FROM autonomous_workflow_run WHERE workspace_id = $1)
+	`, workspaceID); err == nil {
+		_, err = tx.Exec(ctx, `
+			DELETE FROM autonomous_workflow_processed_event
+			WHERE run_id IN (SELECT id FROM autonomous_workflow_run WHERE workspace_id = $1)
+		`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `DELETE FROM autonomous_workflow_run WHERE workspace_id = $1`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `
+			DELETE FROM autonomous_project_team_analysis
+			WHERE team_id IN (
+				SELECT id FROM autonomous_project_team WHERE workspace_id = $1
+			)
+		`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `
+			DELETE FROM autonomous_project_team_member
+			WHERE team_id IN (
+				SELECT id FROM autonomous_project_team WHERE workspace_id = $1
+			)
+		`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `DELETE FROM autonomous_project_team WHERE workspace_id = $1`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `DELETE FROM autonomous_project_team_draft WHERE workspace_id = $1`, workspaceID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `DELETE FROM autonomous_project_control WHERE workspace_id = $1`, workspaceID)
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err == nil && r.projectStore != nil {
+		err = r.projectStore.CleanupWorkspace(ctx, workspaceID)
+	}
+	if err != nil {
+		slog.Warn("autonomous workflow workspace cleanup failed", "workspace_id", event.WorkspaceID, "error", err)
+	}
+}
+
+func (r *Runtime) cleanupWorkflowIssue(ctx context.Context, workspaceIDValue, issueIDValue string) error {
+	workspaceID, err := util.ParseUUID(workspaceIDValue)
+	if err != nil {
+		return err
+	}
+	issueID, err := util.ParseUUID(issueIDValue)
+	if err != nil {
+		return err
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_project_team_analysis
+		WHERE source_type = 'issue' AND source_id = $1
+	`, issueID); err != nil {
+		return err
+	}
+
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_workflow_action
+		WHERE run_id IN (
+			SELECT id FROM autonomous_workflow_run
+			WHERE workspace_id = $1 AND issue_id = $2
+		)
+	`, workspaceID, issueID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_workflow_processed_event
+		WHERE run_id IN (
+			SELECT id FROM autonomous_workflow_run
+			WHERE workspace_id = $1 AND issue_id = $2
+		)
+	`, workspaceID, issueID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM autonomous_workflow_run
+		WHERE workspace_id = $1 AND issue_id = $2
+	`, workspaceID, issueID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *Runtime) refreshRunTeam(ctx context.Context, run workflow.Run, issue db.Issue, accountableUserID string) (workflow.Run, error) {
+	if r.team == nil || !issue.ProjectID.Valid {
+		return run, nil
+	}
+	implementationID, team, err := r.team.ImplementationAgent(ctx, issue)
+	if err != nil {
+		return preserveDurableRunTeam(run, err)
+	}
+	reviewerID, _, ok := team.AgentByFamily("review")
+	if !ok {
+		return preserveDurableRunTeam(run, errors.New("LLM project team has no review-family agent"))
+	}
+	if implementationID == reviewerID {
+		return preserveDurableRunTeam(run, errors.New("LLM project implementation and review agents must differ"))
+	}
+	return r.store.UpdateRunActors(
+		ctx,
+		run.ID,
+		util.UUIDToString(implementationID),
+		util.UUIDToString(reviewerID),
+		accountableUserID,
+	)
+}
+
+func preserveDurableRunTeam(run workflow.Run, cause error) (workflow.Run, error) {
+	if strings.TrimSpace(run.OwnerAgentID) == "" ||
+		strings.TrimSpace(run.ReviewerAgentID) == "" ||
+		run.OwnerAgentID == run.ReviewerAgentID {
+		return run, cause
+	}
+	// The run actors are durable orchestration state. A temporary planner/runtime
+	// outage must not prevent replaying an already-started workflow after a
+	// daemon/server restart. A later successful replan can still refresh them.
+	slog.Warn("autonomous team refresh unavailable; keeping durable workflow actors",
+		"run_id", run.ID,
+		"issue_id", run.IssueID,
+		"owner_agent_id", run.OwnerAgentID,
+		"reviewer_agent_id", run.ReviewerAgentID,
+		"error", cause,
+	)
+	return run, nil
+}
+
+func isSystemStatusProjection(event events.Event) bool {
+	return strings.EqualFold(strings.TrimSpace(event.ActorType), "system") &&
+		strings.TrimSpace(event.ActorID) == ""
+}
+
+func (r *Runtime) onIssueEvent(event events.Event) {
+	r.runAsync(autonomousPlanningTimeout, "autonomous workflow issue event failed", event, func(ctx context.Context) error {
+		return r.handleIssueEvent(ctx, event)
+	})
+}
+
+func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) error {
+	snapshot, prevStatus, err := issueSnapshotFromEvent(event)
+	if err != nil || snapshot.ID == "" {
+		return err
+	}
+	issueID, err := util.ParseUUID(snapshot.ID)
+	if err != nil {
+		return err
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if issue.ProjectID.Valid {
+		paused, err := r.isProjectPaused(ctx, issue.WorkspaceID, issue.ProjectID)
+		if err != nil {
+			return fmt.Errorf("check autonomous project pause: %w", err)
+		}
+		if paused {
+			return nil
+		}
+		// Project issues are owned by the durable project plan. A legacy
+		// continuation or a manual status change must not start a second
+		// workflow/agent before the planner has materialized its node.
+		var materialized bool
+		if err := r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				WHERE n.workspace_id = $1
+				  AND n.project_id = $2
+				  AND n.materialized_issue_id = $3
+				  AND p.status IN ('active', 'blocked')
+			)
+		`, issue.WorkspaceID, issue.ProjectID, issue.ID).Scan(&materialized); err != nil {
+			return fmt.Errorf("check project issue workflow ownership: %w", err)
+		}
+		if !materialized {
+			slog.Info("autonomous workflow not started: issue is not materialized by an active project plan",
+				"issue_id", snapshot.ID,
+				"project_id", util.UUIDToString(issue.ProjectID),
+			)
+			return nil
+		}
+	}
+	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+
+	// While a durable run is In Review, issue status is a projection only; it
+	// must never be interpreted as reviewer intent. The only review decision
+	// channel is the persisted structured verdict produced on task completion.
+	// Server-owned transitions update the workflow run first, so their later
+	// status projection observes the new run state and is not reverted here.
+	guardRun, guardExists, guardErr := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, snapshot.ID)
+	if guardErr != nil {
+		return guardErr
+	}
+	if guardExists && guardRun.State == issuestatus.InReview && effective != issuestatus.InReview {
+		if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.InReview); err != nil {
+			return fmt.Errorf("restore review status after non-verdict mutation: %w", err)
+		}
+		slog.Info("ignored issue status mutation while awaiting structured review verdict",
+			"run_id", guardRun.ID,
+			"issue_id", snapshot.ID,
+			"requested_status", issue.Status,
+			"actor_type", event.ActorType,
+			"actor_id", event.ActorID,
+		)
+		return nil
+	}
+
+	if effective == issuestatus.Done {
+		run, exists, findErr := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, snapshot.ID)
+		if findErr != nil {
+			return findErr
+		}
+		if exists && run.State != issuestatus.Done {
+			result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                issueEventID("issue-completed", snapshot),
+				Type:              "issue.completed",
+				WorkspaceID:       event.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           snapshot.ID,
+				ActorType:         event.ActorType,
+				ActorID:           event.ActorID,
+				AccountableUserID: accountableFromEvent(event),
+				Payload:           map[string]any{"status": issue.Status, "previous_status": prevStatus},
+			})
+			if handleErr != nil {
+				return handleErr
+			}
+			if result.Applied {
+				slog.Info("terminal issue status completed autonomous workflow",
+					"run_id", run.ID,
+					"issue_id", snapshot.ID,
+					"from", run.State,
+				)
+			}
+		}
+		if r.projectStore != nil {
+			if err := r.projectStore.CompleteNodeByIssue(ctx, issue.WorkspaceID, issue.ID); err != nil {
+				return fmt.Errorf("complete autonomous project node from issue: %w", err)
+			}
+		}
+		return nil
+	}
+	if effective == issuestatus.Blocked && r.projectStore != nil {
+		return r.syncBlockedProjectNode(ctx, issue)
+	}
+	if effective == issuestatus.InReview {
+		return r.reconcileUnstartedReview(ctx, event, issue, snapshot)
+	}
+	if effective != issuestatus.InProgress {
+		return nil
+	}
+
+	run, exists, err := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, snapshot.ID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if run.State == issuestatus.Blocked || run.State == issuestatus.Done {
+			// A terminal workflow and a now-In-Progress issue is an explicit
+			// resume signal. Project OS reaches this point after it claims a
+			// recovered node; a member/agent can also request the retry directly.
+			// Without this transition the Project OS node can be running while
+			// the issue workflow remains permanently terminal.
+			result, handleErr := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                issueEventID("issue-retry-requested", snapshot),
+				Type:              "issue.retry_requested",
+				WorkspaceID:       event.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           snapshot.ID,
+				ActorType:         event.ActorType,
+				ActorID:           event.ActorID,
+				AccountableUserID: accountableFromEvent(event),
+				Payload:           map[string]any{"status": issue.Status, "previous_status": prevStatus},
+			})
+			if handleErr != nil {
+				return handleErr
+			}
+			if result.Applied {
+				slog.Info("resumed blocked autonomous workflow from issue status",
+					"run_id", run.ID,
+					"issue_id", snapshot.ID,
+					"actor_type", event.ActorType,
+				)
+			}
+			return nil
+		}
+		// No status-based review inference remains. InProgress reached through a
+		// structured changes_requested verdict has already changed run.State before
+		// the status projection event arrives; any other InReview mutation was
+		// restored by the guard above.
+		return nil
+	}
+
+	ownerID, reviewerID, err := r.resolveTeam(ctx, issue, pgtype.UUID{})
+	if err != nil {
+		slog.Info("autonomous workflow not started: team could not be resolved",
+			"issue_id", snapshot.ID,
+			"error", err,
+		)
+		return nil
+	}
+	_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+		ID:                issueEventID("workflow-start", snapshot),
+		Type:              "workflow.started",
+		WorkspaceID:       event.WorkspaceID,
+		ProjectID:         util.UUIDToString(issue.ProjectID),
+		IssueID:           snapshot.ID,
+		ActorType:         event.ActorType,
+		ActorID:           event.ActorID,
+		OwnerAgentID:      util.UUIDToString(ownerID),
+		ReviewerAgentID:   util.UUIDToString(reviewerID),
+		AccountableUserID: accountableFromEvent(event),
+		Payload:           map[string]any{"status": issue.Status},
+	})
+	return err
+}
+
+func (r *Runtime) reconcileUnstartedReview(ctx context.Context, event events.Event, issue db.Issue, snapshot issueSnapshot) error {
+	_, exists, err := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, snapshot.ID)
+	if err != nil || exists {
+		return err
+	}
+	var active bool
+	if err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+		)
+	`, issue.ID).Scan(&active); err != nil {
+		return fmt.Errorf("check active task before review recovery: %w", err)
+	}
+	if active {
+		return nil
+	}
+	ownerID, reviewerID, err := r.resolveTeam(ctx, issue, pgtype.UUID{})
+	if err != nil {
+		return fmt.Errorf("resolve actors for unstarted review: %w", err)
+	}
+
+	// Recover a task whose database completion committed before its event was
+	// published. The common completion handler validates the structured handoff.
+	var completedTaskID pgtype.UUID
+	err = r.pool.QueryRow(ctx, `
+		SELECT id
+		FROM agent_task_queue
+		WHERE issue_id = $1
+		  AND agent_id IN ($2, $3)
+		  AND status = 'completed'
+		  AND completed_at > $4
+		ORDER BY completed_at DESC, created_at DESC, id DESC
+		LIMIT 1
+	`, issue.ID, ownerID, reviewerID, issue.UpdatedAt).Scan(&completedTaskID)
+	if err == nil {
+		if err := r.handleTaskCompleted(ctx, events.Event{
+			Type:        protocol.EventTaskCompleted,
+			WorkspaceID: event.WorkspaceID,
+			TaskID:      util.UUIDToString(completedTaskID),
+		}); err != nil {
+			return fmt.Errorf("recover completed task before review dispatch: %w", err)
+		}
+		_, exists, err = r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, snapshot.ID)
+		if err != nil || exists {
+			return err
+		}
+		issue, err = r.taskSvc.Queries.GetIssue(ctx, issue.ID)
+		if err != nil {
+			return err
+		}
+		if issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) != issuestatus.InReview {
+			return nil
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("find completed task before review dispatch: %w", err)
+	}
+
+	_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+		ID:                issueEventID("workflow-review-recovery", snapshot),
+		Type:              "workflow.review_requested",
+		WorkspaceID:       event.WorkspaceID,
+		ProjectID:         util.UUIDToString(issue.ProjectID),
+		IssueID:           snapshot.ID,
+		ActorType:         "system",
+		OwnerAgentID:      util.UUIDToString(ownerID),
+		ReviewerAgentID:   util.UUIDToString(reviewerID),
+		AccountableUserID: accountableFromEvent(event),
+		Payload:           map[string]any{"status": issue.Status, "recovered": true},
+	})
+	return err
+}
+
+func (r *Runtime) onTaskCompleted(event events.Event) {
+	r.runAsync(autonomousPlanningTimeout, "autonomous workflow task completion failed", event, func(ctx context.Context) error {
+		return r.handleTaskCompleted(ctx, event)
+	})
+}
+
+func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) error {
+	task, issue, err := r.loadIssueTask(ctx, event)
+	if err != nil || !task.ID.Valid {
+		return err
+	}
+	// Some runtimes still mirror the structured handoff to the issue comment
+	// while returning a prose wrapper as the task result. Accept only an exact,
+	// task-linked JSON comment as a compatibility bridge; prose/comments remain
+	// non-authoritative.
+	if normalized, normalizeErr := r.normalizeTaskResultFromAgentComment(ctx, task, issue); normalizeErr != nil {
+		return normalizeErr
+	} else {
+		task = normalized
+	}
+	if err := r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeCompleted); err != nil {
+		return fmt.Errorf("record autonomous agent completion: %w", err)
+	}
+	if err := r.enqueueBrainLearning(ctx, task, issue); err != nil {
+		slog.Warn("project brain learning enqueue failed", "task_id", util.UUIDToString(task.ID), "error", err)
+	}
+	if handled, usageErr := r.accountProjectTaskUsage(ctx, task, issue); usageErr != nil {
+		return fmt.Errorf("account autonomous project task usage: %w", usageErr)
+	} else if handled {
+		return nil
+	}
+	if handled, artifactErr := r.recordProjectTaskArtifact(ctx, task, issue); artifactErr != nil {
+		return fmt.Errorf("record autonomous project task artifact: %w", artifactErr)
+	} else if handled {
+		return nil
+	}
+	if handled, projectErr := r.completeNonImplementationProjectNode(ctx, task, issue); handled {
+		return projectErr
+	}
+
+	issueID := util.UUIDToString(issue.ID)
+	run, exists, err := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, issueID)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+		if effective != issuestatus.InProgress && effective != issuestatus.InReview {
+			return nil
+		}
+		ownerHint := task.AgentID
+		if effective == issuestatus.InReview {
+			// The completed agent is the reviewer in this state, not the
+			// implementation owner used to resolve the workflow team.
+			ownerHint = pgtype.UUID{}
+		}
+		resolvedOwnerID, reviewerID, resolveErr := r.resolveTeam(ctx, issue, ownerHint)
+		if resolveErr != nil {
+			if effective == issuestatus.InReview && issue.ProjectID.Valid && r.team != nil {
+				team, exists, teamErr := r.team.FindProject(ctx, issue.WorkspaceID, issue.ProjectID)
+				if teamErr == nil && exists {
+					if configuredReviewer, _, ok := team.AgentByFamily("review"); ok && configuredReviewer == task.AgentID {
+						reviewerID = configuredReviewer
+						resolveErr = nil
+					}
+				}
+			}
+		}
+		if resolveErr != nil {
+			slog.Info("autonomous workflow not started from completion: team unavailable",
+				"issue_id", issueID,
+				"agent_id", util.UUIDToString(task.AgentID),
+				"error", resolveErr,
+			)
+			return nil
+		}
+		if effective == issuestatus.InReview && reviewerID == task.AgentID {
+			verdict, contractErr := parseReviewVerdict(task.Result)
+			if contractErr != nil {
+				_ = r.recordContractViolation(ctx, task, issue, "review_verdict", contractErr)
+				_, err = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked)
+				return err
+			}
+			if err := r.persistReviewVerdict(ctx, workflow.Run{}, task, issue, verdict); err != nil {
+				return fmt.Errorf("persist standalone structured review verdict: %w", err)
+			}
+			status := issuestatus.Done
+			if verdict.Verdict == "changes_requested" {
+				status = issuestatus.InProgress
+				_ = r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeReviewRejected)
+			}
+			_, err = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, status)
+			return err
+		}
+
+		eventType := "implementation.completed"
+		eventID := "implementation-completed:" + util.UUIDToString(task.ID)
+		if resolvedOwnerID == task.AgentID {
+			output, contractErr := parseImplementationHandoff(task.Result)
+			if contractErr != nil {
+				_ = r.recordContractViolation(ctx, task, issue, "implementation_handoff", contractErr)
+				_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+					ID:                "implementation-contract-failed:" + util.UUIDToString(task.ID),
+					Type:              "implementation.failed",
+					WorkspaceID:       event.WorkspaceID,
+					ProjectID:         util.UUIDToString(issue.ProjectID),
+					IssueID:           issueID,
+					OwnerAgentID:      util.UUIDToString(resolvedOwnerID),
+					ReviewerAgentID:   util.UUIDToString(reviewerID),
+					AccountableUserID: util.UUIDToString(task.AccountableUserID),
+					Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "contract_error": contractErr.Error()},
+				})
+				return err
+			}
+			if err := r.persistImplementationHandoff(ctx, workflow.Run{}, task, issue, output); err != nil {
+				return fmt.Errorf("persist initial implementation handoff: %w", err)
+			}
+		}
+		if resolvedOwnerID != task.AgentID {
+			// A Mika-owned legacy/manual task completed before the technology
+			// team took ownership. Start the deterministic workflow instead of
+			// treating Mika's coordination run as implementation evidence.
+			eventType = "workflow.started"
+			eventID = "workflow-start-after-coordinator:" + util.UUIDToString(task.ID)
+		}
+		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                eventID,
+			Type:              eventType,
+			WorkspaceID:       event.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           issueID,
+			OwnerAgentID:      util.UUIDToString(resolvedOwnerID),
+			ReviewerAgentID:   util.UUIDToString(reviewerID),
+			AccountableUserID: util.UUIDToString(task.AccountableUserID),
+			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+		})
+		return err
+	}
+
+	if retryEvent := blockedRetryCompletionEvent(run, task); retryEvent != "" {
+		// Validate and persist the task contract before changing Project OS state.
+		// A malformed retry must leave both the node and workflow blocked.
+		eventType := retryEvent
+		switch retryEvent {
+		case "implementation.retry_completed":
+			output, contractErr := parseImplementationHandoff(task.Result)
+			if contractErr != nil {
+				_ = r.recordContractViolation(ctx, task, issue, "implementation_handoff", contractErr)
+				return nil
+			}
+			if err := r.persistImplementationHandoff(ctx, run, task, issue, output); err != nil {
+				return fmt.Errorf("persist retry implementation handoff: %w", err)
+			}
+		case "review.retry_completed":
+			verdict, contractErr := parseReviewVerdict(task.Result)
+			if contractErr != nil {
+				_ = r.recordContractViolation(ctx, task, issue, "review_verdict", contractErr)
+				return nil
+			}
+			if err := r.persistReviewVerdict(ctx, run, task, issue, verdict); err != nil {
+				return fmt.Errorf("persist retry review verdict: %w", err)
+			}
+			if verdict.Verdict == "changes_requested" {
+				_ = r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeReviewRejected)
+				eventType = "review.retry_changes_requested"
+			}
+		}
+
+		if r.projectStore != nil {
+			resumed, resumeErr := r.projectStore.ResumeNodeForWorkflowRetry(ctx, issue.WorkspaceID, issue.ID)
+			if resumeErr != nil {
+				return fmt.Errorf("resume autonomous project node from task retry: %w", resumeErr)
+			}
+			if !resumed {
+				slog.Info("autonomous workflow task retry completed but project node policy remains blocked",
+					"issue_id", issueID,
+					"task_id", util.UUIDToString(task.ID),
+					"event", eventType,
+				)
+				return nil
+			}
+		}
+
+		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                eventType + ":" + util.UUIDToString(task.ID),
+			Type:              eventType,
+			WorkspaceID:       event.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           issueID,
+			AccountableUserID: util.UUIDToString(task.AccountableUserID),
+			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "recovered_from": issuestatus.Blocked},
+		})
+		return err
+	}
+	switch {
+	case run.State == issuestatus.InProgress && run.OwnerAgentID == util.UUIDToString(task.AgentID):
+		output, contractErr := parseImplementationHandoff(task.Result)
+		if contractErr != nil {
+			_ = r.recordContractViolation(ctx, task, issue, "implementation_handoff", contractErr)
+			_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                "implementation-contract-failed:" + util.UUIDToString(task.ID),
+				Type:              "implementation.failed",
+				WorkspaceID:       event.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           issueID,
+				AccountableUserID: util.UUIDToString(task.AccountableUserID),
+				Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "contract_error": contractErr.Error()},
+			})
+			return err
+		}
+		if err := r.persistImplementationHandoff(ctx, run, task, issue, output); err != nil {
+			return fmt.Errorf("persist implementation handoff: %w", err)
+		}
+		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                "implementation-completed:" + util.UUIDToString(task.ID),
+			Type:              "implementation.completed",
+			WorkspaceID:       event.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           issueID,
+			AccountableUserID: util.UUIDToString(task.AccountableUserID),
+			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+		})
+		return err
+
+	case run.State == issuestatus.InReview && run.ReviewerAgentID == util.UUIDToString(task.AgentID):
+		verdict, contractErr := parseReviewVerdict(task.Result)
+		if contractErr != nil {
+			_ = r.recordContractViolation(ctx, task, issue, "review_verdict", contractErr)
+			_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+				ID:                "review-contract-failed:" + util.UUIDToString(task.ID),
+				Type:              "review.failed",
+				WorkspaceID:       event.WorkspaceID,
+				ProjectID:         util.UUIDToString(issue.ProjectID),
+				IssueID:           issueID,
+				AccountableUserID: util.UUIDToString(task.AccountableUserID),
+				Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "contract_error": contractErr.Error()},
+			})
+			return err
+		}
+		if err := r.persistReviewVerdict(ctx, run, task, issue, verdict); err != nil {
+			return fmt.Errorf("persist structured review verdict: %w", err)
+		}
+
+		eventType := "review.completed"
+		eventID := "review-approved:" + util.UUIDToString(task.ID)
+		if verdict.Verdict == "changes_requested" {
+			_ = r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeReviewRejected)
+			eventType = "review.changes_requested"
+			eventID = "review-changes-requested:" + util.UUIDToString(task.ID)
+			if run.ReviewCycles >= r.config.MaxReviewCycles {
+				eventType = "review.exhausted"
+				eventID = "review-exhausted:" + util.UUIDToString(task.ID)
+			} else {
+				run, err = r.refreshRunTeam(ctx, run, issue, util.UUIDToString(task.AccountableUserID))
+				if err != nil {
+					return fmt.Errorf("refresh team before structured review retry: %w", err)
+				}
+			}
+		}
+		_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+			ID:                eventID,
+			Type:              eventType,
+			WorkspaceID:       event.WorkspaceID,
+			ProjectID:         util.UUIDToString(issue.ProjectID),
+			IssueID:           issueID,
+			AccountableUserID: util.UUIDToString(task.AccountableUserID),
+			Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "verdict": verdict.Verdict},
+		})
+		return err
+	}
+	return nil
+}
+
+func (r *Runtime) normalizeTaskResultFromAgentComment(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) (db.AgentTaskQueue, error) {
+	var content []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT content
+		FROM comment
+		WHERE source_task_id = $1
+		  AND author_type = 'agent'
+		  AND author_id = $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, task.ID, task.AgentID).Scan(&content)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return task, nil
+	}
+	if err != nil {
+		return task, err
+	}
+	setCandidate := func(candidate json.RawMessage) bool {
+		if _, reviewErr := parseReviewVerdict(candidate); reviewErr == nil {
+			task.Result = candidate
+			return true
+		}
+		if _, handoffErr := parseImplementationHandoff(candidate); handoffErr == nil {
+			task.Result = candidate
+			return true
+		}
+		return false
+	}
+	if setCandidate(json.RawMessage(bytes.TrimSpace(content))) {
+		return task, nil
+	}
+	if quality, qualityErr := r.loadNodeQualityByIssue(ctx, issue.WorkspaceID, issue.ID); qualityErr == nil && quality.Kind == projectorchestration.NodeQA && structuredQAHandoff(content) {
+		task.Result = bytes.TrimSpace(content)
+		return task, nil
+	}
+	if output, outputErr := contractTaskOutput(task.Result); outputErr == nil {
+		_ = setCandidate(extractEmbeddedContractJSONObject(output))
+	}
+	return task, nil
+}
+
+func (r *Runtime) onTaskFailed(event events.Event) {
+	if retryPending(event.Payload) {
+		return
+	}
+	r.runAsync(20*time.Second, "autonomous workflow task failure failed", event, func(ctx context.Context) error {
+		return r.handleTaskFailed(ctx, event)
+	})
+}
+
+func (r *Runtime) handleTaskFailed(ctx context.Context, event events.Event) error {
+	task, issue, err := r.loadIssueTask(ctx, event)
+	if err != nil || !task.ID.Valid {
+		return err
+	}
+	if err := r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeFailed); err != nil {
+		return fmt.Errorf("record autonomous agent failure: %w", err)
+	}
+	if handled, projectErr := r.failProjectNodeTask(ctx, task, issue); handled {
+		return projectErr
+	}
+	run, exists, err := r.store.FindRun(ctx, softwareDevelopmentWorkflow, event.WorkspaceID, util.UUIDToString(issue.ID))
+	if err != nil || !exists {
+		return err
+	}
+
+	eventType := ""
+	switch {
+	case run.State == issuestatus.InProgress && run.OwnerAgentID == util.UUIDToString(task.AgentID):
+		eventType = "implementation.failed"
+	case run.State == issuestatus.InReview && run.ReviewerAgentID == util.UUIDToString(task.AgentID):
+		eventType = "review.failed"
+	default:
+		return nil
+	}
+	_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+		ID:                eventType + ":" + util.UUIDToString(task.ID),
+		Type:              eventType,
+		WorkspaceID:       event.WorkspaceID,
+		ProjectID:         util.UUIDToString(issue.ProjectID),
+		IssueID:           util.UUIDToString(issue.ID),
+		AccountableUserID: util.UUIDToString(task.AccountableUserID),
+		Payload:           map[string]any{"task_id": util.UUIDToString(task.ID)},
+	})
+	return err
+}
+
+func (r *Runtime) loadIssueTask(ctx context.Context, event events.Event) (db.AgentTaskQueue, db.Issue, error) {
+	taskID := event.TaskID
+	if taskID == "" {
+		if payload, ok := event.Payload.(map[string]any); ok {
+			taskID, _ = payload["task_id"].(string)
+		}
+	}
+	if taskID == "" {
+		return db.AgentTaskQueue{}, db.Issue{}, nil
+	}
+	id, err := util.ParseUUID(taskID)
+	if err != nil {
+		return db.AgentTaskQueue{}, db.Issue{}, err
+	}
+	task, err := r.taskSvc.Queries.GetAgentTask(ctx, id)
+	if err != nil {
+		return db.AgentTaskQueue{}, db.Issue{}, err
+	}
+	if !task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
+		return db.AgentTaskQueue{}, db.Issue{}, nil
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		return db.AgentTaskQueue{}, db.Issue{}, err
+	}
+	return task, issue, nil
+}
+
+func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgtype.UUID) (pgtype.UUID, pgtype.UUID, error) {
+	ownerID := ownerHint
+	preferredSquad := pgtype.UUID{}
+
+	if !ownerID.Valid {
+		switch {
+		case issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid:
+			ownerID = issue.AssigneeID
+		case issue.AssigneeType.Valid && issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid:
+			preferredSquad = issue.AssigneeID
+			if err := r.pool.QueryRow(ctx, `
+				SELECT leader_id
+				FROM squad
+				WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
+			`, issue.AssigneeID, issue.WorkspaceID).Scan(&ownerID); err != nil {
+				return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf("resolve squad leader: %w", err)
+			}
+		}
+	}
+
+	if issue.ProjectID.Valid && r.team != nil {
+		existingTeam, teamExists, teamErr := r.team.FindProject(ctx, issue.WorkspaceID, issue.ProjectID)
+		if teamErr != nil {
+			return pgtype.UUID{}, pgtype.UUID{}, teamErr
+		}
+
+		assignedToGeneratedSquad := teamExists && preferredSquad.Valid && preferredSquad == existingTeam.SquadID
+		ownerIsMika := ownerID.Valid && r.team.IsMikaAgent(ctx, issue.WorkspaceID, ownerID)
+		ownerRole := ""
+		ownerIsGenerated := false
+		ownerIsGeneratedImplementation := false
+		if teamExists && ownerID.Valid {
+			if role, generated := existingTeam.RoleForAgent(ownerID); generated {
+				ownerRole = role
+				ownerIsGenerated = true
+				if spec, ok := existingTeam.RoleSpec(role); ok {
+					ownerIsGeneratedImplementation = teamprovision.IsImplementationFamily(spec.Family)
+				}
+			}
+		}
+
+		if ownerIsGenerated && !ownerIsGeneratedImplementation {
+			// Product/architecture/QA/review work is not an implementation
+			// transition. Do not reinterpret those tasks as code delivery.
+			return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf(
+				"issue is assigned to non-implementation project role %q", ownerRole,
+			)
+		}
+
+		// The LLM is authoritative for generated-team delivery ownership.
+		// Re-evaluate every new issue revision (analysis is DB-cached) so an
+		// existing backend assignment can become security/devops/etc. when the
+		// new requirement needs a specialist the team did not have before.
+		if !ownerID.Valid || ownerIsMika || assignedToGeneratedSquad || ownerIsGeneratedImplementation {
+			implementationID, team, err := r.team.ImplementationAgent(ctx, issue)
+			if err != nil {
+				return pgtype.UUID{}, pgtype.UUID{}, err
+			}
+			reviewerID, _, ok := team.AgentByFamily("review")
+			if !ok {
+				return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no review-family agent")
+			}
+			if implementationID == reviewerID {
+				return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project implementation and review agents must differ")
+			}
+			return implementationID, reviewerID, nil
+		}
+
+		// A human explicitly assigned a user-created agent: keep that override,
+		// but still let the LLM-provisioned project team supply the independent
+		// reviewer. If the project has no team yet, create its LLM plan now.
+		if !teamExists {
+			var err error
+			existingTeam, err = r.team.EnsureProject(ctx, issue.WorkspaceID, issue.ProjectID)
+			if err != nil {
+				return pgtype.UUID{}, pgtype.UUID{}, err
+			}
+			teamExists = true
+		}
+		if teamExists {
+			if reviewerID, _, ok := existingTeam.AgentByFamily("review"); ok && reviewerID != ownerID {
+				return ownerID, reviewerID, nil
+			}
+		}
+	}
+
+	if !ownerID.Valid {
+		return pgtype.UUID{}, pgtype.UUID{}, errors.New("workflow owner agent is missing")
+	}
+
+	reviewerID, err := r.resolveReviewer(ctx, issue.WorkspaceID, ownerID, preferredSquad)
+	if err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	return ownerID, reviewerID, nil
+}
+
+func (r *Runtime) resolveReviewer(ctx context.Context, workspaceID, ownerID, preferredSquad pgtype.UUID) (pgtype.UUID, error) {
+	if r.config.ReviewerAgentID != "" {
+		configured, err := util.ParseUUID(r.config.ReviewerAgentID)
+		if err != nil {
+			return pgtype.UUID{}, fmt.Errorf("parse configured reviewer agent: %w", err)
+		}
+		var reviewer pgtype.UUID
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent
+			WHERE id = $1
+			  AND workspace_id = $2
+			  AND archived_at IS NULL
+			  AND kind = 'user'
+			  AND runtime_id IS NOT NULL
+		`, configured, workspaceID).Scan(&reviewer)
+		if err != nil {
+			return pgtype.UUID{}, fmt.Errorf("configured reviewer is not an active runnable agent in this workspace: %w", err)
+		}
+		if reviewer == ownerID {
+			return pgtype.UUID{}, errors.New("configured reviewer must be different from workflow owner")
+		}
+		return reviewer, nil
+	}
+
+	var reviewer pgtype.UUID
+	err := r.pool.QueryRow(ctx, `
+		SELECT a.id
+		FROM squad_member reviewer_member
+		JOIN squad s ON s.id = reviewer_member.squad_id
+		JOIN agent a
+		  ON reviewer_member.member_type = 'agent'
+		 AND a.id = reviewer_member.member_id
+		WHERE s.workspace_id = $1
+		  AND s.archived_at IS NULL
+		  AND lower(trim(reviewer_member.role)) = lower(trim($2))
+		  AND a.archived_at IS NULL
+		  AND a.kind = 'user'
+		  AND a.runtime_id IS NOT NULL
+		  AND a.id <> $3
+		  AND (
+			($4::uuid IS NOT NULL AND s.id = $4)
+			OR EXISTS (
+				SELECT 1
+				FROM squad_member owner_member
+				WHERE owner_member.squad_id = s.id
+				  AND owner_member.member_type = 'agent'
+				  AND owner_member.member_id = $3
+			)
+		  )
+		ORDER BY
+		  CASE WHEN $4::uuid IS NOT NULL AND s.id = $4 THEN 0 ELSE 1 END,
+		  reviewer_member.created_at ASC,
+		  a.created_at ASC
+		LIMIT 1
+	`, workspaceID, r.config.ReviewerRole, ownerID, nullableUUID(preferredSquad)).Scan(&reviewer)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, fmt.Errorf("no runnable squad agent has role %q; set that squad-member role or MULTICA_AUTONOMOUS_REVIEWER_AGENT_ID", r.config.ReviewerRole)
+	}
+	if err != nil {
+		return pgtype.UUID{}, fmt.Errorf("resolve reviewer role: %w", err)
+	}
+	return reviewer, nil
+}
+
+// ExecuteWorkflowAction maps durable actions onto Multica's normal task and
+// issue services rather than bypassing their safety gates.
+func (r *Runtime) ExecuteWorkflowAction(ctx context.Context, run workflow.Run, pending workflow.PendingAction) error {
+	issueID, err := util.ParseUUID(run.IssueID)
+	if err != nil {
+		return err
+	}
+	if expected := strings.TrimSpace(pending.Action.Params["when_state"]); expected != "" && run.State != expected {
+		// A slow/reclaimed action from an older transition is obsolete once the
+		// run has advanced. Treating it as complete prevents a crash window from
+		// dispatching yesterday's owner/reviewer task again.
+		return nil
+	}
+	switch pending.Action.Type {
+	case "set_issue_status":
+		status := strings.TrimSpace(pending.Action.Params["status"])
+		if status == "" {
+			return errors.New("set_issue_status action is missing status")
+		}
+		_, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, status)
+		return err
+
+	case "trigger_agent":
+		selector := strings.TrimSpace(pending.Action.Params["selector"])
+		targetID := ""
+		switch selector {
+		case "owner":
+			targetID = run.OwnerAgentID
+		case "reviewer":
+			targetID = run.ReviewerAgentID
+		default:
+			return fmt.Errorf("unsupported workflow agent selector %q", selector)
+		}
+		if targetID == "" {
+			return fmt.Errorf("workflow %s agent is not resolved", selector)
+		}
+
+		agentID, err := util.ParseUUID(targetID)
+		if err != nil {
+			return err
+		}
+		accountableID := pgtype.UUID{}
+		if run.AccountableUserID != "" {
+			accountableID, err = util.ParseUUID(run.AccountableUserID)
+			if err != nil {
+				return err
+			}
+		}
+		issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+		if err != nil {
+			return err
+		}
+
+		marker := "[workflow-action:" + pending.ID + "]"
+		var existingTaskID pgtype.UUID
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND agent_id = $2
+			  AND handoff_note LIKE $3 || '%'
+			ORDER BY created_at DESC
+			LIMIT 1
+		`, issueID, agentID, marker).Scan(&existingTaskID)
+		if err == nil {
+			_ = r.bindAssignmentHandoffTask(ctx, pending.ID, existingTaskID)
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check workflow dispatch receipt: %w", err)
+		}
+		// A repaired project node can already be executing the same issue for
+		// this agent while an older workflow action is still being replayed.
+		// The pending-task unique index intentionally excludes running rows, so
+		// coalesce here before creating a second serialized task.
+		err = r.pool.QueryRow(ctx, `
+			SELECT id
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND agent_id = $2
+			  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+			ORDER BY created_at DESC
+			LIMIT 1
+		`, issueID, agentID).Scan(&existingTaskID)
+		if err == nil {
+			slog.Info("workflow dispatch coalesced with active issue task",
+				"issue_id", util.UUIDToString(issueID),
+				"agent_id", util.UUIDToString(agentID),
+				"task_id", util.UUIDToString(existingTaskID),
+			)
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check active workflow task: %w", err)
+		}
+
+		envelope, err := r.prepareAssignmentHandoff(ctx, run, pending, issue, selector, agentID)
+		if err != nil {
+			return fmt.Errorf("prepare structured workflow handoff: %w", err)
+		}
+		rawHandoff, err := json.Marshal(envelope)
+		if err != nil {
+			return fmt.Errorf("encode structured workflow handoff: %w", err)
+		}
+		handoff := marker + "\n" + string(rawHandoff)
+		queued, err := r.taskSvc.EnqueueTaskForWorkflow(
+			ctx,
+			issue,
+			agentID,
+			accountableID,
+			handoff,
+		)
+		if errors.Is(err, service.ErrDuplicatePendingTask) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return r.bindAssignmentHandoffTask(ctx, pending.ID, queued.ID)
+
+	default:
+		return fmt.Errorf("unsupported workflow action type %q", pending.Action.Type)
+	}
+}
+
+// WorkflowActionExhausted moves the issue to Blocked after the durable action
+// retry budget is exhausted. This is intentionally best-effort: the original
+// failure is already durably recorded on autonomous_workflow_action.
+func (r *Runtime) WorkflowActionExhausted(ctx context.Context, run workflow.Run, pending workflow.PendingAction, cause error) {
+	issueID, err := util.ParseUUID(run.IssueID)
+	if err != nil {
+		return
+	}
+	if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, issuestatus.Blocked); err != nil {
+		slog.Error("workflow exhaustion could not block issue",
+			"run_id", run.ID,
+			"action_id", pending.ID,
+			"cause", cause,
+			"error", err,
+		)
+	}
+}
+
+type issueSnapshot struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Revision int64  `json:"revision"`
+}
+
+func issueSnapshotFromEvent(event events.Event) (issueSnapshot, string, error) {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		return issueSnapshot{}, "", nil
+	}
+	raw, err := json.Marshal(payload["issue"])
+	if err != nil {
+		return issueSnapshot{}, "", err
+	}
+	var snapshot issueSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return issueSnapshot{}, "", err
+	}
+	prevStatus, _ := payload["prev_status"].(string)
+	return snapshot, prevStatus, nil
+}
+
+func projectIDFromEvent(event events.Event) string {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if id, _ := payload["project_id"].(string); id != "" {
+		return id
+	}
+	raw, err := json.Marshal(payload["project"])
+	if err != nil {
+		return ""
+	}
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &project); err != nil {
+		return ""
+	}
+	return project.ID
+}
+
+func issueEventID(prefix string, snapshot issueSnapshot) string {
+	return fmt.Sprintf("%s:%s:%d:%s", prefix, snapshot.ID, snapshot.Revision, snapshot.Status)
+}
+
+func accountableFromEvent(event events.Event) string {
+	if event.ActorType == "member" {
+		return event.ActorID
+	}
+	return ""
+}
+
+func blockedRetryCompletionEvent(run workflow.Run, task db.AgentTaskQueue) string {
+	if run.State != issuestatus.Blocked {
+		return ""
+	}
+	// retry_of_task_id is an infrastructure/system retry; rerun_of_task_id is
+	// the explicit execution-log Retry action. Both are durable evidence that
+	// this completion is a successor of prior work rather than unrelated work.
+	if !task.RetryOfTaskID.Valid && !task.RerunOfTaskID.Valid {
+		return ""
+	}
+	agentID := util.UUIDToString(task.AgentID)
+	switch {
+	case agentID != "" && agentID == run.OwnerAgentID:
+		return "implementation.retry_completed"
+	case agentID != "" && agentID == run.ReviewerAgentID:
+		return "review.retry_completed"
+	default:
+		return ""
+	}
+}
+
+func isLegacyBlockedImplementationCompletion(run workflow.Run, task db.AgentTaskQueue) bool {
+	return run.State == issuestatus.Blocked &&
+		run.OwnerAgentID != "" &&
+		run.OwnerAgentID == util.UUIDToString(task.AgentID) &&
+		!task.RetryOfTaskID.Valid &&
+		!task.RerunOfTaskID.Valid
+}
+
+func retryPending(payload any) bool {
+	fields, ok := payload.(map[string]any)
+	if !ok {
+		return false
+	}
+	value, _ := fields["retry_pending"].(bool)
+	return value
+}
+
+func nullableUUID(value pgtype.UUID) any {
+	if !value.Valid {
+		return nil
+	}
+	return value
+}

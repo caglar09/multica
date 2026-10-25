@@ -24,6 +24,7 @@ import {
   CircleCheck,
   Milestone,
   MoreHorizontal,
+  Network,
   PanelRight,
   Pin,
   PinOff,
@@ -36,6 +37,7 @@ import {
 import { BreadcrumbHeader, type BreadcrumbSegment } from "../../layout/breadcrumb-header";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
+import { Input } from "@multica/ui/components/ui/input";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
@@ -65,7 +67,7 @@ import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory
 import { contentReferencesAttachment } from "@multica/core/types";
 import { STATUS_CONFIG } from "@multica/core/issues/config";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
-import { useUpdateIssue } from "@multica/core/issues/mutations";
+import { useCreateIssueDependency, useDeleteIssueDependency, useUpdateIssue } from "@multica/core/issues/mutations";
 import { toast } from "sonner";
 import { errorCode } from "@multica/core/api";
 import { StatusIcon, PriorityIcon, StatusPicker, PriorityPicker, StagePicker, StartDatePicker, DueDatePicker, AssigneePicker, LabelPicker } from ".";
@@ -103,7 +105,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useModalStore } from "@multica/core/modals";
-import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
+import { issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { issueLabelsOptions } from "@multica/core/labels";
@@ -1155,7 +1157,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     members.find((m) => m.user_id === user?.id)?.role ?? null;
   const canModerateComments =
     currentUserRole === "owner" || currentUserRole === "admin";
-  const { data: allIssues = [] } = useQuery(issueListOptions(wsId));
   const { getActorName } = useActorName();
   const resolveStatusLabel = useStatusLabel(wsId);
   // The glyph set is per CATEGORY (MUL-6243), so a status-change entry for a
@@ -1200,6 +1201,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const [parentIssueOpen, setParentIssueOpen] = useState(true);
   const [pullRequestsOpen, setPullRequestsOpen] = useState(true);
   const [metadataOpen, setMetadataOpen] = useState(false);
+  const [dependencyIssueReference, setDependencyIssueReference] = useState("");
+  const createDependency = useCreateIssueDependency();
+  const deleteDependency = useDeleteIssueDependency();
   const githubSettings = useGitHubSettings();
 
   // Per-issue, per-session set of optional properties currently visible in
@@ -1355,21 +1359,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // landing effect below replays on an already-mounted detail.
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
 
-  // Issue data from TQ — uses detail query, seeded from list cache if available.
-  // Only seed when description is present; the list API omits it, so a partial
-  // list row must not masquerade as a hydrated issue detail.
+  // Issue detail is authoritative; do not mount the workspace-wide issue list
+  // just to seed this query, because realtime list invalidations are frequent.
   const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery({
     ...issueDetailOptions(wsId, id),
-    // List rows and issue-created realtime payloads intentionally omit the
-    // detail-only source-context snapshot. They can still seed this query via
-    // initialData, so always reconcile with the authoritative detail endpoint
-    // when the detail view mounts. Without this, the global Infinity staleTime
-    // hides source context until a full page refresh.
     refetchOnMount: "always",
-    initialData: () => {
-      const cached = allIssues.find((i) => i.id === id);
-      return cached?.description != null ? cached : undefined;
-    },
   });
   const descriptionSourceId = `description:${id}`;
   const descriptionAnnotations = useCommentAnnotations({
@@ -1395,6 +1389,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         : {}),
     });
   }, [issue, openModal]);
+
+  const addIssueDependency = () => {
+    const reference = dependencyIssueReference.trim();
+    if (!issue || !reference || createDependency.isPending) return;
+    createDependency.mutate(
+      { issueId: issue.id, data: { depends_on_issue_id: reference } },
+      {
+        onSuccess: () => {
+          setDependencyIssueReference("");
+          toast.success("Dependency added");
+        },
+        onError: (error) =>
+          toast.error(error instanceof Error ? error.message : "Could not add dependency"),
+      },
+    );
+  };
 
   // Record recent visit
   const recordVisit = useRecentIssuesStore((s) => s.recordVisit);
@@ -1783,7 +1793,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { data: parentIssue = null } = useQuery({
     ...issueDetailOptions(wsId, parentIssueId ?? ""),
     enabled: !!parentIssueId,
-    initialData: () => allIssues.find((i) => i.id === parentIssueId),
   });
 
   // Project segment in the breadcrumb. The issue's project_id is the source of
@@ -2530,6 +2539,86 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           </div>}
         </div>
       )}
+
+      {/* Dependencies — the directed order is visible on the issue itself,
+          while the server remains the authority that prevents blocked work
+          from being enqueued or progressed. */}
+      <div>
+        <div className="flex items-center gap-1 px-2 py-1 mb-2 text-caption font-medium">
+          <Network className="!size-3 text-muted-foreground" />
+          <span>Dependencies</span>
+          {issue.is_blocked ? (
+            <span className="ml-auto rounded bg-destructive/10 px-1.5 py-0.5 text-[11px] text-destructive">
+              Blocked · {issue.unresolved_blocker_count ?? 0}
+            </span>
+          ) : null}
+        </div>
+        <div className="space-y-2 pl-2">
+          {(issue.blocked_by?.length ?? 0) > 0 ? (
+            <div>
+              <div className="mb-1 text-caption text-muted-foreground">Blocked by</div>
+              <div className="space-y-1">
+                {issue.blocked_by?.map((dependency) => (
+                  <div key={dependency.id} className="group flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-accent/50">
+                    <span className={`size-2 shrink-0 rounded-full ${dependency.related_issue.done ? "bg-emerald-500" : "bg-destructive"}`} />
+                    <AppLink href={paths.issueDetail(dependency.related_issue.id)} className="min-w-0 flex-1 text-caption">
+                      <span className="mr-1 text-muted-foreground">{dependency.related_issue.identifier}</span>
+                      <span className="truncate group-hover:text-foreground">{dependency.related_issue.title}</span>
+                    </AppLink>
+                    <button
+                      type="button"
+                      className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                      aria-label="Remove dependency"
+                      title="Remove dependency"
+                      disabled={deleteDependency.isPending}
+                      onClick={() =>
+                        deleteDependency.mutate(
+                          { issueId: issue.id, dependencyId: dependency.id },
+                          { onError: () => toast.error("Could not remove dependency") },
+                        )
+                      }
+                    >
+                      <Unlink className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {(issue.blocks?.length ?? 0) > 0 ? (
+            <div>
+              <div className="mb-1 text-caption text-muted-foreground">Blocks</div>
+              <div className="space-y-1">
+                {issue.blocks?.map((dependency) => (
+                  <AppLink key={dependency.id} href={paths.issueDetail(dependency.issue_id)} className="flex items-center gap-1.5 rounded-md px-2 py-1 text-caption hover:bg-accent/50">
+                    <span className={`size-2 shrink-0 rounded-full ${dependency.related_issue.done ? "bg-emerald-500" : "bg-muted-foreground"}`} />
+                    <span className="text-muted-foreground">{dependency.related_issue.identifier}</span>
+                    <span className="truncate">{dependency.related_issue.title}</span>
+                  </AppLink>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <form
+            className="flex gap-1.5"
+            onSubmit={(event) => {
+              event.preventDefault();
+              addIssueDependency();
+            }}
+          >
+            <Input
+              value={dependencyIssueReference}
+              onChange={(event) => setDependencyIssueReference(event.target.value)}
+              placeholder="Issue identifier (e.g. MUL-123)"
+              className="h-8 text-caption"
+              aria-label="Issue identifier to block on"
+            />
+            <Button type="submit" size="sm" variant="outline" disabled={!dependencyIssueReference.trim() || createDependency.isPending}>
+              Add
+            </Button>
+          </form>
+        </div>
+      </div>
 
       {/* Pull requests — hidden when the workspace disables the PR sidebar
           (or the GitHub master switch is off). Backend data is kept either

@@ -12,6 +12,11 @@ type ModalType =
   | "issue-add-child"
   | "issue-delete-confirm"
   | "issue-run-confirm"
+  | "production-deploy-confirm"
+  | "vercel-target-attach"
+  | "promote-deployment-confirm"
+  | "rollback-deployment-confirm"
+  | "disconnect-provider-confirm"
   | null;
 
 export type IssueLimitRecoveryReason = "issue_limit" | "autopilot_quota";
@@ -21,7 +26,10 @@ interface ModalStore {
   data: Record<string, unknown> | null;
   issueLimitRecoveryWorkspaceId: string | null;
   issueLimitRecoveryReason: IssueLimitRecoveryReason;
-  open: (modal: NonNullable<ModalType>, data?: Record<string, unknown> | null) => void;
+  open: (
+    modal: NonNullable<ModalType>,
+    data?: Record<string, unknown> | null,
+  ) => void;
   close: () => void;
   showIssueLimitRecovery: (
     workspaceId: string,

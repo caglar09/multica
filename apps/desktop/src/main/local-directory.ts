@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow } from "electron";
+import { ipcMain, dialog, BrowserWindow, shell } from "electron";
 import { access, stat } from "fs/promises";
 import { constants as fsConstants } from "fs";
 import { basename, dirname, isAbsolute, join } from "path";
@@ -35,6 +35,12 @@ export interface ValidateLocalDirectoryResult {
   is_git_repo?: boolean;
 }
 
+export interface OpenLocalDirectoryResult {
+  ok: boolean;
+  reason?: "not_absolute" | "not_found" | "not_a_directory" | "error";
+  error?: string;
+}
+
 async function validateLocalDirectory(
   path: string,
 ): Promise<ValidateLocalDirectoryResult> {
@@ -60,6 +66,38 @@ async function validateLocalDirectory(
     return { ok: false, reason: "not_writable" };
   }
   return { ok: true, is_git_repo: await isInsideGitWorkTree(path) };
+}
+
+/**
+ * Open a renderer-supplied directory in the operating system's file manager.
+ *
+ * The renderer may only ask us to open existing directories. In particular,
+ * files are rejected before reaching `shell.openPath` so this IPC surface
+ * cannot be repurposed to launch arbitrary executables or documents.
+ */
+export async function openLocalDirectory(
+  path: unknown,
+): Promise<OpenLocalDirectoryResult> {
+  if (typeof path !== "string" || !path || !isAbsolute(path)) {
+    return { ok: false, reason: "not_absolute" };
+  }
+
+  try {
+    const st = await stat(path);
+    if (!st.isDirectory()) return { ok: false, reason: "not_a_directory" };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { ok: false, reason: "not_found" };
+    return { ok: false, reason: "error", error: errorMessage(err) };
+  }
+
+  try {
+    const error = await shell.openPath(path);
+    if (error) return { ok: false, reason: "error", error };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: "error", error: errorMessage(err) };
+  }
 }
 
 /**
@@ -124,5 +162,11 @@ export function setupLocalDirectory(
     "local-directory:validate",
     (_event, path: string): Promise<ValidateLocalDirectoryResult> =>
       validateLocalDirectory(path),
+  );
+
+  ipcMain.handle(
+    "local-directory:open",
+    (_event, path: unknown): Promise<OpenLocalDirectoryResult> =>
+      openLocalDirectory(path),
   );
 }

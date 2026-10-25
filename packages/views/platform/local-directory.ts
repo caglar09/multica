@@ -4,6 +4,9 @@
 // SSR-render on web (where `window.desktopAPI` is undefined) and degrade
 // gracefully to no-op promises instead of crashing.
 
+const DEFAULT_LOCAL_DAEMON_HEALTH_PORT = 19514;
+const MAX_LOCAL_DAEMON_HEALTH_PORT = 20514;
+
 export type PickDirectoryResult = {
   ok: boolean;
   path?: string;
@@ -31,11 +34,28 @@ export type ValidateLocalDirectoryResult = {
   is_git_repo?: boolean;
 };
 
+export type OpenLocalDirectoryResult = {
+  ok: boolean;
+  reason?:
+    | "not_absolute"
+    | "not_found"
+    | "not_a_directory"
+    | "error"
+    | "unsupported";
+  error?: string;
+};
+
+export type OpenLocalDirectoryOptions = {
+  daemonId?: string;
+  healthPort?: number;
+};
+
 interface DesktopLocalDirectoryAPI {
   pickDirectory?: (defaultPath?: string) => Promise<PickDirectoryResult>;
   validateLocalDirectory?: (
     path: string,
   ) => Promise<ValidateLocalDirectoryResult>;
+  openLocalDirectory?: (path: string) => Promise<OpenLocalDirectoryResult>;
 }
 
 function readDesktopAPI(): DesktopLocalDirectoryAPI | undefined {
@@ -67,4 +87,72 @@ export async function validateLocalDirectory(
   const api = readDesktopAPI();
   if (!api?.validateLocalDirectory) return { ok: false, reason: "unsupported" };
   return api.validateLocalDirectory(path);
+}
+
+export async function openLocalDirectory(
+  path: string,
+  options?: OpenLocalDirectoryOptions,
+): Promise<OpenLocalDirectoryResult> {
+  const api = readDesktopAPI();
+  if (api?.openLocalDirectory) return api.openLocalDirectory(path);
+
+  // Local/self-host web UI: ask the loopback daemon to reveal only a
+  // daemon-managed workspace directory. The daemon enforces both loopback
+  // Origin and WorkspacesRoot containment, so this does not become a generic
+  // browser-to-filesystem bridge.
+  if (typeof window !== "undefined") {
+    try {
+      const healthPort = options?.healthPort ?? DEFAULT_LOCAL_DAEMON_HEALTH_PORT;
+      if (
+        !Number.isInteger(healthPort) ||
+        healthPort < DEFAULT_LOCAL_DAEMON_HEALTH_PORT ||
+        healthPort > MAX_LOCAL_DAEMON_HEALTH_PORT
+      ) {
+        return {
+          ok: false,
+          reason: "unsupported",
+          error: `Invalid local daemon health port: ${healthPort}`,
+        };
+      }
+
+      const daemonBaseURL = `http://127.0.0.1:${healthPort}`;
+      if (options?.daemonId) {
+        const healthResponse = await fetch(`${daemonBaseURL}/health`, {
+          cache: "no-store",
+        });
+        if (!healthResponse.ok) {
+          throw new Error(`Local daemon health check failed (HTTP ${healthResponse.status})`);
+        }
+        const health = (await healthResponse.json()) as { daemon_id?: string };
+        if (health.daemon_id !== options.daemonId) {
+          return {
+            ok: false,
+            reason: "unsupported",
+            error: "Local daemon identity does not match this project folder",
+          };
+        }
+      }
+
+      const response = await fetch(`${daemonBaseURL}/open-directory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      if (response.ok) return { ok: true };
+      const message = (await response.text()).trim();
+      return {
+        ok: false,
+        reason: "error",
+        error: message || `Failed to open directory (HTTP ${response.status})`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "unsupported",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  return { ok: false, reason: "unsupported" };
 }

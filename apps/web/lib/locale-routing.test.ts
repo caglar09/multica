@@ -10,6 +10,7 @@ describe("locale routing", () => {
     expect(isSupportedLocale("zh-Hans")).toBe(true);
     expect(isSupportedLocale("ko")).toBe(true);
     expect(isSupportedLocale("ja")).toBe(true);
+    expect(isSupportedLocale("tr")).toBe(true);
     expect(isSupportedLocale("zh")).toBe(false);
     expect(isSupportedLocale(null)).toBe(false);
   });

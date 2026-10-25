@@ -62,6 +62,7 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
+  AND cs.session_kind = 'standard'
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR
@@ -99,6 +100,7 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2
+  AND cs.session_kind = 'standard'
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR
@@ -484,7 +486,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id
+    channel_context_revision, client_message_id, id
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -499,7 +501,7 @@ VALUES (
     CASE WHEN sqlc.narg(channel_media_pending_secs)::float8 IS NULL THEN NULL
          ELSE now() + make_interval(secs => sqlc.narg(channel_media_pending_secs)::float8) END,
     COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE),
-    sqlc.narg(channel_context_revision),
+    sqlc.narg(channel_context_revision), sqlc.narg(client_message_id),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 )
 RETURNING *;
@@ -1210,7 +1212,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
     status IN ('completed', 'cancelled')
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'agent_error.provider_quota_limit', 'codex_resume_oversized')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       -- Mirrors the GetLastTaskSession auth-resolution guard: a provider that
       -- cannot resolve its auth method fails deterministically on resume, and
@@ -1399,6 +1401,7 @@ WHERE atq.chat_session_id IS NOT NULL
   AND atq.regenerate_quick_actions_for IS NULL
   AND cs.workspace_id = $1
   AND cs.creator_id = $2
+  AND cs.session_kind = 'standard'
 ORDER BY atq.created_at DESC;
 
 -- name: HasPendingChatTasksByCreator :one

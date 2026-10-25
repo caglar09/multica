@@ -23,6 +23,10 @@ export interface CreateIssueRequest {
   label_ids?: string[];
 }
 
+export interface CreateIssueDependencyRequest {
+  depends_on_issue_id: string;
+}
+
 export interface CreateCommentSubIssueManualRequest {
   mode: "manual";
   capture_token: string;

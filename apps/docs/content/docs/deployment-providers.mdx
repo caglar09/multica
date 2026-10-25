@@ -1,0 +1,147 @@
+---
+title: Deployment Providers
+description: Connect external hosting providers, configure deployment targets, and automate previews and production releases.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The **Deployment Providers Platform** enables Multica workspaces to integrate external hosting platforms (starting with **Vercel** as the P0 reference provider). You can attach remote provider projects to Multica projects, trigger asynchronous builds from explicit source revisions, observe real-time build states via signed webhooks, and surface live deployment URLs and logs.
+
+---
+
+## Architecture & Security Boundary
+
+The deployment control plane runs as a generic, self-contained subsystem inside Multica Core:
+
+- **Strict Secret Isolation:** Credentials and webhook secrets are encrypted at rest using AES-256-GCM (`SecretBox`). Plaintext tokens are write-only and never returned in API responses or written to logs.
+- **Terminal State Immutability:** Deployment states (`queued`, `dispatching`, `running`, `succeeded`, `failed`, `canceled`) transition monotonically. Late or duplicate webhooks cannot regress a terminal deployment.
+- **Safe Production Deployments:** Production builds require explicit owner or admin confirmation flags and approval references.
+- **Zero Autonomous Contamination:** The platform operates independently of experimental autonomous workflow dependencies.
+
+---
+
+## Multica Cloud Setup (OAuth 2.0)
+
+On Multica Cloud, Vercel connects through the configured OAuth flow. Account
+Webhooks are a separate, optional delivery mechanism.
+
+### 1. Configure the Vercel Integration
+
+1. Register the OAuth application with the configured redirect URI:
+   `https://app.multica.ai/api/integrations/deployment/vercel/callback`.
+2. Configure the OAuth client ID and secret in Multica. OAuth setup does not require an Account Webhook secret.
+3. If a separate Vercel Integration webhook is enabled, configure it in the Vercel Integrations Console and verify it with that Integration's Integration Secret / Client Secret. Never use a PAT or Account Webhook secret for this flow.
+
+### 2. Environment Variables
+
+Configure your Multica Cloud backend instances:
+
+```bash
+MULTICA_DEPLOYMENT_VERCEL_CLIENT_ID="oac_xxxxxxxxxxxx"
+MULTICA_DEPLOYMENT_VERCEL_CLIENT_SECRET="sec_xxxxxxxxxxxx"
+MULTICA_DEPLOYMENT_SECRET_KEY="<base64-encoded-32-byte-key>"
+```
+
+### 3. Connect via the UI
+
+1. Navigate to **Settings → Integrations → Deployment Providers**.
+2. Click **Connect Vercel**.
+3. Authorize your personal account or team in Vercel.
+4. Once redirected back, the provider status will display as **Connected**.
+
+---
+
+## Self-Hosted Setup (Personal Access Token)
+
+Self-hosted Multica instances can connect to Vercel without creating an OAuth Marketplace application by using a Personal Access Token (PAT).
+
+### 1. Create a Vercel Personal Access Token
+
+1. In Vercel, navigate to **Account Settings → Tokens**.
+2. Click **Create Token** and assign a name (e.g., `Multica-Self-Hosted`).
+3. Select your desired scope (Full Account or specific Team).
+4. Copy the generated token (`vercel_tok_...`).
+
+### 2. Add Connection in Multica
+
+1. In your self-hosted Multica workspace, navigate to **Settings → Integrations → Deployment Providers**.
+2. Click **Connect Vercel** and select **Personal Access Token (PAT)**.
+3. Enter your connection name, paste the token, and optionally provide your Team ID / Slug. A webhook secret is not required to connect.
+4. Click **Verify & Connect**. Multica validates your token with Vercel before storing it.
+
+<Callout type="info">
+The connection credentials are encrypted using your server's `SecretBox` master key immediately upon arrival and are never exposed in plaintext again.
+</Callout>
+
+### 3. Inbound Webhook Configuration
+
+Webhook delivery is optional. Hobby connections use polling and reconciliation
+because Vercel Account Webhooks are available only to Pro and Enterprise teams.
+For a Pro or Enterprise team:
+
+1. Create the PAT connection first.
+2. Use the exact callback URL shown for that connection:
+   ```text
+   https://<your-multica-domain>/api/webhooks/deployments/{workspaceId}/{connectionId}
+   ```
+3. Create the Vercel Account Webhook and copy its one-time secret.
+4. Use **Configure webhook** on the existing Multica connection to save or rotate that secret.
+
+The Account Webhook secret is stored separately from the PAT. See the
+[Vercel webhook documentation](https://vercel.com/docs/webhooks) for plan
+availability and the distinction from Integration Webhooks.
+
+---
+
+## Project Deployment Targets
+
+Once a connection is established, you can link projects to deployment targets:
+
+1. Open your project in Multica and switch to the **Deployments** tab.
+2. Click **Add Target** and choose your Vercel connection.
+3. Select the remote Vercel project from the discovered list.
+4. Configure target settings:
+   - **Environment:** `preview` or `production`.
+   - **Root Directory:** Relative path in repository (e.g. `./` or `./apps/web`).
+   - **Branch Filter:** Optional branch pattern.
+5. Save the target configuration.
+
+---
+
+## Triggering & Managing Deployments
+
+### Preview Deployments
+Members with write access can trigger preview deployments directly from the project deployments tab or via API:
+```bash
+curl -X POST https://<multica-domain>/api/workspaces/{workspace_id}/deployments/trigger \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target_id": "<target_uuid>",
+    "source_ref": "feat/my-new-feature",
+    "environment": "preview"
+  }'
+```
+
+### Production Deployments
+Production deployments affect live user environments and require explicit confirmation:
+
+<Callout type="warn">
+Only workspace **Owners** and **Admins** can trigger production deployments or promote a preview deployment to production.
+</Callout>
+
+When triggering production deployments via API, you must pass `"confirmed": true`:
+```bash
+curl -X POST https://<multica-domain>/api/workspaces/{workspace_id}/deployments/trigger \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target_id": "<target_uuid>",
+    "source_ref": "main",
+    "environment": "production",
+    "confirmed": true,
+    "approval_reference": "RFC-402"
+  }'
+```
+
+Requests without `"confirmed": true` or `"approval_reference"` are rejected with HTTP 400 Bad Request.

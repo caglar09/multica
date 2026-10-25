@@ -116,6 +116,7 @@ function GeneralPreferences() {
     { value: "zh-Hans", label: t(($) => $.preferences.language.chinese) },
     { value: "ko", label: t(($) => $.preferences.language.korean) },
     { value: "ja", label: t(($) => $.preferences.language.japanese) },
+    { value: "tr", label: t(($) => $.preferences.language.turkish) },
   ];
 
   // Persist locally → sync to user.language → reload. Reload (vs in-place

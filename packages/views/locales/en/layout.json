@@ -11,7 +11,8 @@
     "usage": "Analytics",
     "runtimes": "Runtimes",
     "skills": "Skills",
-    "settings": "Settings"
+    "settings": "Settings",
+    "logs": "Logs"
   },
   "tab": {
     "issue": "Issue",
@@ -53,6 +54,7 @@
     "new_issue_shortcut": "C",
     "pinned_label": "Pinned",
     "work_group": "Work",
+    "configure_group": "Configure",
     "ai_team_group": "AI Team",
     "show_more_pins": "Show {{count}} more…",
     "show_fewer_pins": "Show fewer",

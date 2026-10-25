@@ -23,10 +23,12 @@ import (
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/dbreader"
+	deploymentcore "github.com/multica-ai/multica/server/internal/deployment"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
+	deploymentproviders "github.com/multica-ai/multica/server/internal/integrations/deployment"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
@@ -97,6 +99,12 @@ type Config struct {
 	// the server into minting webhook URLs pointing at an attacker-controlled
 	// host.
 	PublicURL string
+	// VercelOAuth* configure the Cloud-only Sign in with Vercel authorization
+	// code flow. An empty configuration keeps OAuth unavailable without
+	// affecting self-host PAT connections.
+	VercelOAuthClientID     string
+	VercelOAuthClientSecret string
+	VercelOAuthRedirectURL  string
 	// AppURL is the browser application's canonical origin, resolved from
 	// MULTICA_APP_URL (falling back to FRONTEND_ORIGIN). It is kept separate
 	// from PublicURL because split app/API deployments use different origins.
@@ -203,6 +211,12 @@ type Handler struct {
 	PluginService          *service.PluginService
 	IssueService           *service.IssueService
 	AutopilotService       *service.AutopilotService
+	// AutonomousWorkflowRestart requests an immediate project-scoped durable
+	// workflow recovery pass. Wired by cmd/server after the runtime starts.
+	AutonomousWorkflowRestart func(context.Context, pgtype.UUID, pgtype.UUID) error
+	ProjectLeaderSession      func(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID) (db.ChatSession, db.Agent, error)
+	ProjectLeaderCompletion   func(context.Context, pgtype.UUID, []byte) error
+	ProjectLeaderApprove      func(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, string) error
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider
@@ -391,6 +405,16 @@ type Handler struct {
 	// error rather than silently storing plaintext. Wired in
 	// cmd/server/router.go after New.
 	VCSSecretBox *secretbox.Box
+	// DeploymentSecretBox seals provider credentials before they enter the
+	// deployment repository. It is nil when deployment credentials are not
+	// configured, which keeps the API fail-closed.
+	DeploymentSecretBox  *secretbox.Box
+	DeploymentKeyRing    *secretbox.KeyRing
+	DeploymentRepository deploymentcore.Repository
+	DeploymentProviders  *deploymentproviders.Registry
+	DeploymentDispatcher *deploymentcore.AsyncDispatcher
+	VercelOAuthClient    *deploymentproviders.VercelOAuthClient
+	VercelOAuthStates    VercelOAuthStateStore
 	// PluginSurfaceTokens seal short-lived launch claims. Nil disables surface
 	// launches; wired from a domain-separated MULTICA_PLUGIN_SECRET_KEY at boot.
 	PluginSurfaceTokens *secretbox.Box
@@ -463,6 +487,12 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	// backs auto-titling. A deployment with no MULTICA_LLM_* configuration gets
 	// a disabled client, which turns the feature off rather than failing.
 	taskSvc.QuickActions = llmClient
+	var deploymentRepo deploymentcore.Repository
+	if executor, ok := txStarter.(deploymentcore.DBTX); ok {
+		deploymentRepo = deploymentcore.NewPostgresRepository(executor)
+	}
+	deploymentRegistry := deploymentproviders.NewRegistry()
+	_ = deploymentRegistry.Register(deploymentproviders.NewVercelProvider(""))
 	h := &Handler{
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
@@ -497,8 +527,15 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 			BaseURL: cfg.CloudURL,
 			Timeout: cfg.CloudTimeout,
 		}),
-		LLM: llmClient,
-		cfg: cfg,
+		LLM:                  llmClient,
+		DeploymentRepository: deploymentRepo,
+		DeploymentProviders:  deploymentRegistry,
+		DeploymentDispatcher: &deploymentcore.AsyncDispatcher{Repository: deploymentRepo, Workers: 4, Timeout: 2 * time.Minute},
+		cfg:                  cfg,
+	}
+	h.VercelOAuthClient = deploymentproviders.NewVercelOAuthClient(cfg.VercelOAuthClientID, cfg.VercelOAuthClientSecret, cfg.VercelOAuthRedirectURL)
+	if executor != nil {
+		h.VercelOAuthStates = &postgresVercelOAuthStateStore{handler: h}
 	}
 	h.WebhookDeliveryWorker = NewWebhookDeliveryWorker(h)
 	// The default passthrough scheduler reports sweeper-race recoveries so the

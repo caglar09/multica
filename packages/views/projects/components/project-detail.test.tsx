@@ -13,15 +13,86 @@ const mocks = vi.hoisted(() => ({
   deleteProject: vi.fn(),
   getShareableUrl: vi.fn((path: string) => `https://app.example${path}`),
   push: vi.fn(),
+  replace: vi.fn(),
   recordVisit: vi.fn(),
   toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+  leaderChatData: undefined as
+    | {
+        session: { id: string };
+        leader: { id: string; name: string };
+      }
+    | undefined,
+  setActiveSession: vi.fn(),
+  setSelectedAgentId: vi.fn(),
+  setSelectedProjectId: vi.fn(),
+  setOpen: vi.fn(),
+  pauseAutonomousProject: vi.fn(),
+  resumeAutonomousProject: vi.fn(),
+  replanAutonomousProject: vi.fn(),
+	restartAutonomousWorkflow: vi.fn(),
+	retryAutonomousAction: vi.fn(),
+	rerunAutonomousIssue: vi.fn(),
+	startProjectPlanning: vi.fn(),
 }));
 
 vi.mock("@multica/ui/lib/clipboard", () => ({
   copyText: mocks.copyText,
 }));
 
+vi.mock("@multica/core/api", () => ({
+  api: {
+    getProjectLeaderChat: vi.fn(),
+  },
+}));
+
+vi.mock("@multica/core/projects", () => ({
+  autonomousProjectOptions: () => ({ queryKey: ["autonomous-project"] }),
+  projectLeaderChangesOptions: () => ({ queryKey: ["project-leader-changes"] }),
+  projectLeaderChatOptions: () => ({ queryKey: ["project-leader-chat"] }),
+  useApproveProjectLeaderChange: () => ({ mutate: vi.fn(), isPending: false }),
+  useRejectProjectLeaderChange: () => ({ mutate: vi.fn(), isPending: false }),
+  useResolveAutonomousEscalation: () => ({ mutate: vi.fn(), isPending: false }),
+  useConfirmAutonomousTeam: () => ({ mutate: vi.fn(), isPending: false }),
+  useStartAutonomousProjectPlanning: () => ({
+    mutate: mocks.startProjectPlanning,
+    isPending: false,
+  }),
+  usePauseAutonomousProject: () => ({
+    mutate: mocks.pauseAutonomousProject,
+    isPending: false,
+  }),
+  useResumeAutonomousProject: () => ({
+    mutate: mocks.resumeAutonomousProject,
+    isPending: false,
+  }),
+  useReplanAutonomousProject: () => ({
+    mutate: mocks.replanAutonomousProject,
+    isPending: false,
+  }),
+	useRestartAutonomousWorkflow: () => ({
+		mutate: mocks.restartAutonomousWorkflow,
+		isPending: false,
+	}),
+	useRetryAutonomousAction: () => ({
+		mutate: mocks.retryAutonomousAction,
+		isPending: false,
+	}),
+	useRerunAutonomousIssue: () => ({
+		mutate: mocks.rerunAutonomousIssue,
+		isPending: false,
+	}),
+}));
+
 vi.mock("@tanstack/react-query", () => ({
+  queryOptions: (options: unknown) => options,
+  useQueryClient: () => ({
+    invalidateQueries: vi.fn(),
+  }),
+  useMutation: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+  }),
   useQuery: (options: { queryKey?: readonly unknown[] }) => {
     switch (options.queryKey?.[0]) {
       case "project-detail":
@@ -34,6 +105,38 @@ vi.mock("@tanstack/react-query", () => ({
       case "agents":
       case "pins":
         return { data: [], isLoading: false };
+      case "project-leader-changes":
+        return { data: { items: [] }, isLoading: false };
+      case "autonomous-project":
+        return {
+          data: {
+            enabled: true,
+            control: { paused: true },
+            health: { active_workflows: 0 },
+            team: {
+              members: [
+                {
+                  agent_id: "agent-1",
+                  agent_name: "Planner",
+                  role: "planner",
+                  active: true,
+                },
+                {
+                  agent_id: "agent-2",
+                  agent_name: "Builder",
+                  role: "builder",
+                  active: true,
+                },
+              ],
+            },
+          },
+          isLoading: false,
+        };
+      case "project-leader-chat":
+        return {
+          data: mocks.leaderChatData,
+          isLoading: false,
+        };
       default:
         return { data: undefined, isLoading: false };
     }
@@ -73,6 +176,14 @@ vi.mock("@multica/core/chat", () => ({
   useRecentContextStore: (
     selector: (state: { recordVisit: typeof mocks.recordVisit }) => unknown,
   ) => selector({ recordVisit: mocks.recordVisit }),
+  useChatStore: {
+    getState: () => ({
+      setActiveSession: mocks.setActiveSession,
+      setSelectedAgentId: mocks.setSelectedAgentId,
+      setSelectedProjectId: mocks.setSelectedProjectId,
+      setOpen: mocks.setOpen,
+    }),
+  },
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -86,7 +197,7 @@ vi.mock("@multica/core/workspace/hooks", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: { success: mocks.toastSuccess },
+  toast: { success: mocks.toastSuccess, error: mocks.toastError },
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -122,8 +233,12 @@ vi.mock("@multica/ui/components/ui/resizable", () => ({
 }));
 
 vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
-  DropdownMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  DropdownMenuTrigger: ({ render }: { render: React.ReactNode }) => <>{render}</>,
+  DropdownMenu: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
+  DropdownMenuTrigger: ({ render }: { render: React.ReactNode }) => (
+    <>{render}</>
+  ),
   DropdownMenuContent: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
@@ -231,7 +346,21 @@ vi.mock("./project-due-date-picker", () => ({
 }));
 
 vi.mock("../../issues/surface/issue-surface", () => ({
-  IssueSurface: () => null,
+  IssueSurface: () => <div data-testid="project-issue-surface" />,
+}));
+
+vi.mock("../../deployments/components/project-deployments-section", () => ({
+  ProjectDeploymentsSection: () => <div data-testid="project-deployments-section" />,
+}));
+
+vi.mock("./autonomous-control-center", () => ({
+  ProjectBrainSettings: () => (
+    <div data-testid="project-brain-settings" />
+  ),
+}));
+
+vi.mock("./cockpit", () => ({
+  ProjectCockpitView: () => <div data-testid="project-cockpit-view" />,
 }));
 
 vi.mock("../../layout/breadcrumb-header", () => ({
@@ -275,14 +404,14 @@ const PROJECT: Project = {
   resource_count: 0,
 };
 
-function renderProjectDetail() {
+function renderProjectDetail(search = "", hash = "") {
   const adapter: NavigationAdapter = {
     push: mocks.push,
-    replace: vi.fn(),
+    replace: mocks.replace,
     back: vi.fn(),
     pathname: "/test-workspace/projects/project-1",
-    searchParams: new URLSearchParams(),
-    hash: "",
+    searchParams: new URLSearchParams(search),
+    hash,
     getShareableUrl: mocks.getShareableUrl,
   };
 
@@ -299,8 +428,108 @@ beforeEach(() => {
   mocks.deleteProject.mockReset();
   mocks.getShareableUrl.mockClear();
   mocks.push.mockReset();
+  mocks.replace.mockReset();
   mocks.recordVisit.mockReset();
   mocks.toastSuccess.mockReset();
+  mocks.toastError.mockReset();
+  mocks.leaderChatData = {
+    session: { id: "pm-session-1" },
+    leader: { id: "pm-agent-1", name: "Project Director" },
+  };
+  mocks.setActiveSession.mockReset();
+  mocks.setSelectedAgentId.mockReset();
+  mocks.setSelectedProjectId.mockReset();
+  mocks.setOpen.mockReset();
+  mocks.pauseAutonomousProject.mockReset();
+  mocks.resumeAutonomousProject.mockReset();
+  mocks.replanAutonomousProject.mockReset();
+	mocks.restartAutonomousWorkflow.mockReset();
+	mocks.retryAutonomousAction.mockReset();
+	mocks.rerunAutonomousIssue.mockReset();
+});
+
+describe("ProjectDetail content tabs", () => {
+  it("renders the Cockpit view by default when no tab parameter is present", () => {
+    renderProjectDetail();
+
+    expect(screen.getByTestId("project-cockpit-view")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("project-issue-surface"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("routes the retired Autonomous Studio URL to Cockpit", () => {
+    renderProjectDetail("tab=autonomous");
+
+    expect(screen.getByTestId("project-cockpit-view")).toBeInTheDocument();
+  });
+
+  it("stores the Reports tab in the URL while preserving existing location state", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("filter=open", "#workflow");
+
+    await user.click(screen.getByRole("button", { name: /reports/i }));
+
+    expect(mocks.replace).toHaveBeenCalledWith(
+      "/test-workspace/projects/project-1?filter=open&tab=report#workflow",
+    );
+  });
+
+  it("opens Brain beside Reports and stores it in the URL", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("filter=open", "#workflow");
+
+    await user.click(screen.getByRole("button", { name: /^brain$/i }));
+
+    expect(mocks.replace).toHaveBeenCalledWith(
+      "/test-workspace/projects/project-1?filter=open&tab=brain#workflow",
+    );
+  });
+
+  it("renders Brain settings from the Brain tab", () => {
+    renderProjectDetail("tab=brain");
+
+    expect(screen.getByTestId("project-brain-settings")).toBeInTheDocument();
+  });
+
+  it("stores the Issues tab in the URL when navigating to Issues", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("filter=open", "#workflow");
+
+    await user.click(screen.getByRole("button", { name: /issues/i }));
+
+    expect(mocks.replace).toHaveBeenCalledWith(
+      "/test-workspace/projects/project-1?filter=open&tab=issues#workflow",
+    );
+  });
+
+  it("removes the tab parameter when returning to Cockpit", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("filter=open&tab=autonomous", "#workflow");
+
+    await user.click(screen.getByRole("button", { name: /cockpit/i }));
+
+    expect(mocks.replace).toHaveBeenCalledWith(
+      "/test-workspace/projects/project-1?filter=open#workflow",
+    );
+  });
+});
+
+describe("ProjectDetail issue surface layout", () => {
+  it("provides a full-height flex column for the project issue surface", () => {
+    renderProjectDetail("tab=issues");
+
+    const surface = screen.getByTestId("project-issue-surface");
+    const layout = surface.parentElement;
+
+    expect(layout).toHaveClass(
+      "flex",
+      "h-full",
+      "min-h-0",
+      "flex-1",
+      "flex-col",
+    );
+  });
 });
 
 describe("ProjectDetail sharing", () => {
@@ -354,5 +583,69 @@ describe("ProjectDetail project deletion", () => {
     expect(
       screen.queryByRole("button", { name: "Delete project" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ProjectDetail inspector sidebar", () => {
+  it("renders the inspector header and structural card sections", () => {
+    renderProjectDetail();
+
+    expect(screen.getByText("Inspector")).toBeInTheDocument();
+    expect(screen.getByText(/Attached squad/i)).toBeInTheDocument();
+    expect(screen.getByText("Properties")).toBeInTheDocument();
+    expect(screen.getByText("Progress")).toBeInTheDocument();
+  });
+
+  it("opens project manager chat with dedicated PM agent and session when Ask Project Manager is clicked", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail();
+
+    const askPmBtn = screen.getByRole("button", { name: /ask project manager/i });
+    await user.click(askPmBtn);
+
+    expect(mocks.setActiveSession).toHaveBeenCalledWith("pm-session-1");
+    expect(mocks.setSelectedAgentId).toHaveBeenCalledWith("pm-agent-1");
+    expect(mocks.setSelectedProjectId).toHaveBeenCalledWith(PROJECT.id);
+    expect(mocks.setOpen).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps paused execution controls in the project header", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("tab=issues");
+
+    expect(screen.getByText("Execution Paused")).toBeInTheDocument();
+    expect(screen.getByText("2 Active Agents")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /resume loop/i }));
+
+    expect(mocks.resumeAutonomousProject).toHaveBeenCalledWith(
+      PROJECT.id,
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+  });
+
+  it("does not fall back to a standard PM chat when the dedicated session is unavailable", async () => {
+    const user = userEvent.setup();
+    mocks.leaderChatData = undefined;
+    renderProjectDetail();
+
+    await user.click(screen.getByRole("button", { name: /ask project manager/i }));
+
+    expect(mocks.setOpen).not.toHaveBeenCalled();
+    expect(mocks.setSelectedAgentId).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Project Manager chat is temporarily unavailable",
+    );
+  });
+});
+
+describe("ProjectDetail deployment tab", () => {
+  it("stores deployments in the URL", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail();
+
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+
+    expect(mocks.replace).toHaveBeenCalledWith("/test-workspace/projects/project-1?tab=deployments");
   });
 });

@@ -24,6 +24,13 @@ WHERE id = $1;
 SELECT * FROM project_resource
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: ListDeploymentSourceResourcesByWorkspace :many
+SELECT project_id, workspace_id, resource_type, resource_ref
+FROM project_resource
+WHERE workspace_id = $1
+  AND resource_type IN ('github_repo', 'local_directory')
+ORDER BY project_id, position ASC, created_at ASC;
+
 -- name: CreateProjectResource :one
 INSERT INTO project_resource (
     project_id, workspace_id, resource_type, resource_ref, label, position, created_by

@@ -687,6 +687,12 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
+	if autonomousRuntime := startAutonomousWorkflow(sweepCtx, bus, pool, taskSvc); autonomousRuntime != nil {
+		h.AutonomousWorkflowRestart = autonomousRuntime.RestartProjectWorkflow
+		h.ProjectLeaderSession = autonomousRuntime.EnsureProjectLeaderSession
+		h.ProjectLeaderCompletion = autonomousRuntime.ProcessProjectLeaderCompletion
+		h.ProjectLeaderApprove = autonomousRuntime.ApproveProjectLeaderChange
+	}
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
@@ -790,6 +796,9 @@ func main() {
 	// machinery. The job is inert while plugins_v1 is disabled.
 	if err := schedulerMgr.Register(scheduler.PluginHookScheduleDispatchJob(queries, h.PluginService)); err != nil {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.DeploymentOperationReconciliationJob(h)); err != nil {
+		slog.Warn("scheduler: failed to register deployment operation reconciliation job", "error", err)
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)

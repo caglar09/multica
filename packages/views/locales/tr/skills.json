@@ -1,0 +1,387 @@
+{
+  "page": {
+    "title": "Beceriler",
+    "tagline": "Bu çalışma alanındaki herhangi bir ajanın kullanabileceği talimatlar.",
+    "learn_more": "Daha fazla bilgi edin →",
+    "new_skill": "Yeni beceri",
+    "search_placeholder": "Becerileri ara…",
+    "scopes": {
+      "all": {
+        "label": "Tümü",
+        "description": "Bu çalışma alanındaki tüm beceriler"
+      },
+      "used": {
+        "label": "Kullanımda",
+        "description": "En az bir ajana atanmış beceriler"
+      },
+      "unused": {
+        "label": "Kullanılmayan",
+        "description": "Hiçbir ajana atanmamış beceriler"
+      },
+      "mine": {
+        "label": "Benim oluşturduklarım",
+        "description": "Sizin oluşturduğunuz beceriler"
+      }
+    },
+    "empty": {
+      "title": "Henüz beceri yok",
+      "description": "İlk becerinizi oluşturun, bir URL'den veya yerel bir klasörden içe aktarın ya da bağlı bir çalışma zamanından kopyalayın — çalışma alanındaki her ajan bunu kullanabilir."
+    },
+    "no_matches": {
+      "title": "Eşleşme bulunamadı",
+      "with_query": "\"{{query}}\"{{filterSuffix}} ile eşleşen beceri yok.",
+      "with_query_filter_suffix": " bu filtrede",
+      "filter_only": "Bu filtreyle eşleşen beceri yok.",
+      "try_different": " Farklı bir sorgu deneyin."
+    },
+    "intro_banner": {
+      "title": "Çalışma alanınızla paylaşıldı.",
+      "body": "Herkes bir beceri oluşturabilir, bir URL'den veya yerel bir klasörden içe aktarabilir ya da yerel çalışma zamanından kopyalayabilir — ve her ajan bunu kullanabilir.",
+      "highlight": "Yerel çalışma zamanı becerileri, buraya kopyalanana kadar gizli kalır."
+    },
+    "list_error": {
+      "title": "Beceriler yüklenemedi",
+      "fallback": "Beceri listesi alınırken bir şeyler ters gitti.",
+      "retry": "Tekrar dene"
+    },
+    "supporting_data_warning": "Bazı çalışma alanı verileri yüklenemedi. Oluşturan atfı, çalışma zamanı adları veya düzenleme izinleri eksik görünebilir."
+  },
+  "table": {
+    "name": "Ad",
+    "created_by": "Ekleyen",
+    "used_by": "Kullanan",
+    "source": "Kaynak",
+    "updated": "Güncellendi",
+    "created": "Oluşturuldu",
+    "lock_tooltip": "Salt okunur — yalnızca oluşturan veya yönetici düzenleyebilir",
+    "unused": "— kullanılmıyor",
+    "by_creator": "{{name}} tarafından",
+    "source_manual": "Manuel oluşturuldu",
+    "source_runtime_named": "{{name}} üzerinden",
+    "source_runtime_provider": "{{provider}} çalışma zamanından",
+    "source_runtime_unknown": "Bir çalışma zamanından",
+    "source_clawhub": "ClawHub'dan",
+    "source_skills_sh": "Skills.sh'den",
+    "source_github": "GitHub'dan"
+  },
+  "actions": {
+    "row_menu": "Eylemler",
+    "add_to_agent": "Ajana ekle",
+    "refresh": "Kaynaktan güncelle",
+    "my_agents": "Benim ajanlarım",
+    "other_agents": "Diğer ajanlar",
+    "no_agents": "Kullanılabilir ajan yok",
+    "search_placeholder": "Ajanları ara…",
+    "no_agents_match": "Aramanızla eşleşen ajan yok.",
+    "has_partial": "{{owned}}/{{total}} eklendi",
+    "added_toast": "Şuraya eklendi: {{name}}",
+    "add_failed_toast": "Beceri eklenemedi",
+    "delete": "Sil",
+    "selected": "{{count}} seçildi",
+    "clear_selection": "Seçimi temizle",
+    "delete_no_permission": "Seçim, yalnızca oluşturanın veya bir yöneticinin silebileceği becerileri içeriyor",
+    "delete_dialog_title_one": "{{count}} beceri silinsin mi?",
+    "delete_dialog_title_other": "{{count}} beceri silinsin mi?",
+    "delete_dialog_desc_one": "Bu işlem seçilen beceriyi kalıcı olarak silecek ve tüm ajanlardan kaldıracaktır.",
+    "delete_dialog_desc_other": "Bu işlem seçilen {{count}} beceriyi kalıcı olarak silecek ve tüm ajanlardan kaldıracaktır.",
+    "deleted_toast_one": "{{count}} beceri silindi",
+    "deleted_toast_other": "{{count}} beceri silindi",
+    "delete_failed_toast": "Beceriler silinemedi",
+    "update": "Güncelle",
+    "update_none": "Seçimde güncelleyebileceğiniz içe aktarılmış beceri yok",
+    "update_dialog_title": "Beceriler kaynaktan güncellensin mi?",
+    "update_summary_selected_one": "{{count}} beceri kaynağından güncellenecek",
+    "update_summary_selected_other": "{{count}} beceri kaynaklarından güncellenecek",
+    "update_summary_skipped_one": "{{count}} beceri bir kaynaktan güncellenemiyor — atlandı",
+    "update_summary_skipped_other": "{{count}} beceri bir kaynaktan güncellenemiyor — atlandı",
+    "update_confirm": "Güncelle ({{count}})",
+    "update_updating": "Güncelleniyor: {{done}}/{{total}}…",
+    "updated_toast_one": "{{count}} beceri kaynaktan güncellendi",
+    "updated_toast_other": "{{count}} beceri kaynaktan güncellendi",
+    "update_partial_toast": "{{count}} güncellendi, {{failed}} başarısız oldu",
+    "add_dialog_description": "Seçilen becerileri alması gereken ajanları seçin.",
+    "cancel": "İptal",
+    "add_confirm": "Ekle ({{num}})",
+    "adding": "Ekleniyor...",
+    "added_multi_toast_one": "{{count}} ajana eklendi",
+    "added_multi_toast_other": "{{count}} ajana eklendi"
+  },
+  "toolbar": {
+    "result_count_title": "Eşleşen beceriler / tüm beceriler",
+    "filter_label": "Filtre",
+    "filter_active_count_one": "{{count}} filtre",
+    "filter_active_count_other": "{{count}} filtre",
+    "clear_filters": "Filtreleri temizle",
+    "section_usage": "Kullanım",
+    "display": "Görünüm",
+    "sort_by": "Sıralama ölçütü",
+    "direction_asc": "Artan",
+    "direction_desc": "Azalan",
+    "section_columns": "Sütunlar"
+  },
+  "detail": {
+    "all_skills": "Tüm beceriler",
+    "read_only": "Salt okunur",
+    "delete_aria": "Beceriyi sil",
+    "delete_tooltip": "Beceriyi sil",
+    "supporting_data_warning": "Bazı çalışma alanı verileri yüklenemedi. Oluşturan atfı, çalışma zamanı adları veya düzenleme izinleri bir sonraki yenilemeye kadar eksik görünebilir.",
+    "delete_file": "Dosyayı sil",
+    "name_placeholder": "beceri-adi",
+    "description_placeholder": "Bir ajanın bu beceriyi ne zaman kullanması gerektiğini açıklayan bir cümle…",
+    "subline": {
+      "origin_runtime_named": "Yerel çalışma zamanı · {{name}}",
+      "origin_runtime_provider": "Yerel çalışma zamanı · {{provider}}",
+      "origin_runtime_unknown": "Yerel çalışma zamanı",
+      "origin_clawhub": "İçe aktarıldı · ClawHub",
+      "origin_skills_sh": "İçe aktarıldı · Skills.sh",
+      "origin_github": "İçe aktarıldı · GitHub",
+      "origin_workspace": "Manuel oluşturuldu"
+    },
+    "conflict_banner": {
+      "title": "Başka biri bu beceriyi güncelledi",
+      "body": "Düzenlemeleriniz korunuyor. Onların değişikliklerini çekmek için Vazgeç'i veya üzerine yazmak için Değişiklikleri kaydet'i kullanın."
+    },
+    "save_bar": {
+      "changed_summary": "Değiştirildi: {{parts}}",
+      "changed_files_one": "{{count}} dosya",
+      "changed_files_other": "{{count}} dosya",
+      "discard": "Vazgeç",
+      "save": "Değişiklikleri kaydet",
+      "saving": "Kaydediliyor…"
+    },
+    "not_found": {
+      "title": "Beceri bulunamadı",
+      "fallback": "Bu beceri silinmiş olabilir veya erişiminizi kaybetmiş olabilirsiniz.",
+      "back": "Becerilere Dön"
+    },
+    "toast_saved": "Beceri kaydedildi",
+    "toast_save_failed": "Beceri kaydedilemedi",
+    "toast_deleted": "Beceri silindi",
+    "toast_delete_failed": "Beceri silinemedi",
+    "refresh": {
+      "button": "Güncelle",
+      "tooltip": "Bu beceriyi kaynağından yeniden indir",
+      "source_github": "GitHub",
+      "source_skills_sh": "Skills.sh",
+      "source_clawhub": "ClawHub",
+      "toast_success": "Beceri {{source}} kaynağından güncellendi",
+      "toast_failed": "Beceri güncellenemedi",
+      "dialog": {
+        "title": "Kaynaktan güncellensin mi?",
+        "description": "Bu işlem, \"{{name}}\" adlı beceriyi {{source}} kaynağından yeniden indirecek ve adını, açıklamasını, SKILL.md dosyasını ve diğer dosyalarını en son sürümle değiştirecektir.",
+        "warning": "Bu becerideki yerel düzenlemelerin üzerine yazılacaktır. Ajan atamaları, etiketler ve oluşturan kişi korunur.",
+        "cancel": "İptal",
+        "confirm": "Güncelle",
+        "refreshing": "Güncelleniyor…"
+      }
+    },
+    "delete_dialog": {
+      "title": "Beceri silinsin mi?",
+      "description_with_agents_one": "Bu işlem \"{{name}}\" adlı beceriyi kalıcı olarak silecek ve şu anda onu kullanan {{count}} ajandan kaldıracaktır.",
+      "description_with_agents_other": "Bu işlem \"{{name}}\" adlı beceriyi kalıcı olarak silecek ve şu anda onu kullanan {{count}} ajandan kaldıracaktır.",
+      "description_no_agents": "Bu işlem \"{{name}}\" adlı beceriyi kalıcı olarak silecek ve tüm ajanlardan kaldıracaktır.",
+      "warning": "Bu işlem geri alınamaz.",
+      "cancel": "İptal",
+      "confirm": "Kalıcı olarak sil",
+      "deleting": "Siliniyor…"
+    },
+    "add_file": {
+      "placeholder": "templates/review.md",
+      "add": "Ekle",
+      "cancel": "İptal",
+      "errors": {
+        "empty": "Yol boş olamaz.",
+        "absolute": "Mutlak yollara izin verilmez.",
+        "double_dot": "Yollar \"..\" içeremez.",
+        "reserved": "SKILL.md ana dosya için ayrılmıştır.",
+        "exists": "Bu yolda bir dosya zaten var.",
+        "is_directory": "Bu adda bir klasör zaten var",
+        "under_file": "O konumda bir dosya zaten var"
+      }
+    },
+    "header": {
+      "files_one": "{{count}} dosya",
+      "files_other": "{{count}} dosya",
+      "used_by_one": "{{count}} ajan tarafından kullanılıyor",
+      "used_by_other": "{{count}} ajan tarafından kullanılıyor",
+      "updated": "{{when}} güncellendi",
+      "updated_by": "{{when}} {{name}} tarafından güncellendi"
+    },
+    "tabs": {
+      "aria": "Beceri bölümleri",
+      "overview": "Genel Bakış",
+      "files_one": "Dosyalar {{count}}",
+      "files_other": "Dosyalar {{count}}"
+    },
+    "overview": {
+      "properties": "Özellikler",
+      "properties_hint": "Bu alanlar SKILL.md ön maddesi (frontmatter) ile senkronize kalır.",
+      "name": "Ad",
+      "description": "Açıklama",
+      "description_hint": "{{count}} karakter. Ajanlar beceriyi yükleyip yüklememeye karar vermek için bunu okur.",
+      "labels": "Etiketler",
+      "used_by_one": "{{count}} ajan tarafından kullanılıyor",
+      "used_by_other": "{{count}} ajan tarafından kullanılıyor",
+      "used_by_empty": "Henüz hiçbir ajana atanmamış. Atamak için bir ajanın Beceriler sekmesini açın.",
+      "permissions_owner": "Bu beceriyi düzenleyebilir ve silebilirsiniz. Değişiklikler bir sonraki ajan çalıştırılmasında etkili olur.",
+      "permissions_locked_creator": "Bu beceriyi yalnızca oluşturan kişi ({{name}}) veya bir çalışma alanı yöneticisi düzenleyebilir.",
+      "permissions_locked": "Bu beceriyi yalnızca oluşturan kişi veya bir çalışma alanı yöneticisi düzenleyebilir."
+    },
+    "files": {
+      "list_aria": "Beceri dosyaları",
+      "main": "Ana dosya",
+      "supporting_one": "Destekleyici {{count}}",
+      "supporting_other": "Destekleyici {{count}}",
+      "supporting_empty": "Destekleyici dosya yok.",
+      "add_file": "Yeni dosya",
+      "mode_aria": "Dosya görünümü",
+      "mode_preview": "Önizleme",
+      "mode_edit": "Düzenle",
+      "mode_raw": "Düz metin"
+    }
+  },
+  "create": {
+    "back": "Geri",
+    "back_aria": "Yöntem seçiciye geri dön",
+    "close": "Kapat",
+    "close_aria": "Kapat",
+    "method": {
+      "chooser": {
+        "title": "Yeni beceri",
+        "desc": "Bu çalışma alanına nasıl beceri ekleneceğini seçin."
+      },
+      "manual": {
+        "title": "Manuel oluştur",
+        "desc": "Boş bir SKILL.md ile başlayın."
+      },
+      "local": {
+        "title": "Yerelden içe aktar",
+        "desc": "SKILL.md içeren bir klasör veya .skill / .zip arşivi seçin."
+      },
+      "url": {
+        "title": "URL'den içe aktar",
+        "desc": "Yayınlanmış bir beceriyi URL'den getirin."
+      },
+      "runtime": {
+        "title": "Çalışma zamanından kopyala",
+        "desc": "Yerel çalışma zamanınızda kurulu bir beceriyi çalışma alanına alın."
+      }
+    },
+    "manual": {
+      "name_label": "Ad",
+      "name_placeholder": "örn. inceleme-yardimcisi",
+      "name_hint": "Çalışma alanı içinde benzersiz olmalıdır.",
+      "description_label": "Açıklama",
+      "description_placeholder": "Bu becerinin bir ajana ne zaman atanacağına dair tek bir cümle.",
+      "name_conflict_hint": " Farklı bir ad deneyin ve tekrar gönderin.",
+      "fallback_error": "Beceri oluşturulamadı",
+      "cancel": "İptal",
+      "submit": "Beceri oluştur",
+      "submitting": "Oluşturuluyor…",
+      "toast_created": "Beceri oluşturuldu"
+    },
+    "local": {
+      "choose_folder": "Klasör seç",
+      "choose_archive": ".skill / .zip seç",
+      "folder_label": "Klasör",
+      "archive_label": "Arşiv",
+      "files_one": "{{count}} dosya",
+      "files_other": "{{count}} dosya",
+      "missing_skill_md": "Bu klasör bir beceri değil — SKILL.md dosyası yok.",
+      "too_large": "Bu beceri içe aktarılmak için çok büyük.",
+      "empty": "Klasör boş.",
+      "too_many_files": "Bu becerinin içe aktarılacak çok fazla dosyası var.",
+      "name_conflict_hint": " İçe aktarılan becerinin adı zaten var — yeniden denemeden önce mevcut olanı silin.",
+      "fallback_error": "İçe aktarma başarısız oldu",
+      "cancel": "İptal",
+      "import": "İçe aktar",
+      "importing": "İçe aktarılıyor…",
+      "toast_imported": "Beceri içe aktarıldı"
+    },
+    "url": {
+      "url_label": "Beceri URL'si",
+      "supported_sources": "Desteklenen kaynaklar",
+      "import": "İçe aktar",
+      "importing": "İçe aktarılıyor…",
+      "importing_clawhub": "ClawHub'dan içe aktarılıyor…",
+      "importing_skills_sh": "Skills.sh'den içe aktarılıyor…",
+      "importing_github": "GitHub'dan içe aktarılıyor…",
+      "name_conflict_hint": " İçe aktarılan becerinin adı zaten var — yeniden denemeden önce mevcut olanı silin.",
+      "fallback_error": "İçe aktarma başarısız oldu",
+      "cancel": "İptal",
+      "toast_imported": "Beceri içe aktarıldı"
+    }
+  },
+  "runtime_import": {
+    "runtime_label": "Çalışma zamanı",
+    "runtime_placeholder": "Yerel bir çalışma zamanı seçin",
+    "no_local_runtimes_title": "Kullanılabilir yerel çalışma zamanı yok",
+    "no_local_runtimes_hint": "Yerel becerilere göz atmak ve içe aktarmak için yerel bir çalışma zamanı bağlayın.",
+    "choose_runtime": "Devam etmek için bir çalışma zamanı seçin",
+    "must_be_online": "Yerel becerilere göz atmak için çalışma zamanı çevrimiçi olmalıdır.",
+    "load_failed": "Çalışma zamanı yerel becerileri yüklenemedi",
+    "not_supported": "Bu çalışma zamanı sağlayıcısı henüz yerel beceri envanterini sunmuyor.",
+    "no_skills_title": "Yerel beceri bulunamadı",
+    "no_skills_hint": "Bu çalışma zamanında henüz keşfedilebilir yerel beceri yok.",
+    "search_placeholder": "Yerel becerileri ara",
+    "no_search_results_title": "Eşleşen yerel beceri yok",
+    "no_search_results_hint": "\"{{query}}\" ile eşleşen yerel beceri yok.",
+    "ignored_files_hint": "Sembolik bağlantılar, okunamayan dosyalar, büyük boyutlu dosyalar ve çok büyük paketler içe aktarma sırasında yok sayılır.",
+    "ready": "İçe aktarmaya hazır",
+    "into_workspace": "bu çalışma alanına.",
+    "select_skill": "Devam etmek için bir beceri seçin.",
+    "import_button": "Çalışma Alanına İçe Aktar",
+    "importing": "İçe aktarılıyor…",
+    "skill_files_one": "{{count}} dosya",
+    "skill_files_other": "{{count}} dosya",
+    "skill_name_label": "Çalışma alanı beceri adı",
+    "skill_description_label": "Açıklama",
+    "skill_description_placeholder": "İsteğe bağlı — bir ajanın bu beceriyi ne zaman kullanması gerektiğini açıklayın.",
+    "toast_imported": "Beceri içe aktarıldı",
+    "toast_import_failed": "Beceri içe aktarılamadı",
+    "select_all": "Tümünü seç ({{count}})",
+    "bulk_ready": "{{count}} beceri seçildi",
+    "bulk_import_button": "{{count}} Beceriyi İçe Aktar",
+    "bulk_progress": "İçe aktarılıyor {{completed}} / {{total}}…",
+    "bulk_cancel_button": "İptal",
+    "bulk_complete_hint": "İçe aktarma tamamlandı.",
+    "bulk_cancelled_hint": "İçe aktarma iptal edildi.",
+    "bulk_done_button": "Bitti",
+    "bulk_summary_created": "Oluşturuldu",
+    "bulk_summary_updated": "Güncellendi",
+    "bulk_summary_conflicts": "Çakışmalar",
+    "bulk_summary_skipped": "Atlandı",
+    "bulk_summary_failed": "Başarısız oldu",
+    "conflict_single_title": "Bu ada sahip bir beceri zaten var",
+    "conflict_bulk_title": "{{count}} beceri için karar verilmesi gerekiyor",
+    "conflict_hint": "Mevcut çalışma alanı becerisinin üzerine yazılmasını, yeni bir adla içe aktarılmasını veya atlanmasını seçin.",
+    "conflict_locked_creator": "Bu beceri {{creator}} tarafından oluşturuldu. Yalnızca oluşturan kişi yerel içe aktarma işleminden bunun üzerine yazabilir; değiştirmeniz gerekirse Beceri detay sayfasından düzenleyin.",
+    "conflict_locked": "Yalnızca oluşturan kişi yerel içe aktarma işleminden bu becerinin üzerine yazabilir; değiştirmeniz gerekirse Beceri detay sayfasından düzenleyin.",
+    "conflict_overwrite": "Üzerine yaz",
+    "conflict_rename": "Yeniden adlandır",
+    "conflict_skip": "Atla",
+    "conflict_cancel": "İptal",
+    "conflict_overwrite_all": "Tümünün üzerine yaz",
+    "conflict_skip_all": "Tümünü atla",
+    "conflict_rename_label": "Yeni beceri adı",
+    "conflict_footer": "{{count}} çakışma kararı bekleniyor.",
+    "conflict_apply_button": "Kararları uygula",
+    "conflict_missing_resolution": "Bu çakışmanın nasıl çözüleceğini seçin.",
+    "conflict_name_still_exists": "Bu ad zaten var. Başka bir ad seçin veya atlayın."
+  },
+  "file_tree": {
+    "no_files": "Dosya yok",
+    "actions": {
+      "label": "{{path}} için eylemler",
+      "edit": "Düzenle",
+      "rename": "Yeniden adlandır",
+      "delete": "Sil"
+    }
+  },
+  "file_viewer": {
+    "no_content": "*Henüz içerik yok*",
+    "markdown_placeholder": "Markdown içeriği yazın...",
+    "raw_placeholder": "Dosya içeriği...",
+    "raw_aria": "{{path}} için düz metin içeriği"
+  }
+}

@@ -1,0 +1,274 @@
+{
+  "step_nav": {
+    "wordmark": "Multica",
+    "label": "Katılım adımları",
+    "about_you": {
+      "label": "Hakkınızda",
+      "description": "Rolünüz ve yapmak istedikleriniz."
+    },
+    "workspace": {
+      "label": "Çalışma alanı",
+      "description": "İsim verin ve URL'sini seçin."
+    },
+    "runtime": {
+      "label": "Mika ile tanışın",
+      "description": "İlk ajan takım arkadaşınız ve nerede çalıştığı."
+    }
+  },
+  "welcome": {
+    "wordmark": "Multica'ya Hoş Geldiniz",
+    "headline_line1": "Yapay zeka takım arkadaşlarınız,",
+    "headline_line2": "",
+    "headline_emphasis": "tek bir çalışma alanında.",
+    "lede": "Onlara bir iş arkadaşına görev verir gibi iş atayın — görevi alırlar, durumu güncellerler ve tamamlandığında yorum bırakırlar.",
+    "lede_web": "Masaüstü uygulaması runtime'ı içerir — kurulum gerekmez. Kendi CLI'nızı bağlamak için web üzerinden devam edin.",
+    "lede_desktop": "Süreç sonunda, gerçek bir ajan ilk görevinizi yanıtlıyor olacak.",
+    "download_desktop": "Masaüstü Uygulamasını İndir",
+    "continue_on_web": "Web üzerinden devam et",
+    "start_exploring": "Keşfetmeye başla",
+    "skip_existing": "Bunu daha önce yaptım",
+    "illustration_caption": "Her görev, her ileti dizisi, her karar — ekibiniz ve ajanlarınız tarafından paylaşılır.",
+    "illustration": {
+      "card1_actor_name": "Siz",
+      "card1_actor_initial": "N",
+      "card1_body_prefix": " kısa bir lansman yazısı taslağı hazırlayabilir misin? ",
+      "card1_body_suffix": "'ın röportaj bulgularından yararlan.",
+      "card1_mention_content": "@İçerik Ajanı",
+      "card1_mention_research": "@Araştırma Ajanı",
+      "card2_actor_name": "İçerik Ajanı",
+      "card2_body": "Tamam. Araştırma'nın alıntılarını çekiyor, \"kazanılan zaman\" açısı üzerinden taslak oluşturuyorum…",
+      "card3_actor_name": "Araştırma Ajanı",
+      "card3_body": "Bu haftanın kullanıcı görüşmeleri özetlendi — 12 görüşme, 4 tekrarlayan tema, 3 dikkat çekici alıntı.",
+      "card3_timestamp": "15 dk önce",
+      "card4_actor_name": "İnceleme Ajanı",
+      "card4_body": "Pazartesi taslağı incelendi — ton üzerine 4 not bırakıldı. Yeni taslağı bekliyorum.",
+      "card5_actor_name": "Kodlama Ajanı",
+      "card5_body_prefix": "Dışa aktarma özelliği gönderildi ",
+      "card5_body_suffix": " işaretlendi. Önizleme bağlantısı PR'da.",
+      "card5_mention_you": "@siz",
+      "card5_timestamp": "az önce"
+    }
+  },
+  "common": {
+    "back": "Geri",
+    "continue": "Devam et",
+    "skip": "Atla",
+    "cancel": "İptal",
+    "close": "Kapat",
+    "log_out": "Çıkış yap"
+  },
+  "source_backfill": {
+    "eyebrow": "Hızlı bir soru",
+    "lede": "Tek bir hızlı soru — Multica'yı kimlerin yararlı bulduğunu anlamamıza yardımcı oluyor. Bir kez yanıtlayın ve işinize geri dönün.",
+    "submit": "Gönder",
+    "hint_ready": "Harika görünüyor. Hazır olduğunuzda Gönder'e tıklayın.",
+    "save_failed_toast": "Kaydedilemedi"
+  },
+  "questions": {
+    "about_you": {
+      "question": "Kendinizden biraz bahsedin."
+    },
+    "source": {
+      "question": "Multica'yı nasıl duydunuz?",
+      "friends_colleagues": "Arkadaşlar veya iş arkadaşları",
+      "search": "Google / arama",
+      "social_x": "X / Twitter",
+      "social_linkedin": "LinkedIn",
+      "social_youtube": "YouTube",
+      "social_github": "GitHub",
+      "social_misc": "Diğer sosyal medya",
+      "blog_newsletter": "Blog / bülten",
+      "ai_assistant": "ChatGPT / Claude / Cursor",
+      "from_work": "İşte",
+      "event_conference": "Konferans / buluşma",
+      "dont_remember": "Hatırlamıyorum",
+      "other": "Diğer",
+      "other_placeholder": "örn. dinlediğim bir podcast"
+    },
+    "role": {
+      "question": "Sizi en iyi hangisi tanımlıyor?",
+      "engineer": "Mühendis / geliştirici",
+      "product": "Ürün yöneticisi",
+      "designer": "Tasarımcı",
+      "founder": "Kurucu / yönetici",
+      "marketing": "Pazarlama / büyüme",
+      "writer": "Yazar / içerik",
+      "research": "Araştırmacı / analist",
+      "ops": "Operasyon / proje yönetimi",
+      "student": "Öğrenci / kişisel kullanım",
+      "other": "Diğer",
+      "other_placeholder": "örn. öğretmen, destek ekip lideri"
+    },
+    "use_case": {
+      "question": "Multica'yı ne için kullanmak istiyorsunuz?",
+      "ship_code": "Yapay zeka ajanlarıyla kod geliştir",
+      "manage_team": "Ekibimin görevlerini yönet",
+      "personal_tasks": "Kendi görevlerimi düzenle",
+      "plan_research": "Planla, fikir üret, araştır",
+      "write_publish": "Yaz, düzenle, yayınla",
+      "automate_ops": "Operasyon & iş akışlarını otomatikleştir",
+      "evaluate": "Sadece keşfediyorum",
+      "other": "Diğer",
+      "other_placeholder": "örn. çalışma grubu koordinasyonu"
+    }
+  },
+  "option_card": {
+    "other_label": "Diğer",
+    "other_aria": "Başka bir şey açıklayın"
+  },
+  "step_question": {
+    "hint_pick": "Devam etmek için bir seçenek seçin — belirtmek istemiyorsanız atlayabilirsiniz.",
+    "hint_continue": "Harika görünüyor. Hazır olduğunuzda Devam et'e tıklayın."
+  },
+  "cli_install": {
+    "copy_aria": "Kopyala",
+    "intro": "Ajanınızı çalıştırmak için bu bilgisayarda bir ajan runtime'ı (Claude Code, Codex, Cursor, …) gerekir. Sunucular ve uzak geliştirme ortamlarında da çalışır.",
+    "step1_label": "Multica CLI'yı yükleyin",
+    "step2_label": "Daemon'ı başlatın"
+  },
+  "cloud_waitlist": {
+    "intro_main": "Bulut runtime'ları henüz kullanıma açık değil. E-postanızı bırakın, hazır olduğunda size ulaşalım.",
+    "intro_warning": "Uyarı: Ajanlar, runtime olmadan görev yürütemez — şimdi Atla'ya tıklarsanız, geri gelip bir runtime yükleyene kadar hiçbir şey çalışmaz.",
+    "email_label": "E-posta",
+    "email_placeholder": "siz@isyeri.com",
+    "reason_label": "Neden bulut?",
+    "optional": "İsteğe bağlı",
+    "reason_placeholder": "örn. ajanların 7/24 çalışmasını istiyoruz veya ekibimiz farklı cihazlar kullanıyor.",
+    "join": "Bekleme listesine katıl",
+    "on_list": "Listedesiniz",
+    "success_toast": "Listeye eklendiniz. Bulut runtime'lar kullanıma açıldığında e-posta göndereceğiz.",
+    "failed_toast": "Bekleme listesine katılınamadı"
+  },
+  "welcome_after_onboarding": {
+    "skip": {
+      "loading": "Çalışma alanınız hazırlanıyor…",
+      "title": "Multica'ya Hoş Geldiniz!",
+      "subtitle": "Bir runtime bağlamanıza yardımcı olmak için bir görev ekledik. Hazır olduğunuzda Mika ile Runtimes bölümünden başlayın.",
+      "got_it": "Anladım",
+      "status_in_progress": "Devam ediyor",
+      "error_title": "Kurulum tamamlanamadı",
+      "error_body": "Runtime kılavuzu oluşturulamadı. Tekrar deneyebilir veya hazır olduğunuzda Runtimes sayfasından bir runtime bağlayabilirsiniz.",
+      "retry": "Tekrar dene",
+      "dismiss": "Şimdi değil",
+      "cards": {
+        "install_runtime": {
+          "title": "Bir runtime bağlayın",
+          "subtitle": "Codex veya Kimi'yi yükleyin, ardından Runtimes bölümünden rehberli Mika sohbetini başlatın."
+        }
+      }
+    }
+  },
+  "step_workspace": {
+    "eyebrow_first": "İlk çalışma alanınız",
+    "eyebrow_resume": "Devam edin veya yeniden başlayın",
+    "headline_first": "Çalışma alanınıza bir isim verin.",
+    "headline_resume": "{{name}} ile devam edin veya yeni bir tane oluşturun.",
+    "lede_first": "Çalışma alanı, görevlerinizin, ajanlarınızın ve projelerinizin bulunduğu yerdir. Daha sonra takım arkadaşlarını davet edebilir veya ek çalışma alanları oluşturabilirsiniz.",
+    "lede_resume": "Mevcut çalışma alanınızla kuruluma devam edin veya yanına yeni bir tane oluşturun — istediğiniz kadar çalışma alanına dahil olabilirsiniz.",
+    "name_label": "Çalışma alanı adı",
+    "name_placeholder": "Acme A.Ş., Laboratuvarım, Yan Projeler…",
+    "random_name": "Rastgele",
+    "url_label": "URL",
+    "slug_placeholder": "acme",
+    "issue_prefix_label": "Görev öneki",
+    "issue_prefix_prefix": "Görevler şöyle görünecek: ",
+    "issue_prefix_suffix": ". Bunu daha sonra ayarlardan değiştirebilirsiniz.",
+    "issue_prefix_pending": "Yukarıdaki URL'yi ayarlayın, görev numaraları bunu izleyecektir — veya buraya bir önek yazın.",
+    "create_new_title": "Yeni çalışma alanı oluştur",
+    "create_new_subtitle": "Sıfırdan başlayın — çalışmanızın farklı bir yönü için ayrı bir alan.",
+    "hint_opening": "{{name}} açılıyor.",
+    "hint_creating": "{{name}} oluşturuluyor.",
+    "hint_creating_pending": "{{name}} oluşturuluyor…",
+    "hint_creating_fallback": "çalışma alanınız",
+    "hint_name_first": "Oluşturmak için çalışma alanınıza bir isim verin.",
+    "hint_pick": "Çalışma alanınızı seçin veya yeni bir tane oluşturun.",
+    "cta_open": "{{name}} aç",
+    "cta_create_named": "{{name}} oluştur",
+    "cta_create_workspace": "Çalışma alanı oluştur",
+    "cta_creating": "Oluşturuluyor…",
+    "slug_format_error": "Yalnızca küçük harf, rakam ve kısa çizgi kullanılabilir",
+    "slug_taken_error": "Bu çalışma alanı URL'si zaten kullanımda.",
+    "slug_reserved_error": "Bu çalışma alanı URL'si rezerve edilmiş ve kullanılamaz.",
+    "slug_conflict_toast": "Farklı bir çalışma alanı URL'si seçin",
+    "create_failed_toast": "Çalışma alanı oluşturulamadı",
+    "creation_disabled_eyebrow": "Çalışma alanı oluşturma devre dışı",
+    "creation_disabled_headline": "Yöneticinizden davet isteyin.",
+    "creation_disabled_lede": "Bu Multica örneği yeni çalışma alanı oluşturulmasına izin vermiyor. Bir yönetici sizi bir çalışma alanına davet ettiğinde, daveti kabul edip devam etmek için sayfayı yenileyin.",
+    "creation_disabled_logout": "Çıkış yap",
+    "creation_disabled_eyebrow_resume": "Çalışma alanınız",
+    "creation_disabled_headline_resume": "{{name}} ile devam edin.",
+    "creation_disabled_lede_resume": "Bu örnekte çalışma alanı oluşturma devre dışı olduğundan mevcut çalışma alanınızla devam edeceksiniz."
+  },
+  "step_runtime": {
+    "scanning_headline": "Bu bilgisayar bağlanıyor…",
+    "scanning_lede_prefix": "Ajanınız halihazırda sahip olduğunuz bir yapay zeka kodlama aracı üzerinden çalışır — örneğin ",
+    "scanning_lede_suffix": " ve diğerleri. Bu bilgisayarda yüklü olanları kontrol ediyoruz.",
+    "found_headline": "Mika nerede çalışsın?",
+    "found_lede": "Bunlar bu bilgisayarda bulduğumuz ajan runtime'ları. Daha sonra değiştirebilir veya daha fazlasını ekleyebilirsiniz.",
+    "runtime_count_one": "{{count}} ajan runtime'ı",
+    "runtime_count_other": "{{count}} ajan runtime'ı",
+    "status_all_online": "hepsi çevrimiçi",
+    "status_none_online": "hiçbiri çevrimiçi değil",
+    "status_n_online": "{{count}} çevrimiçi",
+    "online_label": "çevrimiçi",
+    "offline_label": "çevrimdışı",
+    "empty_headline": "Bu bilgisayarda henüz ajan runtime'ı bulunamadı.",
+    "empty_lede_prefix": "Ajan runtime'ı, bağlandığımız bir yapay zeka kodlama aracıdır — örneğin ",
+    "empty_lede_suffix": ". Birini yükleyip yenileyin veya aşağıdan bir yol seçin.",
+    "empty_skip_title": "Şimdilik atla",
+    "empty_skip_subtitle": "Çalışma alanınıza şimdi girin. Bu bilgisayarda bir ajan runtime'ı bağlanana kadar ajanınız görev yürütemez — ancak yine de gezinebilir, planlayabilir ve takım arkadaşlarını davet edebilirsiniz.",
+    "empty_skip_action": "Atla",
+    "empty_waitlist_title": "Bir bulut bilgisayarı kullanın",
+    "empty_waitlist_subtitle": "Bulutta sizin için bir bilgisayar çalıştıracağız. Henüz kullanıma açık değil.",
+    "empty_waitlist_action": "Yakında",
+    "skip": "Şimdilik atla",
+    "refresh": "Yenile",
+    "refreshing": "Yenileniyor…",
+    "hint_selected": "Seçili: {{name}}",
+    "hint_pick": "Mika ile başlamak için yukarıdan bir ajan runtime'ı seçin.",
+    "hint_waiting": "İlk sonuç bekleniyor…",
+    "hint_skip_or_refresh": "Birini yükledikten sonra yenileyin veya çalışma alanınıza girmek için atlayın.",
+    "continue": "Mika ile başla"
+  },
+  "step_platform": {
+    "eyebrow": "Bir bilgisayar bağlayın",
+    "headline": "Ajanınızı çalıştırmak için bir bilgisayar bağlayın.",
+    "lede": "Çalışma alanınızın Kurmayı olan Mika, Multica'ya bağladığınız gerçek bir bilgisayarda çalışır. Nasıl bağlamak istediğinizi seçin.",
+    "hint_default": "Bir bağlantı yöntemi seçin — veya atlayın ve daha sonra bir bilgisayar bağlayın.",
+    "download_title": "Bu bilgisayarı kullan",
+    "download_subtitle": "Bu bilgisayarı bağlamak için masaüstü uygulamamızı yükleyin. Yeni sekmede açılır — platformunuzu orada seçin.",
+    "download_button": "İndir",
+    "cli_title": "Terminalden bağlan",
+    "cli_subtitle": "Bir sunucu, uzak geliştirme ortamı veya herhangi bir başsız bilgisayar bağlayın. Terminal gereklidir.",
+    "cli_action": "Adımları göster",
+    "cloud_title": "Bir bulut bilgisayarı kullanın",
+    "cloud_subtitle": "Bulutta sizin için bir bilgisayar çalıştıracağız. Henüz kullanıma açık değil.",
+    "cloud_action": "Yakında",
+    "cli_dialog_title": "Terminalden bağlan",
+    "cli_dialog_description": "Masaüstü ile aynı bağlantı, terminalden kurulur. Sunucular, uzak geliştirme ortamları veya herhangi bir başsız bilgisayar için kullanın.",
+    "cli_dialog_pick_hint": "Yukarıdan bir bilgisayar seçin.",
+    "cli_dialog_connect": "Bağlan & devam et",
+    "runtimes_connected_one": "{{count}} bilgisayar bağlandı",
+    "runtimes_connected_other": "{{count}} bilgisayar bağlandı",
+    "live_listening": "Canlı · Bilgisayarınız bekleniyor",
+    "stage_normal_prefix": "Yukarıdaki komutu çalıştırın. ",
+    "stage_normal_suffix": " tarayıcı girişini tamamlar tamamlamaz bilgisayarınız burada otomatik olarak görünür (genellikle 10–30 saniye).",
+    "stage_midway_prefix": "Hâlâ dinleniyor. ",
+    "stage_midway_suffix": " tarafından açılan tarayıcı sekmesini tamamladığınızdan emin olun — bilgisayarınızın bağlanabilmesi için girişi onaylamanız gerekiyor.",
+    "stage_slow_prefix": "Beklenenden uzun sürüyor. ",
+    "stage_slow_suffix": " komutunu çalıştırdığınız terminalde hata olup olmadığını kontrol edin.",
+    "stage_stalled_prefix": "Henüz bir şey gelmiyor. Terminal konusunda rahat değilseniz, ",
+    "stage_stalled_term": "Masaüstü",
+    "stage_stalled_suffix": " daha kolay bir yoldur — tek tıklamayla bu bilgisayar bağlanır. Bu iletişim kutusunu kapatıp Masaüstü'nü seçin veya devam etmek için Atla'ya tıklayın."
+  },
+  "errors": {
+    "skip_failed": "Katılım tamamlanamadı",
+    "mika_setup_failed": "Mika çalışma alanınız başlatılamadı"
+  },
+  "mika_intro": {
+    "headline": "İlk ajan takım arkadaşınız Mika ile tanışın.",
+    "name": "Mika",
+    "role": "Kurmay",
+    "blurb": "Mika'ya ne yapmak istediğinizi söyleyin. Bu bir göreve dönüşür ve üzerine doğru ajan atanır."
+  }
+}

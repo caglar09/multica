@@ -1,0 +1,45 @@
+{
+  "page": {
+    "breadcrumb": "Görevlerim",
+    "workspace_fallback": "Çalışma Alanı",
+    "empty_title": "Size atanmış görev yok",
+    "empty_description": "Oluşturduğunuz veya size atanan görevler burada görünecek."
+  },
+  "header": {
+    "scope": {
+      "all_label": "Tümü",
+      "all_description": "Bana atanmış, benim oluşturduğum veya ajanlarımı ve takımlarımı içeren görevler",
+      "assigned_label": "Atananlar",
+      "assigned_description": "Bana atanmış görevler",
+      "created_label": "Oluşturulanlar",
+      "created_description": "Benim oluşturduğum görevler",
+      "agents_label": "Ajanlarım ve Takımlarım",
+      "agents_description": "Ajanlarıma atanmış görevler"
+    },
+    "filter_button": "Filtrele",
+    "filter_status": "Durum",
+    "filter_priority": "Öncelik",
+    "issue_count_one": "{{count}} görev",
+    "issue_count_other": "{{count}} görev",
+    "reset_filters": "Tüm filtreleri sıfırla",
+    "display_settings": "Görüntüleme ayarları",
+    "grouping": "Gruplama",
+    "group_status": "Durum",
+    "group_assignee": "Atanan kişi",
+    "ordering": "Sıralama",
+    "ascending": "Artan",
+    "descending": "Azalan",
+    "card_properties": "Kart özellikleri",
+    "view_board": "Pano görünümü",
+    "view_list": "Liste görünümü",
+    "view_swimlane": "Yüzme şeridi görünümü",
+    "view_label": "Görünüm",
+    "view_board_short": "Pano",
+    "view_list_short": "Liste",
+    "view_swimlane_short": "Şerit",
+    "sort_manual": "Manuel"
+  },
+  "errors": {
+    "move_failed": "Görev taşınamadı"
+  }
+}

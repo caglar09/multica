@@ -1,0 +1,108 @@
+{
+  "title": "Analitik",
+  "tab_usage": "Kullanım",
+  "header": {
+    "timezone_and_updated": "{{tz}} · {{time}} güncellendi",
+    "refresh": "Yenile"
+  },
+  "filter": {
+    "project_label": "Proje",
+    "all_projects": "Tüm projeler",
+    "period_label": "Dönem"
+  },
+  "kpi": {
+    "cost_label": "Maliyet · {{days}}G",
+    "tokens_label": "Token · {{days}}G",
+    "tokens_hint": "Girdi {{input}} · Çıktı {{output}}",
+    "run_time_label": "Çalışma süresi · {{days}}G",
+    "run_time_hint": "{{tasks}} görev üzerinden",
+    "tasks_label": "Görevler · {{days}}G",
+    "tasks_hint": "{{failed}} başarısız"
+  },
+  "dim": {
+    "label": "Boyut",
+    "daily": "Günlük",
+    "weekly": "Haftalık"
+  },
+  "daily": {
+    "title_cost": "Günlük maliyet",
+    "title_tokens": "Günlük token",
+    "title_time": "Günlük çalışma süresi",
+    "title_tasks": "Günlük görevler",
+    "title_errors": "Günlük hatalar",
+    "metric_cost": "Maliyet",
+    "metric_tokens": "Token",
+    "metric_time": "Süre",
+    "metric_tasks": "Görevler",
+    "no_data": "Bu aralıkta kullanım yok.",
+    "metric_label": "Metrik"
+  },
+  "weekly": {
+    "title_cost": "Haftalık maliyet",
+    "title_tokens": "Haftalık token",
+    "title_time": "Haftalık çalışma süresi",
+    "title_tasks": "Haftalık görevler",
+    "title_errors": "Haftalık hatalar",
+    "partial_label": "{{range}} (kısmi · {{covered}} / 7 gün)"
+  },
+  "errors": {
+    "kpi_failed_label": "Başarısız görevler · {{days}}G",
+    "kpi_failed_hint": "{{total}} çalışmadan",
+    "kpi_rate_label": "Hata oranı · {{days}}G",
+    "kpi_agents_label": "Etkilenen ajanlar · {{days}}G",
+    "kpi_agents_hint": "En kötü {{name}} · {{count}}",
+    "tooltip_rate": "Hata oranı",
+    "class": {
+      "auth": "Kimlik doğrulama",
+      "rate_limit": "Hız sınırı",
+      "timeout": "Zaman aşımı",
+      "provider": "Sağlayıcı",
+      "runtime": "runtime",
+      "agent": "Ajan",
+      "other": "Diğer"
+    },
+    "title": "Hatalar",
+    "summary": "{{total}} çalışmanın {{failed}} tanesi başarısız oldu · {{rate}}",
+    "mix_title": "Hata dağılımı · {{failed}}",
+    "mix_label": "Hata dağılımı",
+    "codes_label": "Hata kodları",
+    "by_agent": "En çok hata verenler",
+    "sort_label": "Sıralama ölçütü",
+    "sort_failed": "Başarısızlıklar",
+    "sort_rate": "Oran",
+    "header_agent": "Ajan",
+    "header_failed": "Başarısız",
+    "header_runs": "Çalışmalar",
+    "header_rate": "Oran",
+    "other_agents": "Diğer ajanlar",
+    "low_sample": "Bu aralıkta {{count}} çalışmadan az — bu oran anlamlı değil.",
+    "no_data": "Bu aralıkta başarısız çalışma yok.",
+    "show_reasons": "Hata kodlarını göster",
+    "hide_reasons": "Hata kodlarını gizle",
+    "show_all": "Tümünü göster ({{count}})",
+    "show_less": "İlk {{count}} tanesini göster"
+  },
+  "leaderboard": {
+    "title": "Sıralama",
+    "caption": "{{count}} ajan",
+    "caption_with_deleted": "{{count}} ajan · {{deleted}} silindi",
+    "sort_label": "Ajanları sırala",
+    "deleted_agents": "Silinen ajanlar",
+    "other_agents": "Diğer ajanlar",
+    "header_agent": "Ajan",
+    "header_tokens": "Token",
+    "header_cost": "Maliyet",
+    "header_time": "Süre",
+    "header_tasks": "Görevler",
+    "show_all": "Tümünü göster",
+    "show_less": "İlk {{count}} tanesini göster",
+    "no_data": "Bu aralıkta ajan etkinliği yok."
+  },
+  "empty": {
+    "title": "Henüz kullanım yok",
+    "body": "Ajanlar burada görev çalıştırmaya başladığında, token harcamaları ve çalışma süreleri bu görünümde listelenir."
+  },
+  "duration": {
+    "less_than_minute": "<1d"
+  }
+}

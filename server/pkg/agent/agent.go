@@ -26,6 +26,8 @@ type Backend interface {
 type ExecOptions struct {
 	Cwd   string
 	Model string
+	// ReadOnly selects the provider's native no-write mode.
+	ReadOnly bool
 	// SystemPrompt carries the Multica runtime brief for the few providers
 	// that cannot pick it up from disk. The daemon leaves it empty for every
 	// other provider (see daemon.providerNeedsInlineSystemPrompt), because the

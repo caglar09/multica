@@ -1,0 +1,218 @@
+import type { AutonomousRoleRuntimeAssignment, UpdateAutonomousBrainConfig } from "../types";
+import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "../api";
+import { useWorkspaceId } from "../hooks";
+
+export const autonomousProjectKeys = {
+  all: (wsId: string) => ["autonomous-projects", wsId] as const,
+  detail: (wsId: string, projectId: string) =>
+    [...autonomousProjectKeys.all(wsId), "detail", projectId] as const,
+};
+
+export function autonomousProjectOptions(wsId: string, projectId: string) {
+  return queryOptions({
+    queryKey: autonomousProjectKeys.detail(wsId, projectId),
+    queryFn: () => api.getProjectAutonomous(projectId),
+    refetchInterval: 5000,
+    staleTime: 1500,
+  });
+}
+
+export function projectLeaderChatOptions(wsId: string, projectId: string) {
+  return queryOptions({
+    queryKey: [...autonomousProjectKeys.detail(wsId, projectId), "leader-chat"] as const,
+    queryFn: () => api.getProjectLeaderChat(projectId),
+    staleTime: 5000,
+  });
+}
+
+export function projectLeaderChangesOptions(wsId: string, projectId: string) {
+  return queryOptions({
+    queryKey: [...autonomousProjectKeys.detail(wsId, projectId), "leader-changes"] as const,
+    queryFn: () => api.listProjectLeaderChanges(projectId),
+    refetchInterval: 5000,
+  });
+}
+
+export function useApproveProjectLeaderChange() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ projectId, changeRequestId }: { projectId: string; changeRequestId: string }) =>
+      api.approveProjectLeaderChange(projectId, changeRequestId),
+    onSettled: (_data, _error, vars) => {
+      qc.invalidateQueries({ queryKey: autonomousProjectKeys.detail(wsId, vars.projectId) });
+    },
+  });
+}
+
+export function useRejectProjectLeaderChange() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ projectId, changeRequestId }: { projectId: string; changeRequestId: string }) =>
+      api.rejectProjectLeaderChange(projectId, changeRequestId),
+    onSettled: (_data, _error, vars) => {
+      qc.invalidateQueries({ queryKey: autonomousProjectKeys.detail(wsId, vars.projectId) });
+    },
+  });
+}
+
+function useAutonomousControlMutation<TData>(
+  mutationFn: (projectId: string) => Promise<TData>,
+) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn,
+    onSettled: (_data, _err, projectId) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, projectId),
+      });
+    },
+  });
+}
+
+export function usePauseAutonomousProject() {
+  return useAutonomousControlMutation((projectId) =>
+    api.pauseProjectAutonomous(projectId),
+  );
+}
+
+export function useResumeAutonomousProject() {
+  return useAutonomousControlMutation((projectId) =>
+    api.resumeProjectAutonomous(projectId),
+  );
+}
+
+export function useReplanAutonomousProject() {
+  return useAutonomousControlMutation((projectId) =>
+    api.replanProjectAutonomous(projectId),
+  );
+}
+
+export function useRestartAutonomousWorkflow() {
+  return useAutonomousControlMutation((projectId) =>
+    api.restartProjectAutonomousWorkflow(projectId),
+  );
+}
+
+export function useRerunAutonomousIssue() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({
+      issueId,
+      taskId,
+    }: {
+      projectId: string;
+      issueId: string;
+      taskId?: string;
+    }) => api.rerunIssue(issueId, taskId),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
+}
+
+export function useRetryAutonomousAction() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      actionId,
+    }: {
+      projectId: string;
+      actionId: string;
+    }) => api.retryProjectAutonomousAction(projectId, actionId),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
+}
+
+
+
+export function useUpdateAutonomousBrain() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      config,
+    }: {
+      projectId: string;
+      config: UpdateAutonomousBrainConfig;
+    }) => api.updateProjectAutonomousBrain(projectId, config),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
+}
+
+export function useConfirmAutonomousTeam() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      assignments,
+    }: {
+      projectId: string;
+      assignments: AutonomousRoleRuntimeAssignment[];
+    }) => api.confirmProjectAutonomousTeam(projectId, assignments),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
+}
+
+export function useStartAutonomousProjectPlanning() {
+  return useAutonomousControlMutation((projectId) =>
+    api.startProjectAutonomousPlanning(projectId),
+  );
+}
+
+export function useResolveAutonomousEscalation() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      escalationId,
+      decision,
+      note,
+    }: {
+      projectId: string;
+      escalationId: string;
+      decision: "approved" | "rejected";
+      note?: string;
+    }) =>
+      api.resolveProjectAutonomousEscalation(
+        projectId,
+        escalationId,
+        decision,
+        note,
+      ),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
+}

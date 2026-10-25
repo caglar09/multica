@@ -816,50 +816,11 @@ func fetchGitHubInstallationRepositories(
 	installationID int64,
 	page, perPage int,
 ) (GitHubRepositoriesResponse, error) {
-	appJWT, err := signGitHubAppJWT(time.Now())
+	client, token, err := acquireGitHubInstallationToken(ctx, installationID, false)
 	if err != nil {
 		return GitHubRepositoriesResponse{}, err
 	}
-	if appJWT == "" {
-		return GitHubRepositoriesResponse{}, errors.New("github App JWT credentials unavailable")
-	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	tokenEndpoint := fmt.Sprintf(
-		"%s/app/installations/%d/access_tokens",
-		strings.TrimRight(githubAPIBase, "/"),
-		installationID,
-	)
-	tokenReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		tokenEndpoint,
-		strings.NewReader(`{"permissions":{"metadata":"read"}}`),
-	)
-	if err != nil {
-		return GitHubRepositoriesResponse{}, err
-	}
-	setGitHubAPIHeaders(tokenReq, appJWT)
-	tokenReq.Header.Set("Content-Type", "application/json")
-	tokenResp, err := client.Do(tokenReq)
-	if err != nil {
-		return GitHubRepositoriesResponse{}, fmt.Errorf("create installation token: %w", err)
-	}
-	defer tokenResp.Body.Close()
-	if tokenResp.StatusCode != http.StatusCreated {
-		_, _ = io.Copy(io.Discard, io.LimitReader(tokenResp.Body, githubAPIResponseLimit))
-		return GitHubRepositoriesResponse{}, fmt.Errorf("create installation token: github status %d", tokenResp.StatusCode)
-	}
-	var tokenBody struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(io.LimitReader(tokenResp.Body, githubAPIResponseLimit)).Decode(&tokenBody); err != nil {
-		return GitHubRepositoriesResponse{}, fmt.Errorf("decode installation token: %w", err)
-	}
-	if tokenBody.Token == "" {
-		return GitHubRepositoriesResponse{}, errors.New("github returned an empty installation token")
-	}
-	defer revokeGitHubInstallationToken(client, tokenBody.Token)
+	defer revokeGitHubInstallationToken(client, token)
 
 	repositoriesEndpoint := fmt.Sprintf(
 		"%s/installation/repositories?page=%d&per_page=%d",
@@ -871,7 +832,7 @@ func fetchGitHubInstallationRepositories(
 	if err != nil {
 		return GitHubRepositoriesResponse{}, err
 	}
-	setGitHubAPIHeaders(repositoriesReq, tokenBody.Token)
+	setGitHubAPIHeaders(repositoriesReq, token)
 	repositoriesResp, err := client.Do(repositoriesReq)
 	if err != nil {
 		return GitHubRepositoriesResponse{}, fmt.Errorf("list installation repositories: %w", err)

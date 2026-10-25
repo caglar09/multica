@@ -1,0 +1,34 @@
+package deployment
+
+import (
+	"context"
+	"errors"
+)
+
+var (
+	ErrNotFound               = errors.New("deployment resource not found")
+	ErrRevisionConflict       = errors.New("deployment operation revision conflict")
+	ErrInvalidTransition      = errors.New("invalid deployment operation transition")
+	ErrIdempotencyKeyRequired = errors.New("deployment idempotency key is required")
+	ErrEventDedupeKeyRequired = errors.New("deployment event dedupe key is required")
+	ErrInvalidOperationStatus = errors.New("invalid deployment operation status")
+)
+
+type Repository interface {
+	CreateProviderConnection(context.Context, CreateProviderConnectionInput) (ProviderConnection, error)
+	ListProviderConnections(context.Context, string) ([]ProviderConnection, error)
+	GetProviderConnection(context.Context, string, string) (ProviderConnection, error)
+	UpdateProviderConnection(context.Context, UpdateProviderConnectionInput) (ProviderConnection, error)
+	DeleteProviderConnection(context.Context, string, string) error
+	CreateTarget(context.Context, CreateTargetInput) (Target, error)
+	ListTargets(context.Context, string) ([]Target, error)
+	GetTarget(context.Context, string, string) (Target, error)
+	UpdateTarget(context.Context, UpdateTargetInput) (Target, error)
+	DeleteTarget(context.Context, string, string) error
+	CreateOperation(context.Context, CreateOperationInput) (operation Operation, created bool, err error)
+	ListOperations(context.Context, string, string) ([]Operation, error)
+	GetOperation(context.Context, string, string) (Operation, error)
+	UpdateOperation(context.Context, Operation, int64) (Operation, error)
+	AppendEvent(context.Context, AppendEventInput) (event Event, created bool, err error)
+	ListEvents(context.Context, string, string) ([]Event, error)
+}

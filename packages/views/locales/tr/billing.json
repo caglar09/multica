@@ -1,0 +1,273 @@
+{
+  "title": "Faturalandırma (test sayfası)",
+  "subtitle": "multica-cloud'un /api/v1/billing/* yoluna doğrudan geçiş. Tamamlanmış bir arayüz değil — yalnızca proxy + Stripe akışını doğrulayabilmek için tüm uç noktalar tek sayfaya yerleştirilmiştir.",
+  "endpoints": {
+    "balance": "GET /api/cloud-billing/balance",
+    "transactions": "GET /api/cloud-billing/transactions",
+    "batches": "GET /api/cloud-billing/batches",
+    "topups": "GET /api/cloud-billing/topups",
+    "buy": "GET /price-tiers · POST /checkout-sessions · POST /portal-sessions"
+  },
+  "balance": {
+    "title": "Bakiye",
+    "credits_suffix": "kredi",
+    "meta": "ham mikro: {{micro}} · sahip: {{owner}}… · güncellendi {{updated}}"
+  },
+  "buy": {
+    "title": "Kredi satın al / Faturalandırmayı yönet",
+    "no_tiers": "Yapılandırılmış fiyat kademesi yok. Cloud'da muhtemelen Stripe anahtarı tanımlı değil — ödeme 503 döndürecektir.",
+    "tier_money_to_credits": "{{money}} → {{credits}} kredi",
+    "tier_bonus": " + {{credits}} bonus",
+    "tier_bonus_with_expiry": " + {{credits}} bonus ({{expiry}})",
+    "tier_id": "id: {{id}}",
+    "open_portal": "Stripe Faturalandırma Portalını Aç",
+    "portal_hint": "Henüz ödeme yapmamış kullanıcılar için 400 beklenen bir yanıttır (Stripe müşteri kaydı oluşturulmamıştır).",
+    "toast_no_url": "Cloud ödeme URL'si döndürmedi",
+    "toast_checkout_failed": "Ödeme başarısız oldu",
+    "toast_no_portal_url": "Portal URL'si döndürülmedi",
+    "toast_portal_failed": "Portal başarısız oldu"
+  },
+  "checkout": {
+    "session_label": "Ödeme oturumu {{prefix}}…",
+    "loading": "Sipariş durumu yükleniyor…",
+    "fetch_failed": "Durum alınamadı: {{error}}",
+    "fetch_failed_unknown": "bilinmeyen hata",
+    "final_status": "Son durum: {{status}}",
+    "polling_status": "Durum sorgulanıyor… mevcut: {{status}}",
+    "status_unknown": "bilinmiyor",
+    "label_order": "Sipariş",
+    "label_tier": "Kademe",
+    "label_charged": "Tahsil edilen",
+    "charged_value": "{{money}} · {{credits}} kredi",
+    "charged_with_bonus": "{{money}} · {{credits}} kredi + {{bonus}} bonus",
+    "clear_url": "URL'den temizle"
+  },
+  "transactions": {
+    "title": "İşlemler",
+    "empty": "Henüz işlem yok.",
+    "credits_value": "{{value}} kredi",
+    "row_meta": "{{date}} · sonraki bakiye: {{balance}} kredi · ref: {{ref}}",
+    "ref_empty": "—"
+  },
+  "batches": {
+    "title": "Kredi grupları",
+    "empty": "Henüz grup yok.",
+    "remaining_over_total": "{{remaining}} / {{total}} kredi",
+    "id_suffix": "{{id}}…",
+    "consumed": "Kullanılan: {{value}} kredi",
+    "expires_suffix": " · son kullanma {{value}}",
+    "never_expires_suffix": " · sona ermez"
+  },
+  "topups": {
+    "title": "Bakiye yükleme siparişleri",
+    "empty": "Henüz bakiye yükleme siparişi yok.",
+    "amount_to_credits": "{{money}} → {{credits}} kredi",
+    "amount_to_credits_with_bonus": "{{money}} → {{credits}} kredi + {{bonus}} bonus",
+    "row_meta": "{{date}} · stripe: {{checkout}}",
+    "stripe_empty": "—"
+  },
+  "workspace": {
+    "title": "Faturalandırma",
+    "description": "Bu çalışma alanının planını, limitlerini, insan koltuklarını ve Stripe faturalandırmasını yönetin.",
+    "loading": "Çalışma alanı faturalandırması yükleniyor",
+    "plan": {
+      "free": "Ücretsiz",
+      "pro": "Pro",
+      "unknown": "Bilinmeyen plan"
+    },
+    "status": {
+      "inactive": "Etkin değil",
+      "active": "Etkin",
+      "trialing": "Deneme sürümünde",
+      "past_due": "Ödeme gecikmiş",
+      "canceled": "İptal edildi",
+      "incomplete": "Tamamlanmamış",
+      "incomplete_expired": "Kurulum süresi doldu",
+      "paused": "Duraklatıldı",
+      "unpaid": "Ödenmemiş",
+      "unknown": "Bilinmeyen durum"
+    },
+    "load_failed": {
+      "title": "Faturalandırma geçici olarak kullanılamıyor",
+      "description": "Güvenilir bir abonelik anlık görüntüsü alınamadı. Planınızda herhangi bir değişiklik yapılmadı."
+    },
+    "actions": {
+      "retry": "Tekrar dene",
+      "retry_autopilots": "Otomasyon kullanımını yenile",
+      "upgrade": "Pro'ya yükselt",
+      "manage": "Faturalandırmayı yönet",
+      "add_seats": "Koltuk ekle",
+      "cancel": "İptal",
+      "continue_to_stripe": "Stripe'a devam et"
+    },
+    "errors": {
+      "action_title": "Faturalandırma işlemi başarısız oldu",
+      "temporarily_unavailable": "Faturalandırma geçici olarak kullanılamıyor. Biraz sonra tekrar deneyin.",
+      "permission_changed": "Çalışma alanı rolünüz artık bu işleme izin vermiyor. Geçerli erişiminizi görmek için sayfayı yenileyin.",
+      "checkout_response": "Sunucu yanıtı okunamadığı için ödeme açılamadı. Seçili aralığı değiştirmeden tekrar deneyin.",
+      "already_subscribed": "Bu çalışma alanının zaten bir aboneliği var. Mevcut plan yenilendi.",
+      "checkout_failed": "Ödeme oluşturulamadı. Biraz sonra tekrar deneyin.",
+      "portal_response": "Sunucu yanıtı okunamadığı için Faturalandırma Portalı açılamadı.",
+      "portal_unavailable": "Bu çalışma alanı için Stripe Faturalandırma Portalı mevcut değil. Mevcut plan yenilendi.",
+      "portal_failed": "Faturalandırma Portalı açılamadı. Biraz sonra tekrar deneyin."
+    },
+    "return": {
+      "cancel_title": "Ödeme iptal edildi",
+      "cancel_description": "Plan değişikliği yapılmadı.",
+      "portal_title": "Faturalandırma bilgileri yenilendi",
+      "portal_description": "En güncel abonelik anlık görüntüsü aşağıda gösterilmektedir.",
+      "syncing_title": "Aboneliğiniz etkinleştiriliyor",
+      "syncing_description": "Ödeme tamamlandı. Stripe'ın plan değişikliğini onaylaması bekleniyor.",
+      "timeout_description": "Ödeme alındı ancak abonelik hâlâ senkronize ediliyor. Bu sayfayı biraz sonra yenileyin.",
+      "active_title": "Pro etkin",
+      "active_description": "Bu çalışma alanı artık Pro erişimine sahip."
+    },
+    "past_due": {
+      "title": "Ödeme dikkat gerektiriyor",
+      "description": "Ödeme yönteminizi güncellemek için Faturalandırma Portalını açın. Yukarıdaki plan rozeti şu anda geçerli olan erişimi göstermektedir.",
+      "grace_description": "Pro erişiminizi korumak için {{date}} tarihine kadar ödeme yönteminizi güncelleyin."
+    },
+    "subscription_notice": {
+      "canceling_title": "İptal planlandı",
+      "canceling_description": "Bu abonelik {{date}} tarihinde iptal edilmek üzere planlandı. Yukarıdaki plan rozeti şu anda uygulanan erişimi göstermektedir.",
+      "canceling_description_without_date": "Bu abonelik mevcut döneminin sonunda iptal edilmek üzere planlandı.",
+      "incomplete_title": "Abonelik kurulumu tamamlanmadı",
+      "incomplete_description": "Ödeme kurulumunu tamamlamak veya incelemek için faturalandırma yönetimini açın.",
+      "incomplete_expired_title": "Abonelik kurulumu süresi doldu",
+      "incomplete_expired_description": "Önceki ödeme kurulumu Pro'yu etkinleştirmeden sona erdi. Hazır olduğunuzda yeni bir yükseltme başlatın.",
+      "paused_title": "Abonelik duraklatıldı",
+      "paused_description": "Duraklatmayı ve mevcut kurtarma seçeneklerini incelemek için faturalandırma yönetimini açın.",
+      "unpaid_title": "Abonelik ödenmemiş",
+      "unpaid_description": "Ödenmemiş bakiyeyi çözmek için faturalandırma yönetimini açın.",
+      "canceled_title": "Abonelik iptal edildi",
+      "canceled_description": "Yukarıdaki yetki rozeti bu çalışma alanı için şu anda uygulanan planı göstermektedir."
+    },
+    "current": {
+      "title": "Mevcut plan",
+      "plan": "Çalışma alanı planı",
+      "plan_description": "Bu çalışma alanı için şu anda geçerli olan yetki.",
+      "members": "İnsan üyeler",
+      "members_description": "Ajanlar ve bekleyen davetler koltuk olarak sayılmaz.",
+      "member_count_one": "{{count}} üye",
+      "member_count_other": "{{count}} üye",
+      "billing_interval": "Faturalandırma aralığı",
+      "billing_interval_description": "Etkin abonelik için depolanan aralık.",
+      "period_end": "Mevcut dönem sonu",
+      "period_end_description": "Mevcut abonelik anlık görüntüsünün bildirdiği tarih."
+    },
+    "upgrade": {
+      "title": "Pro'ya yükselt",
+      "description": "Bir faturalandırma aralığı seçin, ardından mevcut koltukları ve nihai tutarı Stripe Checkout'ta onaylayın.",
+      "interval_label": "Faturalandırma aralığı",
+      "monthly": "Aylık",
+      "yearly": "Yıllık",
+      "pro_for_team_one": "{{count}} insan koltuğu için Pro",
+      "pro_for_team_other": "{{count}} insan koltuğu için Pro",
+      "price_loading": "Abonelik fiyatları yükleniyor",
+      "unit_price": "İnsan koltuğu başına {{price}}",
+      "price_at_checkout": "Sunucu, satın alma işleminden önce insan üyeleri yeniden sayar. Stripe Checkout, ödeme yapmadan önce yetkili koltuk başına fiyatı ve toplamı gösterir."
+    },
+    "management": {
+      "title": "Abonelik yönetimi",
+      "description": "Stripe, ödeme yöntemlerini, faturaları ve iptali güvenli biçimde yönetir.",
+      "portal": "Stripe Faturalandırma Portalı",
+      "portal_description": "Bu çalışma alanının aboneliğini yönetmek için Stripe'ı açın.",
+      "portal_unavailable": "Bu çalışma alanı için Stripe Faturalandırma Portalı mevcut değil."
+    },
+    "limits": {
+      "title": "Kullanım ve limitler",
+      "description": "Limitler ve kullanım, sunucunun mevcut yetki ve kota hesaplamasından gelir.",
+      "issues": "Görevler",
+      "issues_description": "Mevcut görev kullanımı ve sunucunun bildirdiği etkin limit.",
+      "autopilots": "Otomasyon çalıştırmaları",
+      "autopilots_description": "Sunucunun bildirdiği mevcut otomasyon kullanımı ve sıfırlama zamanı.",
+      "unlimited": "Sınırsız",
+      "per_month": "{{count}} / ay",
+      "usage_loading": "Otomasyon kullanımı yükleniyor",
+      "usage_label": "Otomasyon kota kullanımı",
+      "current_usage": "Mevcut kullanım",
+      "reached": "Limite ulaşıldı",
+      "usage_total": "{{total}} / {{limit}}",
+      "usage_breakdown": "{{used}} tamamlandı · {{reserved}} devam ediyor",
+      "resets_at": "{{date}} tarihinde sıfırlanır",
+      "usage_unavailable": "Kullanım geçici olarak kullanılamıyor"
+    },
+    "seats": {
+      "title": "Koltuklar",
+      "description": "Satın alınan koltuklar mevcut insan üyeleri ve bekleyen davetleri kapsar. Ajanlar hiçbir zaman koltuk kullanmaz.",
+      "human_members": "Kullanılan koltuklar",
+      "human_members_description": "Satın alınan kapasiteyi kullanan onaylanmış insan üyeler. Sayımı eşitlemek için üyelik değişikliğinden sonra yenileyin.",
+      "billed": "Satın alınan koltuklar",
+      "billed_description": "Stripe üzerinden şu anda satın alınan koltuk miktarı.",
+      "pending_invitations": "Bekleyen davetler",
+      "pending_invitations_description": "Etkin davetler, kabul edilene veya süresi dolana kadar satın alınan koltukları ayırır.",
+      "available": "Kullanılabilir koltuklar",
+      "available_description": "Üyeler tarafından kullanılmayan veya davetler için ayrılmayan satın alınan koltuklar.",
+      "pending": "Planlanmış koltuk miktarı",
+      "pending_description": "Cloud faturalandırmanın bir sonraki dönem için bildirdiği düşük miktar.",
+      "seat_count_one": "{{count}} koltuk",
+      "seat_count_other": "{{count}} koltuk",
+      "pending_with_date_one": "{{date}} tarihinden itibaren {{count}} koltuk",
+      "pending_with_date_other": "{{date}} tarihinden itibaren {{count}} koltuk",
+      "none_pending": "Planlanmış değişiklik yok",
+      "not_subscribed": "Etkin abonelik yok",
+      "unavailable": "Kullanılamıyor",
+      "summary_loading": "Abonelik koltuk ayrıntıları yükleniyor",
+      "summary_unavailable_title": "Bazı koltuk ayrıntıları kullanılamıyor",
+      "summary_unavailable_description": "Mevcut plan hâlâ gösterilmektedir ancak satın alınan ve planlanmış koltuk miktarları yüklenemedi.",
+      "members_over_capacity_title": "Üye sayısı satın alınan koltukları aşıyor",
+      "members_over_capacity_description": "Bu çalışma alanında {{actual}} üye var ancak yalnızca {{purchased}} satın alınmış koltuk mevcut. Daha fazla davet göndermeden önce yeterli koltuk ekleyin veya üye çıkarın.",
+      "occupancy_over_capacity_description": "Bu çalışma alanı, satın alınan {{purchased}} koltuğun {{occupied}} tanesini kullanıyor ({{members}} üye ve {{reserved}} bekleyen davet). Başka birini davet etmeden önce koltuk ekleyin, bir üyeyi çıkarın veya bekleyen bir daveti iptal edin.",
+      "updated": "Koltuk satın alma işlemi gönderildi"
+    },
+    "seat_purchase": {
+      "title": "Koltuk ekle",
+      "description": "Eklenecek koltuk sayısını girin. Onaylamadan önce güncel bir Stripe tahmini görüntülenir.",
+      "additional_label": "Ek koltuklar",
+      "additional_hint": "Yeni toplam değil, eklenecek koltuk sayısını girin.",
+      "preview_loading": "Tahmin güncelleniyor...",
+      "preview_unreadable": "Tahmin okunamadı. Koltuk sayısını değiştirin veya tekrar deneyin.",
+      "preview_failed": "Tahmin geçici olarak kullanılamıyor. Biraz sonra tekrar deneyin.",
+      "capacity_out_of_sync": "Stripe'taki koltuk sayısı faturalandırma kaydıyla eşleşmiyor. Bu satın alma işlemini yeniden denemeden önce destek ekibiyle iletişime geçin.",
+      "in_progress": "Başka bir koltuk satın alma işlemi işleniyor. Tamamlanmasını bekleyin; burada kalmaya devam ederse destek ekibiyle iletişime geçin.",
+      "purchase_unreadable": "Satın alma yanıtı okunamadı. Bu teklifi tekrar deneyin; aynı satın alma isteği yeniden kullanılacaktır.",
+      "purchase_failed": "Koltuklar eklenemedi. Aynı teklifle tekrar deneyin veya süresi dolduysa yenileyin.",
+      "payment_failed": "Ödeme tamamlanamadı. Stripe'ta ödeme yöntemini güncelleyin, ardından yeni bir teklif isteyin.",
+      "quote_changed": "Koltuk sayısı veya tahmin değişti. Tekrar onaylamadan önce yenilenen teklifi inceleyin.",
+      "seats_after": "Satın alma sonrası koltuklar",
+      "charge_today": "Tahmini bugünkü ücret",
+      "next_invoice": "Tahmini sonraki yenileme",
+      "tax_notice": "Stripe vergileri, kredileri ve nihai fatura ayrıntılarını belirler. Koltuklar, Stripe abonelik güncellemesini onayladıktan sonra kullanılabilir hale gelir.",
+      "confirm_one": "{{count}} koltuk ekle",
+      "confirm_other": "{{count}} koltuk ekle",
+      "pending_title": "Koltuk satın alma işlemi gerçekleştiriliyor",
+      "pending_description_one": "Stripe, abonelik güncellemesini {{count}} koltuk için onaylıyor.",
+      "pending_description_other": "Stripe, abonelik güncellemesini {{count}} koltuk için onaylıyor.",
+      "delayed_title": "Koltuk onayı beklenenden uzun sürüyor",
+      "delayed_description": "Otomatik kontrol durduruldu. Satın alma işlemi tamamlanmış olabilir; daha sonra tekrar kontrol edin veya başka bir satın alma başlatmadan önce destek ekibiyle iletişime geçin.",
+      "delayed_description_with_expiry": "Otomatik kontrol durduruldu. Girişim {{date}} sonrasında hâlâ beklemedeyse, başka bir teklif istemeden önce bu sayfayı yenileyin; beklemede kalmaya devam ederse destek ekibiyle iletişime geçin.",
+      "submitted_one": "{{count}} koltuk için satın alma işlemi gönderildi. Yeni kapasite, Stripe tarafından onaylandıktan sonra görünür.",
+      "submitted_other": "{{count}} koltuk için satın alma işlemi gönderildi. Yeni kapasite, Stripe tarafından onaylandıktan sonra görünür.",
+      "error_title": "Tahmin güncellenemedi"
+    },
+    "confirm": {
+      "title": "Stripe Checkout'a devam edilsin mi?",
+      "description": "Faturalandırma aralığı: {{interval}}. Mevcut insan üyeler: {{count}}. Stripe, ödeme öncesinde koltukları yeniden sayar ve nihai tutarı gösterir."
+    }
+  },
+  "shared": {
+    "request_failed": "İstek başarısız oldu",
+    "refresh": "Yenile",
+    "paging": "sayfa {{page}} / {{totalPages}} · toplam {{total}}",
+    "date_dash": "—"
+  },
+  "return_page": {
+    "redirecting": "Çalışma alanı faturalandırmasına yönlendiriliyorsunuz…",
+    "load_failed_title": "Çalışma alanı faturalandırması açılamadı",
+    "load_failed_description": "Stripe'tan geri döndünüz ancak doğru faturalandırma sayfasını açmak için çalışma alanı listeniz yüklenemedi. Mevcut durumu kontrol etmek için Çalışma Alanı ayarları → Faturalandırma bölümünü açın.",
+    "workspace_missing_title": "Bu çalışma alanı bulunamadı",
+    "workspace_missing_description": "Stripe'tan geri döndünüz ancak bu çalışma alanı artık size erişilemez durumda — kaldırılmış veya erişiminiz değişmiş olabilir. Mevcut durumu kontrol etmek için beklediğiniz çalışma alanındaki Faturalandırma bölümünü açın.",
+    "retry": "Tekrar dene",
+    "go_to_app": "Multica'ya git"
+  }
+}

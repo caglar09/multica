@@ -1248,6 +1248,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
 	}
+	if err := ensureIssueDependencyReady(ctx, s.Queries, issue.WorkspaceID, issue.ID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 
 	agent, err := s.Queries.GetAgent(ctx, issue.AssigneeID)
 	if err != nil {
@@ -1407,6 +1410,9 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+	if err := ensureIssueDependencyReady(ctx, s.Queries, issue.WorkspaceID, issue.ID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("mention task enqueue failed: agent not found", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -2281,6 +2287,37 @@ func (s *TaskService) SendDirectChatMessage(
 	uploaderType string,
 	uploaderID pgtype.UUID,
 ) (*DirectChatSendResult, error) {
+	return s.sendDirectChatMessage(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, "")
+}
+
+// SendDirectChatMessageWithClientMessageID is the idempotent variant used by
+// Project Leader chat. The unique database index makes the user message and
+// its task one durable turn even when the browser retries concurrently.
+func (s *TaskService) SendDirectChatMessageWithClientMessageID(
+	ctx context.Context,
+	session db.ChatSession,
+	agent db.Agent,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	clientMessageID string,
+) (*DirectChatSendResult, error) {
+	return s.sendDirectChatMessage(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, clientMessageID)
+}
+
+func (s *TaskService) sendDirectChatMessage(
+	ctx context.Context,
+	session db.ChatSession,
+	agent db.Agent,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	clientMessageID string,
+) (*DirectChatSendResult, error) {
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
 	overlay := s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)
@@ -2396,12 +2433,13 @@ func (s *TaskService) SendDirectChatMessage(
 		// Create the user message already owned by this task (task_id = task.id),
 		// so it belongs to this immutable input batch the instant it exists.
 		msg, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
-			ID:            dbid.NewV7(),
-			ChatSessionID: session.ID,
-			Role:          "user",
-			Content:       content,
-			TaskID:        task.ID,
-			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
+			ID:              dbid.NewV7(),
+			ChatSessionID:   session.ID,
+			Role:            "user",
+			Content:         content,
+			TaskID:          task.ID,
+			MessageKind:     pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
+			ClientMessageID: pgtype.Text{String: strings.TrimSpace(clientMessageID), Valid: strings.TrimSpace(clientMessageID) != ""},
 		})
 		if err != nil {
 			return fmt.Errorf("create user chat message: %w", err)
@@ -2561,11 +2599,12 @@ func (s *TaskService) OpenMikaOnboardingChat(ctx context.Context, session db.Cha
 // affected agent's status, and broadcasts task:cancelled events so frontends
 // clear their live cards.
 //
-// Callers are explicit issue-lifecycle cleanup paths only — DeleteIssue and
-// BatchDeleteIssues, where the owning issue row is going away so its tasks
-// must not be left orphaned. A plain status flip, `cancelled` included, no
-// longer routes here (MUL-4465): cancelling an issue is not an implicit "stop
-// all runs" switch. Do not re-add a status-driven caller.
+// Callers are explicit issue-lifecycle cleanup paths only — DeleteIssue,
+// BatchDeleteIssues, and autonomous-plan supersession where Project OS has
+// deterministically retired the owning logical node. A plain status flip,
+// `cancelled` included, does not route here (MUL-4465): cancelling an issue is
+// not an implicit "stop all runs" switch. The autonomous caller is explicit
+// lifecycle ownership cleanup, not status-driven cancellation.
 //
 // Before #1587 this path was "cancel rows and return", which left each affected
 // agent stuck at status="working" indefinitely, requiring a manual
@@ -4696,30 +4735,36 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		retryFireAt      pgtype.Timestamptz
 		retryMaxAttempts pgtype.Int4
 	)
-	if retryableReasons[failureReason] {
+	if retryableFailure(failureReason, errMsg) {
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if retryEligible(failureReason, parent) {
-			wantRetry = true
-			// Persist the reason-aware effective budget into the child so the
-			// retry chain self-describes (e.g. provider_network → max_attempts=3),
-			// rather than leaking a contradictory attempt=N/max_attempts=2 row.
-			retryMaxAttempts = pgtype.Int4{Int32: retryAttemptCeiling(failureReason, parent.MaxAttempts), Valid: true}
-			// Defer this attempt when the reason's schedule calls for a backoff
-			// (provider_network's final attempt waits ~5s); a zero delay leaves
-			// fire_at NULL so the child is created immediately-claimable.
-			if delay := retryDelayForAttempt(failureReason, parent.Attempt); delay > 0 {
-				retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
-			}
-			if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
-				// Best-effort: a missing overlay is not retry-fatal — the child
-				// simply runs without the Composio overlay.
-				slog.Warn("fail task auto-retry: load agent for overlay failed",
-					"task_id", util.UUIDToString(taskID),
-					"agent_id", util.UUIDToString(parent.AgentID), "error", aerr)
-			} else {
-				retryOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
+		} else {
+			// FailTask has not persisted the terminal error yet. Put the authoritative
+			// error text on the in-memory parent so retryEligible can apply
+			// reset-aware provider quota policy using the same path as the sweeper.
+			parent.Error = pgtype.Text{String: errMsg, Valid: strings.TrimSpace(errMsg) != ""}
+			if retryEligible(failureReason, parent) {
+				wantRetry = true
+				// Persist the reason-aware effective budget into the child so the
+				// retry chain self-describes (e.g. provider_network → max_attempts=3),
+				// rather than leaking a contradictory attempt=N/max_attempts=2 row.
+				retryMaxAttempts = pgtype.Int4{Int32: retryAttemptCeiling(failureReason, parent.MaxAttempts), Valid: true}
+				// Defer this attempt when the reason's schedule calls for a backoff
+				// (provider_network's final attempt waits ~5s); a zero delay leaves
+				// fire_at NULL so the child is created immediately-claimable.
+				if fireAt, ok := retryFireAtForFailure(failureReason, errMsg, parent.Attempt, time.Time{}); ok {
+					retryFireAt = pgtype.Timestamptz{Time: fireAt, Valid: true}
+				}
+				if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
+					// Best-effort: a missing overlay is not retry-fatal — the child
+					// simply runs without the Composio overlay.
+					slog.Warn("fail task auto-retry: load agent for overlay failed",
+						"task_id", util.UUIDToString(taskID),
+						"agent_id", util.UUIDToString(parent.AgentID), "error", aerr)
+				} else {
+					retryOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
+				}
 			}
 		}
 	}
@@ -5069,6 +5114,84 @@ var retryableReasons = map[string]bool{
 	string(taskfailure.ReasonSkillBundleUnavailable): true,
 }
 
+const (
+	providerQuotaResetSafetyBuffer = 5 * time.Second
+	providerQuotaResetMaxDelay     = 7 * 24 * time.Hour
+)
+
+// providerQuotaResetDelay recognises provider errors that explicitly promise a
+// reset window (for example Antigravity: "Resets in 52m8s."). A quota error
+// without a reset hint remains terminal: "credits exhausted" and similar
+// billing failures must never become an unattended retry loop.
+func providerQuotaResetDelay(rawError string) (time.Duration, bool) {
+	lower := strings.ToLower(strings.TrimSpace(rawError))
+	for _, marker := range []string{"resets in ", "reset in "} {
+		idx := strings.Index(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		rest := lower[idx+len(marker):]
+		var b strings.Builder
+		for _, r := range rest {
+			switch {
+			case r >= '0' && r <= '9':
+				b.WriteRune(r)
+			case r == 'h' || r == 'm' || r == 's':
+				b.WriteRune(r)
+			case r == ' ' || r == '\t':
+				// Providers sometimes render "52m 8s"; ParseDuration expects
+				// the compact equivalent, so whitespace is intentionally skipped.
+			default:
+				goto parsed
+			}
+		}
+	parsed:
+		candidate := b.String()
+		if candidate == "" {
+			continue
+		}
+		delay, err := time.ParseDuration(candidate)
+		if err != nil || delay <= 0 || delay > providerQuotaResetMaxDelay {
+			continue
+		}
+		return delay + providerQuotaResetSafetyBuffer, true
+	}
+	return 0, false
+}
+
+func retryableFailure(reason, rawError string) bool {
+	if retryableReasons[reason] {
+		return true
+	}
+	if reason == string(taskfailure.ReasonAgentProviderQuotaLimit) {
+		_, ok := providerQuotaResetDelay(rawError)
+		return ok
+	}
+	return false
+}
+
+// retryFireAtForFailure returns an absolute fire time when the next retry must
+// be deferred. For reset-aware quota recovery, failedAt anchors the provider's
+// relative reset promise so a server restart after the deadline does not wait
+// the whole reset window a second time.
+func retryFireAtForFailure(reason, rawError string, failedAttempt int32, failedAt time.Time) (time.Time, bool) {
+	if reason == string(taskfailure.ReasonAgentProviderQuotaLimit) {
+		delay, ok := providerQuotaResetDelay(rawError)
+		if !ok {
+			return time.Time{}, false
+		}
+		base := failedAt
+		if base.IsZero() {
+			base = time.Now()
+		}
+		return base.Add(delay), true
+	}
+	if delay := retryDelayForAttempt(reason, failedAttempt); delay > 0 {
+		return time.Now().Add(delay), true
+	}
+	return time.Time{}, false
+}
+
 // runtime_offline retries start deferred, not queued: their positive fire_at
 // routes them through health-gated promotion after a fresh runtime heartbeat
 // returns. The queue sweeper also exempts this retry lineage, covering the race
@@ -5136,7 +5259,9 @@ func resumeUnsafeFailureReason(reason string) bool {
 	// codex_resume_oversized is the strongest member of this set: a codex
 	// rollout only ever grows, so a thread whose resume response already
 	// overflowed the reader will overflow on every future attempt too.
-	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity", "agent_error.context_overflow", "codex_resume_oversized":
+	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity",
+		"agent_error.context_overflow", "codex_resume_oversized",
+		string(taskfailure.ReasonAgentProviderQuotaLimit):
 		return true
 	default:
 		return false
@@ -5192,7 +5317,11 @@ func ResumeUnsafeFailure(failureReason, errorText string) bool {
 // FailTask's in-transaction retry and the orphan sweeper's MaybeRetryFailedTask
 // so both agree on which failures re-run.
 func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
-	return retryableReasons[failureReason] &&
+	rawError := ""
+	if t.Error.Valid {
+		rawError = t.Error.String
+	}
+	return retryableFailure(failureReason, rawError) &&
 		t.Attempt < retryAttemptCeiling(failureReason, t.MaxAttempts) &&
 		!t.AutopilotRunID.Valid &&
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
@@ -5252,7 +5381,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if parent.FailureReason.Valid {
 		reason = parent.FailureReason.String
 	}
-	if !retryableReasons[reason] {
+	rawError := ""
+	if parent.Error.Valid {
+		rawError = parent.Error.String
+	}
+	if !retryableFailure(reason, rawError) {
 		return nil, nil
 	}
 	// Use the reason-aware ceiling, not the raw max_attempts column, so an
@@ -5295,8 +5428,12 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// NULL for an immediate child), and write the reason-aware ceiling into the
 	// child's max_attempts so the retry chain stays self-consistent.
 	var retryFireAt pgtype.Timestamptz
-	if delay := retryDelayForAttempt(reason, parent.Attempt); delay > 0 {
-		retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
+	failedAt := time.Time{}
+	if parent.CompletedAt.Valid {
+		failedAt = parent.CompletedAt.Time
+	}
+	if fireAt, ok := retryFireAtForFailure(reason, rawError, parent.Attempt, failedAt); ok {
+		retryFireAt = pgtype.Timestamptz{Time: fireAt, Valid: true}
 	}
 	// Same advisory slot check as FailTask's path, for the same reason: skip the
 	// work when a successor is already visible. Losing the race is handled by
@@ -5860,12 +5997,14 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							"error", checkErr,
 						)
 					} else if !hasActive {
-						updatedIssue, updateErr := s.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+						updatedIssue, updateErr := s.Queries.ResetIssueToTodoAfterTaskFailure(ctx, db.ResetIssueToTodoAfterTaskFailureParams{
 							ID:          t.IssueID,
-							Status:      "todo",
 							WorkspaceID: issue.WorkspaceID,
 						})
-						if updateErr != nil {
+						if errors.Is(updateErr, pgx.ErrNoRows) {
+							// A concurrent autonomous workflow transition won the
+							// race, so the stale failure must not project Todo.
+						} else if updateErr != nil {
 							slog.Warn("handle failed tasks: reset stuck issue failed",
 								"issue_id", issueKey,
 								"error", updateErr,
@@ -6347,6 +6486,12 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			return delegatedFailureRecoveryReplayed, nil
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return delegatedFailureRecoveryCovered, fmt.Errorf("merge recovery into pending task: %w", err)
+		}
+		if err := ensureIssueDependencyReady(ctx, s.Queries, target.issue.WorkspaceID, target.issue.ID); err != nil {
+			if errors.Is(err, ErrIssueBlockedByDependency) {
+				return delegatedFailureRecoveryCovered, nil
+			}
+			return delegatedFailureRecoveryCovered, fmt.Errorf("check recovery issue dependencies: %w", err)
 		}
 
 		originator, accountable := delegatedFailureRecoveryAttribution(target)

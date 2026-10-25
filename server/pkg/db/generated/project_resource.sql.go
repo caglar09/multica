@@ -155,6 +155,46 @@ func (q *Queries) GetProjectResourceInWorkspace(ctx context.Context, arg GetProj
 	return i, err
 }
 
+const listDeploymentSourceResourcesByWorkspace = `-- name: ListDeploymentSourceResourcesByWorkspace :many
+SELECT project_id, workspace_id, resource_type, resource_ref
+FROM project_resource
+WHERE workspace_id = $1
+  AND resource_type IN ('github_repo', 'local_directory')
+ORDER BY project_id, position ASC, created_at ASC
+`
+
+type ListDeploymentSourceResourcesByWorkspaceRow struct {
+	ProjectID    pgtype.UUID `json:"project_id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	ResourceType string      `json:"resource_type"`
+	ResourceRef  []byte      `json:"resource_ref"`
+}
+
+func (q *Queries) ListDeploymentSourceResourcesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]ListDeploymentSourceResourcesByWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, listDeploymentSourceResourcesByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeploymentSourceResourcesByWorkspaceRow{}
+	for rows.Next() {
+		var i ListDeploymentSourceResourcesByWorkspaceRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.WorkspaceID,
+			&i.ResourceType,
+			&i.ResourceRef,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjectResources = `-- name: ListProjectResources :many
 SELECT id, project_id, workspace_id, resource_type, resource_ref, label, position, created_at, created_by FROM project_resource
 WHERE project_id = $1

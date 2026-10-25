@@ -75,6 +75,52 @@ describe("ApiClient agent conversation-starter compatibility", () => {
   });
 });
 
+describe("ApiClient deployment connections", () => {
+  it("posts a Vercel PAT and never returns it in the connection response", async () => {
+    const token = "vercel_pat_test_secret";
+    const response = {
+      id: "conn-1",
+      workspace_id: "ws-1",
+      provider: "vercel",
+      name: "Production",
+      enabled: true,
+      has_credentials: true,
+      config: { team_slug: "multica" },
+      created_at: "2026-09-14T00:00:00Z",
+      updated_at: "2026-09-14T00:00:00Z",
+      token,
+      webhook_secret: "vercel_webhook_response_secret",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    const connection = await client.createDeploymentConnection("ws-1", {
+      provider: "vercel",
+      name: "Production",
+      token,
+      webhook_secret: "vercel_webhook_secret",
+      config: { team_slug: "multica" },
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      provider: "vercel",
+      name: "Production",
+      token,
+      webhook_secret: "vercel_webhook_secret",
+      config: { team_slug: "multica" },
+    });
+    expect(JSON.stringify(connection)).not.toContain(token);
+    expect(JSON.stringify(connection)).not.toContain("vercel_webhook_response_secret");
+    expect(connection).toMatchObject({ id: "conn-1", has_credentials: true });
+  });
+});
+
 describe("ApiClient edit guards", () => {
   it("serializes field baselines for issue and comment writes", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(

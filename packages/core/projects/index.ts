@@ -19,3 +19,24 @@ export {
   useUpdateProjectResource,
   useDeleteProjectResource,
 } from "./resource-queries";
+
+export {
+  autonomousProjectKeys,
+  autonomousProjectOptions,
+  usePauseAutonomousProject,
+  useResumeAutonomousProject,
+  useReplanAutonomousProject,
+  useRerunAutonomousIssue,
+  useRestartAutonomousWorkflow,
+  useConfirmAutonomousTeam,
+  useStartAutonomousProjectPlanning,
+  useRetryAutonomousAction,
+  useResolveAutonomousEscalation,
+  useUpdateAutonomousBrain,
+  projectLeaderChatOptions,
+  projectLeaderChangesOptions,
+  useApproveProjectLeaderChange,
+  useRejectProjectLeaderChange,
+} from "./autonomous";
+
+export { projectReportKeys, projectReportOptions } from "./report";

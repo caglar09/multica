@@ -19,3 +19,5 @@ services:
       dockerfile: Dockerfile.web
       args:
         NEXT_PUBLIC_APP_VERSION: dev
+  diagnostics:
+    image: multica-backend:dev

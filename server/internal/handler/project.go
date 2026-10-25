@@ -44,6 +44,20 @@ type ProjectResponse struct {
 	// payload to keep parent metadata and child collections separate; clients
 	// that need the list call ListProjectResources directly.
 	ResourceCount int64 `json:"resource_count"`
+	// WorkingDirectories are daemon-owned project task locations grouped by
+	// machine. They are populated on the detail endpoint only; list responses
+	// keep this collection empty to avoid an extra task scan per project.
+	WorkingDirectories []ProjectWorkingDirectoryResponse `json:"working_directories,omitempty"`
+}
+
+type ProjectWorkingDirectoryResponse struct {
+	Path         string `json:"path"`
+	RelativePath string `json:"relative_path"`
+	DaemonID     string `json:"daemon_id"`
+	HealthPort   int    `json:"health_port,omitempty"`
+	RuntimeID    string `json:"runtime_id"`
+	TaskID       string `json:"task_id"`
+	Status       string `json:"status"`
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
@@ -98,6 +112,93 @@ func (h *Handler) loadProjectResourceCount(ctx context.Context, projectID pgtype
 	return rows[0].ResourceCount
 }
 
+// loadProjectWorkingDirectories returns at most one most-recent daemon-owned
+// task directory per local machine. A project can execute on multiple daemons,
+// so the server must not collapse these into one global path: an absolute path
+// is only meaningful on the machine whose daemon reported it.
+//
+// This is intentionally detail-only metadata. It is derived from durable task
+// lifecycle state instead of predicting ~/multica_workspaces paths from labels;
+// daemon root/profile overrides and stable task-root records make prediction
+// incorrect. The renderer matches daemon_id to the local desktop before making
+// the path clickable.
+func (h *Handler) loadProjectWorkingDirectories(ctx context.Context, workspaceID, projectID pgtype.UUID) []ProjectWorkingDirectoryResponse {
+	if h.DB == nil {
+		return nil
+	}
+	rows, err := h.DB.Query(ctx, `
+		SELECT
+			atq.id::text,
+			atq.runtime_id::text,
+			ar.daemon_id,
+			CASE
+				WHEN ar.metadata->>'health_port' ~ '^[0-9]+$' THEN (ar.metadata->>'health_port')::int
+				ELSE 0
+			END AS health_port,
+			atq.status,
+			COALESCE(NULLIF(atq.durable_work_dir, ''), NULLIF(atq.work_dir, '')) AS work_path,
+			(NULLIF(atq.durable_work_dir, '') IS NOT NULL) AS is_durable
+		FROM agent_task_queue atq
+		JOIN issue i ON i.id = atq.issue_id
+		JOIN agent_runtime ar ON ar.id = atq.runtime_id
+		WHERE i.workspace_id = $1
+		  AND i.project_id = $2
+		  AND ar.daemon_id IS NOT NULL
+		  AND BTRIM(ar.daemon_id) <> ''
+		  AND COALESCE(NULLIF(atq.durable_work_dir, ''), NULLIF(atq.work_dir, '')) IS NOT NULL
+		ORDER BY atq.created_at DESC, atq.id DESC
+		LIMIT 200
+	`, workspaceID, projectID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	seenDaemon := make(map[string]struct{})
+	locations := make([]ProjectWorkingDirectoryResponse, 0, 2)
+	for rows.Next() {
+		var taskID, runtimeID, daemonID, status, path string
+		var healthPort int
+		var durable bool
+		if err := rows.Scan(&taskID, &runtimeID, &daemonID, &healthPort, &status, &path, &durable); err != nil {
+			return nil
+		}
+		if _, exists := seenDaemon[daemonID]; exists {
+			continue
+		}
+		seenDaemon[daemonID] = struct{}{}
+
+		workspaceKey, taskKey := uuidToString(workspaceID), taskID
+		if durable {
+			// durable_work_dir may be an arbitrary user-owned delivery path rather
+			// than the managed {workspace}/{task}/workdir layout.
+			workspaceKey, taskKey = "", ""
+		}
+		locations = append(locations, ProjectWorkingDirectoryResponse{
+			Path:         path,
+			RelativePath: relativeWorkDir(path, workspaceKey, taskKey),
+			DaemonID:     daemonID,
+			HealthPort:   healthPort,
+			RuntimeID:    runtimeID,
+			TaskID:       taskID,
+			Status:       status,
+		})
+	}
+	if rows.Err() != nil {
+		return nil
+	}
+	return locations
+}
+
+type CreateProjectBootstrapRequest struct {
+	AutonomyMode  string          `json:"autonomy_mode"`
+	AutonomyLevel string          `json:"autonomy_level"`
+	Brief         string          `json:"brief"`
+	Knowledge     json.RawMessage `json:"knowledge"`
+	Approvals     json.RawMessage `json:"approvals"`
+	Budget        json.RawMessage `json:"budget"`
+}
+
 type CreateProjectRequest struct {
 	Title       string                                `json:"title"`
 	Description *string                               `json:"description"`
@@ -109,6 +210,7 @@ type CreateProjectRequest struct {
 	StartDate   *string                               `json:"start_date"`
 	DueDate     *string                               `json:"due_date"`
 	Resources   []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
+	Bootstrap   *CreateProjectBootstrapRequest        `json:"bootstrap,omitempty"`
 }
 
 // CreateProjectResourceRequestPayload mirrors CreateProjectResourceRequest but
@@ -217,6 +319,7 @@ func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	resp := projectToResponse(project)
 	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(r.Context(), wsUUID, project.ID)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)
+	resp.WorkingDirectories = h.loadProjectWorkingDirectories(r.Context(), wsUUID, project.ID)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -322,6 +425,93 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		dueDate = d
 	}
 
+	bootstrapMode := "standard"
+	bootstrapLevel := "development"
+	var bootstrapKnowledge, bootstrapApprovals, bootstrapBudget []byte
+	var bootstrapKnowledgeItems []struct {
+		Kind    string `json:"kind"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+	if req.Bootstrap != nil {
+		if strings.TrimSpace(req.Bootstrap.AutonomyMode) != "" {
+			bootstrapMode = strings.TrimSpace(req.Bootstrap.AutonomyMode)
+		}
+		if bootstrapMode != "standard" && bootstrapMode != "autonomous" {
+			writeError(w, http.StatusBadRequest, "bootstrap.autonomy_mode must be standard or autonomous")
+			return
+		}
+		if strings.TrimSpace(req.Bootstrap.AutonomyLevel) != "" {
+			bootstrapLevel = strings.TrimSpace(req.Bootstrap.AutonomyLevel)
+		}
+		switch bootstrapLevel {
+		case "assisted", "development", "delivery", "closed_loop":
+		default:
+			writeError(w, http.StatusBadRequest, "bootstrap.autonomy_level is invalid")
+			return
+		}
+		if len(strings.TrimSpace(req.Bootstrap.Brief)) > 20000 {
+			writeError(w, http.StatusBadRequest, "bootstrap.brief exceeds 20000 characters")
+			return
+		}
+		bootstrapKnowledge = req.Bootstrap.Knowledge
+		if len(bootstrapKnowledge) == 0 {
+			bootstrapKnowledge = []byte("[]")
+		}
+		if err := json.Unmarshal(bootstrapKnowledge, &bootstrapKnowledgeItems); err != nil {
+			writeError(w, http.StatusBadRequest, "bootstrap.knowledge must be a JSON array")
+			return
+		}
+		validKnowledgeKinds := map[string]bool{
+			"prd": true,
+			"requirements": true,
+			"architecture": true,
+			"design": true,
+			"api_spec": true,
+			"reference": true,
+			"note": true,
+		}
+		if len(bootstrapKnowledgeItems) > 50 {
+			writeError(w, http.StatusBadRequest, "bootstrap.knowledge supports at most 50 documents")
+			return
+		}
+		totalKnowledgeChars := 0
+		for i, item := range bootstrapKnowledgeItems {
+			kind := strings.TrimSpace(item.Kind)
+			title := strings.TrimSpace(item.Title)
+			content := strings.TrimSpace(item.Content)
+			if !validKnowledgeKinds[kind] {
+				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"].kind is invalid")
+				return
+			}
+			if title == "" || content == "" {
+				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"] requires title and content")
+				return
+			}
+			if len(title) > 200 {
+				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"].title exceeds 200 characters")
+				return
+			}
+			if len(content) > 100000 {
+				writeError(w, http.StatusBadRequest, "bootstrap.knowledge["+strconv.Itoa(i)+"].content exceeds 100000 characters")
+				return
+			}
+			totalKnowledgeChars += len(content)
+		}
+		if totalKnowledgeChars > 500000 {
+			writeError(w, http.StatusBadRequest, "bootstrap.knowledge exceeds 500000 total characters")
+			return
+		}
+		bootstrapApprovals = req.Bootstrap.Approvals
+		if len(bootstrapApprovals) == 0 {
+			bootstrapApprovals = []byte("{}")
+		}
+		bootstrapBudget = req.Bootstrap.Budget
+		if len(bootstrapBudget) == 0 {
+			bootstrapBudget = []byte("{}")
+		}
+	}
+
 	// Pre-validate every resource payload before opening a transaction so an
 	// invalid ref produces a clean 400 with no DB work. For local_directory we
 	// also enforce one row per daemon_id within the batch — the daemon-side
@@ -380,8 +570,10 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		DueDate:     dueDate,
 	}
 
-	// Without resources, keep the simple non-tx path.
-	if len(req.Resources) == 0 {
+	// Keep the simple non-tx path only for legacy/standard projects with no
+	// bootstrap metadata. Autonomous bootstrap must commit atomically with the
+	// project so the project-created event cannot race ahead of its mode/policy.
+	if len(req.Resources) == 0 && req.Bootstrap == nil {
 		project, err := h.Queries.CreateProject(r.Context(), createParams)
 		if err != nil {
 			h.writeProjectWriteError(w, r, err, "create")
@@ -393,7 +585,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Transactional path: project + all resources are atomic.
+	// Transactional path: project + resources + bootstrap metadata are atomic.
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start transaction")
@@ -409,6 +601,79 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	creator, _ := h.parseUserUUIDOrZero(userID)
+	if req.Bootstrap != nil {
+		if _, err := tx.Exec(r.Context(), `
+			INSERT INTO autonomous_project_bootstrap (
+				project_id, workspace_id, autonomy_mode, autonomy_level,
+				brief, knowledge, policy, budget, status, created_by
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ready', $9)
+		`,
+			project.ID,
+			project.WorkspaceID,
+			bootstrapMode,
+			bootstrapLevel,
+			strings.TrimSpace(req.Bootstrap.Brief),
+			bootstrapKnowledge,
+			bootstrapApprovals,
+			bootstrapBudget,
+			creator,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to persist project bootstrap")
+			return
+		}
+		if bootstrapMode == "autonomous" {
+			if brief := strings.TrimSpace(req.Bootstrap.Brief); brief != "" {
+				content, _ := json.Marshal(map[string]any{"text": brief, "kind": "brief"})
+				if _, err := tx.Exec(r.Context(), `
+					INSERT INTO autonomous_project_brain_entry (
+						workspace_id, project_id, entry_type, subject, content,
+						source_type, source_id, confidence, created_by_type, created_by_id
+					)
+					VALUES ($1, $2, 'requirement', 'Bootstrap brief', $3,
+					        'bootstrap', 'brief', 1.0, 'member', $4)
+				`, project.WorkspaceID, project.ID, content, creator); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to seed project brain brief")
+					return
+				}
+			}
+			for index, item := range bootstrapKnowledgeItems {
+				kind := strings.ToLower(strings.TrimSpace(item.Kind))
+				entryType := "fact"
+				switch kind {
+				case "requirements":
+					entryType = "requirement"
+				case "architecture", "api_spec":
+					entryType = "architecture_decision"
+				case "design", "prd":
+					entryType = "product_decision"
+				}
+				content, _ := json.Marshal(map[string]any{
+					"kind": kind,
+					"title": strings.TrimSpace(item.Title),
+					"text": strings.TrimSpace(item.Content),
+				})
+				if _, err := tx.Exec(r.Context(), `
+					INSERT INTO autonomous_project_brain_entry (
+						workspace_id, project_id, entry_type, subject, content,
+						source_type, source_id, confidence, created_by_type, created_by_id
+					)
+					VALUES ($1, $2, $3, $4, $5, 'bootstrap', $6, 1.0, 'member', $7)
+				`,
+					project.WorkspaceID,
+					project.ID,
+					entryType,
+					strings.TrimSpace(item.Title),
+					content,
+					fmt.Sprintf("knowledge:%d", index),
+					creator,
+				); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to seed project brain knowledge")
+					return
+				}
+			}
+		}
+	}
 	resourceRows := make([]db.ProjectResource, 0, len(req.Resources))
 	for i, res := range req.Resources {
 		var label pgtype.Text

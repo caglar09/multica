@@ -7,6 +7,9 @@ export function resolveSettingsLocation(params: URLSearchParams) {
   if (tab === "github" || tab === "lark") {
     return { tab: "integrations", section: null, integration: tab };
   }
+  if (tab === "deployments") {
+    return { tab: "deployment-providers", section: null, integration: null };
+  }
   return {
     tab: tab === "labs" ? "workspace" : tab,
     section: params.get("section"),

@@ -6,6 +6,7 @@ import type { Project } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import { ProjectsPage } from "./projects-page";
+import { ProjectDashboardPage } from "./project-dashboard-page";
 
 const mocks = vi.hoisted(() => ({
   projects: [] as Project[],
@@ -225,6 +226,17 @@ function renderProjects(adapter = makeAdapter()) {
   return adapter;
 }
 
+function renderProjectDashboard(
+  adapter = makeAdapter({ pathname: "/test-workspace" }),
+) {
+  renderWithI18n(
+    <NavigationProvider value={adapter}>
+      <ProjectDashboardPage />
+    </NavigationProvider>,
+  );
+  return adapter;
+}
+
 function projectRow() {
   const row = screen.getByText(PROJECT.title).closest('[role="row"]');
   if (!row) throw new Error("project row not found");
@@ -248,6 +260,27 @@ beforeEach(() => {
   mocks.projectViewState.sortDirection = "asc";
   mocks.projectViewState.hiddenColumns = [];
   mocks.projectViewState.filters = { statuses: [], priorities: [], leads: [] };
+});
+
+describe("ProjectDashboardPage", () => {
+  it("summarizes project tasks and links each project to its detail page", async () => {
+    const user = userEvent.setup();
+    renderProjectDashboard();
+
+    expect(
+      screen.getByText("Issues", { selector: "dt" }).parentElement?.querySelector("dd"),
+    ).toHaveTextContent("3");
+    expect(
+      screen.getByText("Completed", { selector: "dt" }).parentElement?.querySelector("dd"),
+    ).toHaveTextContent("1");
+    expect(screen.getByRole("link", { name: /Launch Plan/ })).toHaveAttribute(
+      "href",
+      "/test-workspace/projects/project-1",
+    );
+
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    expect(mocks.openModal).toHaveBeenCalledWith("create-project");
+  });
 });
 
 describe("ProjectsPage compact row navigation", () => {

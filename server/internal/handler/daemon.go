@@ -203,6 +203,7 @@ type DaemonRegisterRequest struct {
 	DeviceName      string   `json:"device_name"`
 	CLIVersion      string   `json:"cli_version"` // multica CLI version
 	LaunchedBy      string   `json:"launched_by"` // "desktop" when spawned by the Electron app
+	HealthPort      int      `json:"health_port"`
 	Runtimes        []struct {
 		Name    string `json:"name"`
 		Type    string `json:"type"`
@@ -222,10 +223,11 @@ type DaemonRegisterRequest struct {
 }
 
 type daemonWorkspaceReposResponse struct {
-	WorkspaceID  string          `json:"workspace_id"`
-	Repos        []RepoData      `json:"repos"`
-	ReposVersion string          `json:"repos_version"`
-	Settings     json.RawMessage `json:"settings,omitempty"`
+	WorkspaceID       string                   `json:"workspace_id"`
+	Repos             []RepoData               `json:"repos"`
+	ReposVersion      string                   `json:"repos_version"`
+	Settings          json.RawMessage          `json:"settings,omitempty"`
+	DeploymentSources []daemonDeploymentSource `json:"deployment_sources,omitempty"`
 }
 
 func normalizeWorkspaceRepos(repos []RepoData) []RepoData {
@@ -486,6 +488,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 			"version":      runtime.Version,
 			"cli_version":  req.CLIVersion,
 			"launched_by":  req.LaunchedBy,
+			"health_port":  req.HealthPort,
 			"capabilities": requestClientCapabilities(r),
 		})
 
@@ -692,6 +695,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 					"version":                            "",
 					"cli_version":                        req.CLIVersion,
 					"launched_by":                        req.LaunchedBy,
+					"health_port":                        req.HealthPort,
 					"capabilities":                       requestClientCapabilities(r),
 					"runtime_profile_registration_error": true,
 					"runtime_profile_failure_reason":     reason,
@@ -734,12 +738,14 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 	})
 
 	repoResp := workspaceReposResponse(req.WorkspaceID, ws.Repos, ws.Settings)
+	repoResp.DeploymentSources = h.daemonDeploymentSources(r.Context(), req.WorkspaceID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"runtimes":      resp,
-		"repos":         repoResp.Repos,
-		"repos_version": repoResp.ReposVersion,
-		"settings":      repoResp.Settings,
+		"runtimes":           resp,
+		"repos":              repoResp.Repos,
+		"repos_version":      repoResp.ReposVersion,
+		"settings":           repoResp.Settings,
+		"deployment_sources": repoResp.DeploymentSources,
 	})
 }
 
@@ -917,7 +923,9 @@ func (h *Handler) GetDaemonWorkspaceRepos(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusOK, workspaceReposResponse(workspaceID, ws.Repos, ws.Settings))
+	repoResp := workspaceReposResponse(workspaceID, ws.Repos, ws.Settings)
+	repoResp.DeploymentSources = h.daemonDeploymentSources(r.Context(), workspaceID)
+	writeJSON(w, http.StatusOK, repoResp)
 }
 
 // setRuntimeOffline flips a runtime offline, recording the daemon's reason when
@@ -2884,6 +2892,59 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
+		var sessionKind string
+		if err := h.DB.QueryRow(r.Context(), `SELECT session_kind FROM chat_session WHERE id=$1`, cs.ID).Scan(&sessionKind); err == nil && cs.ProjectID.Valid && resp.Agent != nil {
+			reasoningOnlySession := sessionKind == "autonomous_project_leader" || sessionKind == "autonomous_project_planning"
+			projectManagerChat := false
+			if !reasoningOnlySession {
+				// A standard project chat can still be opened against the
+				// provisioned Project Manager agent. Resolve the role from the
+				// active project team instead of trusting the agent name or chat
+				// instructions; those are user-editable and are not a security
+				// boundary.
+				if err := h.DB.QueryRow(r.Context(), `
+					SELECT EXISTS (
+						SELECT 1
+						FROM autonomous_project_team_member tm
+						JOIN autonomous_project_team team ON team.id = tm.team_id
+						WHERE tm.agent_id = $1
+						  AND tm.role = 'product_manager'
+						  AND tm.active = TRUE
+						  AND team.workspace_id = $2
+						  AND team.project_id = $3
+						  AND team.status = 'active'
+					)
+				`, task.AgentID, cs.WorkspaceID, cs.ProjectID).Scan(&projectManagerChat); err != nil {
+					slog.Error("chat claim: failed to resolve project manager policy; preserving task for redelivery",
+						"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+					return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "error_project_manager_policy",
+						status:  http.StatusInternalServerError,
+						message: "failed to resolve project manager policy",
+					}
+				}
+			}
+
+			if projectManagerChatNeedsReadOnly(sessionKind, projectManagerChat) {
+				// Project Manager and hidden planning turns are reasoning-only.
+				// The daemon enforces the provider policy below; this marker must
+				// never be inferred from instructions or user text.
+				resp.Agent.ReadOnly = true
+				resp.PluginHookTools = nil
+				resp.RemoteMCPConnections = nil
+				if projectManagerChat {
+					resp.Agent.Instructions += "\n\n## Project Manager Chat Contract\n" + projectManagerChatContract
+				} else {
+					leaderContext, contextErr := h.buildProjectLeaderContext(r.Context(), cs.WorkspaceID, cs.ProjectID, projectCtx)
+					if contextErr != nil {
+						slog.Warn("project leader context unavailable; delivery continues without proposal context", "task_id", uuidToString(task.ID), "project_id", uuidToString(cs.ProjectID), "error", contextErr)
+						resp.Agent.Instructions += "\n\n## Project Leader Contract\n" + projectLeaderChatContract + "\n\n## Project Leader Context\nContext could not be loaded. Do not produce a proposal; explain that project context is temporarily unavailable."
+					} else {
+						resp.Agent.Instructions += "\n\n## Project Leader Contract\n" + projectLeaderChatContract + "\n\n## Project Leader Context\n" + leaderContext
+					}
+				}
+			}
+		}
 		if !task.ForceFreshSession && !task.ChannelContextRevision.Valid {
 			// Resume chat sessions only when the stored pointer was produced
 			// by the same runtime as the claiming task. When the chat_session
@@ -3414,6 +3475,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
 }
 
+func projectManagerChatNeedsReadOnly(sessionKind string, projectManagerChat bool) bool {
+	return projectManagerChat || sessionKind == "autonomous_project_leader" || sessionKind == "autonomous_project_planning"
+}
+
 // worktreeClaimBlockReason returns a user-facing reason when this runtime must
 // not run the task, or "" when it may proceed.
 //
@@ -3909,6 +3974,11 @@ type TaskCompleteRequest struct {
 	// local_directory tasks never touch the user's working copy, so this is the
 	// only pointer to where the changes went. Empty for every other task kind.
 	BranchName string `json:"branch_name,omitempty"`
+	// Worktree* fields are daemon-observed Git evidence. They are persisted
+	// inside task.result and later become the authoritative ChangeSet identity.
+	WorktreeBaseSHA      string   `json:"worktree_base_sha,omitempty"`
+	WorktreeCommitSHA    string   `json:"worktree_commit_sha,omitempty"`
+	WorktreeChangedFiles []string `json:"worktree_changed_files,omitempty"`
 	// SessionRolloutMissing: the daemon withheld this task's Codex session
 	// because its rollout was missing (MUL-5305). Clear the resume pointer and
 	// flag the continuity gap for the next claim.
@@ -3934,6 +4004,11 @@ func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.WorkDir = util.SanitizeTextForPostgres(req.WorkDir)
 	req.DurableWorkDir = util.SanitizeTextForPostgres(req.DurableWorkDir)
 	req.BranchName = util.SanitizeTextForPostgres(req.BranchName)
+	req.WorktreeBaseSHA = util.SanitizeTextForPostgres(req.WorktreeBaseSHA)
+	req.WorktreeCommitSHA = util.SanitizeTextForPostgres(req.WorktreeCommitSHA)
+	for i := range req.WorktreeChangedFiles {
+		req.WorktreeChangedFiles[i] = util.SanitizeTextForPostgres(req.WorktreeChangedFiles[i])
+	}
 	req.RetiredSessionID = util.SanitizeTextForPostgres(req.RetiredSessionID)
 }
 
@@ -4018,6 +4093,14 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("complete task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if h.ProjectLeaderCompletion != nil {
+		if err := h.ProjectLeaderCompletion(r.Context(), task.ID, task.Result); err != nil {
+			// Chat completion is already durable. A malformed leader answer must
+			// not turn a completed delivery task into a retry loop; it remains
+			// visible in the transcript and can be corrected in the next turn.
+			slog.Warn("project leader completion was not accepted", "task_id", uuidToString(task.ID), "error", err)
+		}
 	}
 
 	h.emitIssueExecutedOnFirstCompletion(r, task)

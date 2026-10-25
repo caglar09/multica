@@ -531,10 +531,19 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 	}, nil)
 }
 
-func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
+func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, worktreeBaseSHA, worktreeCommitSHA string, worktreeChangedFiles []string, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
+	}
+	if worktreeBaseSHA != "" {
+		body["worktree_base_sha"] = worktreeBaseSHA
+	}
+	if worktreeCommitSHA != "" {
+		body["worktree_commit_sha"] = worktreeCommitSHA
+	}
+	if len(worktreeChangedFiles) > 0 {
+		body["worktree_changed_files"] = worktreeChangedFiles
 	}
 	if sessionID != "" {
 		body["session_id"] = sessionID
@@ -971,10 +980,11 @@ func (c *Client) Deregister(ctx context.Context, runtimeIDs []string, reasons ma
 
 // RegisterResponse holds the server's response to a daemon registration.
 type RegisterResponse struct {
-	Runtimes     []Runtime       `json:"runtimes"`
-	Repos        []RepoData      `json:"repos"`
-	ReposVersion string          `json:"repos_version"`
-	Settings     json.RawMessage `json:"settings,omitempty"`
+	Runtimes          []Runtime                 `json:"runtimes"`
+	Repos             []RepoData                `json:"repos"`
+	ReposVersion      string                    `json:"repos_version"`
+	Settings          json.RawMessage           `json:"settings,omitempty"`
+	DeploymentSources []DeploymentSourceBinding `json:"deployment_sources,omitempty"`
 }
 
 func (c *Client) Register(ctx context.Context, req map[string]any) (*RegisterResponse, error) {
@@ -986,10 +996,11 @@ func (c *Client) Register(ctx context.Context, req map[string]any) (*RegisterRes
 }
 
 type WorkspaceReposResponse struct {
-	WorkspaceID  string          `json:"workspace_id"`
-	Repos        []RepoData      `json:"repos"`
-	ReposVersion string          `json:"repos_version"`
-	Settings     json.RawMessage `json:"settings,omitempty"`
+	WorkspaceID       string                    `json:"workspace_id"`
+	Repos             []RepoData                `json:"repos"`
+	ReposVersion      string                    `json:"repos_version"`
+	Settings          json.RawMessage           `json:"settings,omitempty"`
+	DeploymentSources []DeploymentSourceBinding `json:"deployment_sources,omitempty"`
 }
 
 func (c *Client) GetWorkspaceRepos(ctx context.Context, workspaceID string) (*WorkspaceReposResponse, error) {
@@ -998,6 +1009,11 @@ func (c *Client) GetWorkspaceRepos(ctx context.Context, workspaceID string) (*Wo
 		return nil, err
 	}
 	return &resp, nil
+}
+
+func (c *Client) ReportDeploymentSourceRevision(ctx context.Context, workspaceID, projectID string, revision DeploymentSourceRevision) error {
+	path := fmt.Sprintf("/api/daemon/workspaces/%s/projects/%s/deployment-source-revision", workspaceID, projectID)
+	return c.postJSON(ctx, path, revision, nil)
 }
 
 // RuntimeProfile mirrors the server's workspace custom runtime profile

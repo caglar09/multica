@@ -65,6 +65,8 @@ import {
   PluginPreviewSchema,
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
+  DeploymentLogResultSchema,
+  EMPTY_DEPLOYMENT_LOG_RESULT,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -74,6 +76,19 @@ import {
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
+
+describe("DeploymentLogResultSchema", () => {
+  it("falls back when provider log output is malformed", () => {
+    expect(
+      parseWithFallback(
+        { logs: "not-an-array", completed: true },
+        DeploymentLogResultSchema,
+        EMPTY_DEPLOYMENT_LOG_RESULT,
+        { endpoint: "deployment logs test" },
+      ),
+    ).toEqual(EMPTY_DEPLOYMENT_LOG_RESULT);
+  });
+});
 
 const baseIssue = {
   id: "11111111-1111-1111-1111-111111111111",

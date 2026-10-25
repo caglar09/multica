@@ -18,6 +18,7 @@ import {
   Blocks,
   CreditCard,
   Server,
+  Rocket,
 } from "lucide-react";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useFeatureEnabled } from "@multica/core/config";
@@ -35,6 +36,7 @@ import { WorkspaceTab } from "./workspace-tab";
 import { MembersTab } from "./members-tab";
 import { RepositoriesTab } from "./repositories-tab";
 import { IntegrationsTab } from "./integrations-tab";
+import { DeploymentProvidersTab } from "./deployment-providers-tab";
 import { NotificationsTab } from "./notifications-tab";
 import { LabelsTab } from "./labels-tab";
 import { IssueStatusesTab } from "./issue-statuses-tab";
@@ -196,6 +198,12 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
           t(($) => $.page.tabs.integrations),
           Plug,
           <IntegrationsTab />,
+        ),
+        entry(
+          "deployment-providers",
+          t(($) => $.page.tabs.deployment_providers ?? "Deployment Providers"),
+          Rocket,
+          <DeploymentProvidersTab />,
         ),
         entry(
           "mcp",

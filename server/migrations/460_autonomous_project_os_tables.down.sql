@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS autonomous_project_incident;
+DROP TABLE IF EXISTS autonomous_project_deployment;
+DROP TABLE IF EXISTS autonomous_project_budget;
+DROP TABLE IF EXISTS autonomous_project_escalation;
+DROP TABLE IF EXISTS autonomous_project_quality_gate_run;
+DROP TABLE IF EXISTS autonomous_project_artifact;
+DROP TABLE IF EXISTS autonomous_project_brain_entry;
+DROP TABLE IF EXISTS autonomous_project_plan_edge;
+DROP TABLE IF EXISTS autonomous_project_plan_node;
+DROP TABLE IF EXISTS autonomous_project_plan;

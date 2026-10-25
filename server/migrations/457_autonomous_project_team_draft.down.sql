@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_autonomous_project_team_draft_workspace_status;
+DROP TABLE IF EXISTS autonomous_project_team_draft;

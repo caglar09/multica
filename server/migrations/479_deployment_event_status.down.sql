@@ -1,0 +1,1 @@
+ALTER TABLE deployment_event DROP CONSTRAINT IF EXISTS deployment_event_observed_status_check, ADD CONSTRAINT deployment_event_observed_status_check CHECK (observed_status IS NULL OR observed_status IN ('queued', 'dispatching', 'running', 'retry_wait', 'succeeded', 'failed', 'canceled'));

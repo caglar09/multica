@@ -32,6 +32,8 @@ import type {
   WorkspaceSeatPurchasePreview,
   PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
+  DeploymentProviderConnection,
+  DeploymentLogResult,
   CronPreviewResponse,
   DingTalkInstallation,
   ListDingTalkInstallationsResponse,
@@ -89,6 +91,60 @@ import type {
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
+
+export const DeploymentProviderConnectionSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  provider: z.string(),
+  name: z.string(),
+  enabled: z.boolean(),
+  has_credentials: z.boolean().optional(),
+  webhook_url: z.string().optional(),
+  webhook_configured: z.boolean().optional(),
+  webhook_status: z.enum(["configured", "polling_only", "unsupported"]).optional(),
+  capabilities: z.object({
+    trigger: z.boolean().optional(),
+    status: z.boolean().optional(),
+    cancel: z.boolean().optional(),
+    webhook: z.boolean().optional(),
+    evidence: z.boolean().optional(),
+    logs: z.boolean().optional(),
+    promote: z.boolean().optional(),
+    rollback: z.boolean().optional(),
+    target_discovery: z.boolean().optional(),
+    target_create: z.boolean().optional(),
+  }).loose().optional(),
+  config: z.object({
+    team_id: z.string().optional(),
+    team_slug: z.string().optional(),
+    account_name: z.string().optional(),
+    user_id: z.string().optional(),
+    scope: z.string().optional(),
+  }).loose().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+export const EMPTY_DEPLOYMENT_PROVIDER_CONNECTION: DeploymentProviderConnection = {
+  id: "",
+  workspace_id: "",
+  provider: "",
+  name: "",
+  enabled: false,
+  created_at: "",
+  updated_at: "",
+};
+
+export const DeploymentLogResultSchema = z.object({
+  logs: z.array(z.string()),
+  next_token: z.string().optional(),
+  completed: z.boolean(),
+});
+
+export const EMPTY_DEPLOYMENT_LOG_RESULT: DeploymentLogResult = {
+  logs: [],
+  completed: false,
+};
 
 export const PluginConfigFieldSchema = z.object({
   key: z.string(),
@@ -1205,6 +1261,37 @@ export const CommentSubIssueTaskResponseSchema = z.object({
   task_id: z.string().min(1),
 }).loose();
 
+export const IssueDependencyIssueSchema = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  title: z.string(),
+  status: z.string(),
+  done: z.boolean(),
+}).loose();
+
+export const IssueDependencySchema = z.object({
+  id: z.string(),
+  type: z.string(),
+  issue_id: z.string(),
+  depends_on_issue_id: z.string(),
+  related_issue: IssueDependencyIssueSchema,
+}).loose();
+
+export const IssueDependenciesResponseSchema = z.object({
+  blocked_by: z.array(IssueDependencySchema).default([]),
+  blocks: z.array(IssueDependencySchema).default([]),
+  is_blocked: z.boolean().default(false),
+  unresolved_blocker_count: z.number().int().nonnegative().default(0),
+  dependency_state: z.string().default("unblocked"),
+}).loose();
+
+export const IssueDependencyMutationResponseSchema = z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  depends_on_issue_id: z.string(),
+  type: z.string(),
+}).loose();
+
 export const IssueSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
@@ -1242,6 +1329,13 @@ export const IssueSchema = z.object({
   // Older backends predate `stage`; default to null so a missing field parses
   // cleanly into the non-optional Issue.stage (number | null).
   stage: z.number().nullable().default(null),
+  // Dependency projections are additive so older self-hosted backends keep
+  // parsing. The booleans/count default to the safe unblocked state.
+  blocked_by: z.array(IssueDependencySchema).optional().catch(undefined),
+  blocks: z.array(IssueDependencySchema).optional().catch(undefined),
+  is_blocked: z.boolean().default(false).catch(false),
+  unresolved_blocker_count: z.number().int().nonnegative().default(0).catch(0),
+  dependency_state: z.string().optional().catch(undefined),
   start_date: z.string().nullable(),
   due_date: z.string().nullable(),
   metadata: IssueMetadataSchema,
