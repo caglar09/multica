@@ -395,7 +395,9 @@
       "code": "コード",
       "channels": "メッセージング",
       "apps": "接続済みアプリ",
-      "workflows": "ワークフロー"
+      "workflows": "ワークフロー",
+      "repositories": "リポジトリ",
+      "integrations": "連携"
     },
     "groups": {
       "personal": "個人",
@@ -845,7 +847,22 @@
     "feature_auto_link_description": "タイトルかブランチ名にタスク番号（例: {{example}}）を含む PR、または説明に「Closes {{example}}」と書いた PR を、そのタスクに関連付けます。",
     "status_paused": "一時停止中",
     "pause": "GitHub 機能を一時停止",
-    "resume": "GitHub 機能を再開"
+    "resume": "GitHub 機能を再開",
+    "page_description": "GitHub App を接続し、Pull request が Multica 内でどう表示されるかを制御し、エージェントがコミット履歴に残す情報を設定します。",
+    "section_master": "GitHub 機能を有効にする",
+    "master_description_on": "オフにすると、すべての GitHub UI が非表示になり、新しい副作用が記録されなくなります。既存のデータはバックエンドに保持されます。開発チームではありませんか？ここでオフにできます。",
+    "section_connection": "接続",
+    "connection_title": "GitHub App",
+    "connection_description_prefix": "タスクを Pull request に自動でリンクします。PR のブランチ名かタイトルに",
+    "connection_description_suffix": "があるか、本文に Closes MUL-123 と書かれていれば、対応するタスクにリンクされます。その closing keyword を含む PR がマージされたときだけ、タスクが次のステータスに移動します:",
+    "connection_description_done": "完了",
+    "connection_identifier_example": "MUL-123",
+    "connect_disabled_tooltip": "このサーバーには GitHub App が設定されていません",
+    "read_only_hint": "読み取り専用ビューです。GitHub を接続または解除できるのはワークスペースの admin と owner のみです。",
+    "section_features": "機能",
+    "section_repositories": "リポジトリ",
+    "repositories_shortcut_label": "リポジトリ URL はリポジトリタブにあります",
+    "repositories_shortcut_link": "リポジトリを管理 →"
   },
   "vcs": {
     "section_title": "セルフホスト Git",
@@ -888,7 +905,9 @@
     "hosts_hint": "GitLab、Gitea、Forgejo に対応しています。",
     "connect_another": "さらに接続",
     "connection_actions": "{{url}} の操作",
-    "webhook_done": "保存しました"
+    "webhook_done": "保存しました",
+    "toast_connected": "Provider connected",
+    "toast_rotated": "Webhook secret regenerated"
   },
   "lark": {
     "section_title": "Lark",
@@ -992,7 +1011,8 @@
     "last_used": "最終使用 {{when}}",
     "last_used_never": "未使用",
     "expired": "トークンの有効期限切れ",
-    "reconnect": "再接続"
+    "reconnect": "再接続",
+    "section_title": "Composio"
   },
   "slack": {
     "section_title": "Slack",
@@ -1236,7 +1256,11 @@
     "url_label": "リポジトリ URL",
     "description_label": "説明",
     "duplicate": "このリポジトリは追加済みです。",
-    "actions_aria": "{{url}} の操作"
+    "actions_aria": "{{url}} の操作",
+    "url_empty": "（空の URL）",
+    "complete_manual_entry_first": "空の手動リポジトリを入力するか削除してからインポートしてください。",
+    "delete_aria": "リポジトリを削除",
+    "toast_saved": "リポジトリを保存しました"
   },
   "desktop": {
     "tabs": {
@@ -1423,7 +1447,17 @@
     "status_connected": "接続済み",
     "status_not_connected": "未接続",
     "status_loading": "確認中...",
-    "status_unknown": "状態を取得できません"
+    "status_unknown": "状態を取得できません",
+    "description": "ツールを接続して、各連携を管理します。",
+    "code_title": "コードとリポジトリ",
+    "messaging_title": "メッセージチャネル",
+    "apps_title": "自分のアプリ接続",
+    "apps_scope": "これらのアプリ接続はあなたのアカウントに属します。ワークスペースのチャネル接続は上で管理します。",
+    "github_hint": "GitHub を接続し、プルリクエストの関連付けを設定します。",
+    "vcs_hint": "GitLab、Gitea、Forgejo を接続します。",
+    "apps_hint": "Composio 経由でエージェント用のアプリを認可します。",
+    "back": "すべての連携",
+    "channel_hint": "{{channel}} でエージェントと会話し、タスクを作成します。"
   },
   "deployment_providers": {
     "title": "デプロイプロバイダー",
@@ -1494,6 +1528,7 @@
     "instruction_hint": "起こしたエージェントに送られます。空欄のままなら下の組み込みの指示を使います。",
     "instruction_placeholder": "空欄なら組み込みの指示を使います",
     "builtin": "組み込みの指示",
+    "builtin_instruction_child_done": "この課題のサブ課題が完了しました。トリガー情報には各ステージと次のステージが示されています。後続のステージが待機中の場合は、依存関係が満たされていることを確認してから、開始できるようサブ課題をバックログから移動してください。完了ステージのサブ課題が完了ではなくキャンセルされた場合は、先に進む前に作業がまだ必要か判断してください。すべてのサブ課題が完了したら、結果をこの課題にまとめて次に進めるか、残作業がなければレビュー可能としてマークしてください。",
     "instruction_invalid": "指示は 4,000 バイト以内にしてください。",
     "save": "保存",
     "saving": "保存中…",

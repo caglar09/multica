@@ -1,4 +1,108 @@
 {
+  "wakeups": {
+    "description": "Her göreve uygulanan platform kuralları. Her görev bu kuralları kendi Uyanmalar bölümünde değiştirebilir.",
+    "child_done_title": "Alt görevler tamamlandığında",
+    "child_done_description": "Bir aşama tamamlandığında ve sonraki aşama beklemedeyse üst görevin sorumlusunu uyandırır; tüm alt görevler kapandığında bir kez daha uyandırır. Sorumlu bir üyeyse bunun yerine gelen kutusu bildirimi alır.",
+    "enabled": "Varsayılan olarak açık",
+    "instruction": "Varsayılan talimat",
+    "instruction_hint": "Uyandırılan ajana gönderilir. Aşağıdaki yerleşik talimatı kullanmak için boş bırakın.",
+    "instruction_placeholder": "Yerleşik talimatı kullanmak için boş bırakın",
+    "builtin": "Yerleşik talimat",
+    "builtin_instruction_child_done": "Bu görevin alt görevleri tamamlandı; tetikleme bilgileri her aşamayı, sıradakini ve iptal edilenlerin sayısını belirtir. Sonraki bir aşama bekliyorsa bağımlılıklarının karşılandığını kontrol edin, ardından başlamaları için alt görevlerini backlog durumundan çıkarın. Kapanan aşamalardaki bir alt görev tamamlanmak yerine iptal edildiyse ilerlemeden önce işinin hâlâ gerekli olup olmadığını değerlendirin. Tüm alt görevler kapandığında sonuçlarını bu görevde bir araya getirip ilerletin veya yapılacak bir şey kalmadıysa incelemeye hazır olarak işaretleyin.",
+    "instruction_invalid": "Talimatı 4.000 bayt içinde tutun.",
+    "save": "Kaydet",
+    "saving": "Kaydediliyor…",
+    "save_error": "Varsayılan kaydedilemedi.",
+    "customized_one": "Açık {{count}} görevin kendi ayarı var ve bu varsayılanı kullanmıyor.",
+    "customized_other": "Açık {{count}} görevin kendi ayarları var ve bu varsayılanı kullanmıyor.",
+    "admin_only": "Bu varsayılanları yalnızca sahipler ve yöneticiler değiştirebilir.",
+    "load_error": "Uyanma varsayılanları yüklenemedi."
+  },
+  "code": {
+    "hosting_title": "Kod barındırma",
+    "pr_linking_title": "Çekme istekleri ve görevler",
+    "github_actions": "GitHub Actions"
+  },
+  "deployment_providers": {
+    "title": "Dağıtım sağlayıcıları",
+    "description": "Projelerinizi önizlemek ve dağıtmak için harici platformları bağlayıp yönetin.",
+    "no_connections": "Bağlı dağıtım sağlayıcısı yok",
+    "empty_hint": "Multica üzerinden otomatik ve manuel dağıtımları etkinleştirmek için Vercel gibi bir sağlayıcı bağlayın.",
+    "status_connected": "Bağlı",
+    "status_active": "Etkin",
+    "status_inactive": "Devre dışı",
+    "status_configured": "Yapılandırıldı",
+    "section_connected": "Bağlı sağlayıcılar",
+    "section_connected_desc": "Bu çalışma alanında yapılandırılmış etkin sağlayıcı hesapları.",
+    "section_platforms": "Desteklenen platformlar",
+    "section_platforms_desc": "Multica'nın desteklediği dağıtım bulutları ve barındırma motorları.",
+    "team_prefix": "Ekip: {{team}}",
+    "account_prefix": "Hesap: {{account}}",
+    "targets_count": "{{count}} hedef bağlı",
+    "badge_active": "Etkin",
+    "badge_ready": "Hazır",
+    "badge_coming_soon": "Yakında",
+    "link_documentation": "Belgeler",
+    "action_connect": "Bağlan",
+    "toast_connecting": "{{provider}} bağlantısı kuruluyor...",
+    "vercel_connect_title": "Vercel'i bağla",
+    "vercel_connect_description": "Bu çalışma alanını bağlamak için bir Vercel kişisel erişim belirteci kullanın.",
+    "vercel_connection_name": "Bağlantı adı",
+    "vercel_pat_label": "Vercel kişisel erişim belirteci",
+    "vercel_webhook_secret_label": "Vercel webhook imzalama sırrı",
+    "vercel_team_id_label": "Ekip kimliği (isteğe bağlı)",
+    "vercel_team_slug_label": "Ekip kısa adı (isteğe bağlı)",
+    "vercel_required_field": "Bu alan zorunludur",
+    "vercel_connect_submit": "Doğrula ve bağlan",
+    "vercel_connect_success": "Vercel başarıyla bağlandı",
+    "vercel_connect_error": "Vercel'e bağlanılamadı. Kimlik bilgilerini kontrol edip tekrar deneyin.",
+    "provider_connection": "Sağlayıcı bağlantısı",
+    "webhook_url_label": "Webhook URL'si",
+    "webhook_status_configured": "Webhook etkin",
+    "webhook_status_polling_only": "Yalnızca yoklama",
+    "configure_webhook": "Webhook'u yapılandır",
+    "rotate_webhook": "Webhook sırrını yenile",
+    "webhook_setup_title": "İsteğe bağlı webhook kurulumu",
+    "webhook_setup_description": "Vercel hesap webhook'ları Pro ve Enterprise ekiplerinde kullanılabilir. Hobby bağlantıları yoklama ve uzlaştırma ile çalışmaya devam eder.",
+    "webhook_save": "Webhook sırrını kaydet",
+    "webhook_saved": "Webhook sırrı kaydedildi",
+    "webhook_configure_error": "Webhook sırrı kaydedilemedi. Sırrı kontrol edip tekrar deneyin.",
+    "team_or_scope": "Ekip / kapsam",
+    "linked_targets": "Bağlı hedefler",
+    "targets_disabled_warning": "{{count}} hedef devre dışı bırakılacak",
+    "disconnect_checkbox_confirm": "Bu sağlayıcının bağlantısını kesmeyi ve etkin hedefler üzerindeki sonuçlarını anladığımı onaylıyorum.",
+    "cancel": "İptal",
+    "disconnect": "Bağlantıyı kes",
+    "disconnect_confirm_title": "{{provider}} bağlantısı kesilsin mi?",
+    "disconnect_confirm_desc": "Bu sağlayıcının bağlantısının kesilmesi, bu çalışma alanıyla ilişkili etkin dağıtım hedeflerini devre dışı bırakır.",
+    "toast_disconnected": "Sağlayıcının bağlantısı kesildi",
+    "toast_disconnect_failed": "Sağlayıcının bağlantısı kesilemedi",
+    "platform_vercel_desc": "Önizleme dağıtımları, üretim sürümleri ve dalları anında üretime alma.",
+    "platform_render_desc": "Yerel web servisleri, arka plan çalışanları ve PostgreSQL veritabanları.",
+    "platform_railway_desc": "Anında uygulama dağıtımı ve geçici hazırlık ortamları.",
+    "platform_heroku_desc": "Yönetilen container çalışma ortamı, eklentiler ve dyno ölçeklendirme.",
+    "default_provider_name": "Sağlayıcı"
+  },
+  "integrations": {
+    "status_not_connected": "Bağlı değil"
+  },
+  "layout": {
+    "scope": {
+      "account": "Hesap · eşitlenir",
+      "device": "Yalnızca bu cihaz",
+      "device_workspace": "Bu cihaz · {{name}}",
+      "workspace": "{{name}} çalışma alanı",
+      "workspace_only": "Yalnızca {{name}} içinde"
+    }
+  },
+  "pr_merge_status": {
+    "label": "PR'lar birleştirildikten sonra görevi şu duruma taşı",
+    "description": "Bir göreve bağlı tüm PR'lar birleştirildiğinde uygulanır; yalnızca bundan sonraki birleştirmeler için geçerlidir.",
+    "none": "Değiştirme"
+  },
+  "channels": {
+    "breadcrumb": "Gezinme yolu"
+  },
   "issue_statuses": {
     "title": "Görev Durumları",
     "description": "Görevlerinizin geçtiği iş akışını tanımlayın. Her durum, davranışını kendi kategorisinden miras alır.",
@@ -331,7 +435,11 @@
       "quick_actions": "Hızlı Eylemler",
       "plugins": "Eklentiler",
       "mcp": "MCP",
-      "billing": "Faturalandırma"
+      "billing": "Faturalandırma",
+      "wakeups": "Uyanmalar",
+      "code": "Kod",
+      "channels": "Mesajlaşma",
+      "deployment_providers": "Dağıtım sağlayıcıları"
     }
   },
   "plugins": {
@@ -784,6 +892,7 @@
     "toast_failed": "GitHub ayarları güncellenemedi"
   },
   "vcs": {
+    "hosts_hint": "GitLab, Gitea veya Forgejo.",
     "section_title": "Git sağlayıcıları (kendi barındırılan)",
     "page_description": "Çekme isteklerini görevlere yansıtmak için kendi barındırdığınız bir Forgejo, Gitea veya GitLab bulut sunucusunu bağlayın. Her bağlantı bir erişim tokenı kullanır; ajanlar, runtimelara ait Git kimlik bilgilerini kullanarak dalları iter ve PR'ları açar.",
     "connect_title": "Bir sağlayıcı bulut sunucusuna bağlan",

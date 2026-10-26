@@ -395,7 +395,9 @@
       "code": "代码",
       "channels": "消息渠道",
       "apps": "已连接应用",
-      "workflows": "工作流"
+      "workflows": "工作流",
+      "repositories": "代码仓库",
+      "integrations": "集成"
     },
     "groups": {
       "personal": "个人",
@@ -845,7 +847,22 @@
     "feature_auto_link_description": "PR 标题或分支名含任务编号（如 {{example}}），或正文里写了 \"Closes {{example}}\" 时，自动关联到对应任务。",
     "status_paused": "已暂停",
     "pause": "暂停 GitHub 功能",
-    "resume": "恢复 GitHub 功能"
+    "resume": "恢复 GitHub 功能",
+    "page_description": "连接 GitHub App、控制 Pull Request 如何出现在 Multica 中，并决定智能体在 commit 记录里留下哪些痕迹。",
+    "section_master": "启用 GitHub 功能",
+    "master_description_on": "关闭后，所有 GitHub 入口都会被隐藏，也不再产生新的副作用。后台已有数据不会被删除。团队不使用 GitHub？在这里直接关掉即可。",
+    "section_connection": "连接",
+    "connection_title": "GitHub App",
+    "connection_description_prefix": "自动把任务关联到 Pull Request。只要 PR 的分支名或标题里出现",
+    "connection_description_suffix": "或正文里写了 Closes MUL-123，PR 就会关联到对应任务；只有带关闭关键字的 PR 合并后，任务才会转为",
+    "connection_description_done": "已完成",
+    "connection_identifier_example": "MUL-123",
+    "connect_disabled_tooltip": "服务端未配置 GitHub App",
+    "read_only_hint": "只读视图。只有管理员和所有者可以连接或断开 GitHub。",
+    "section_features": "功能",
+    "section_repositories": "代码仓库",
+    "repositories_shortcut_label": "仓库 URL 仍在\"代码仓库\"标签页中管理",
+    "repositories_shortcut_link": "前往管理 →"
   },
   "vcs": {
     "section_title": "自托管 Git",
@@ -888,7 +905,9 @@
     "hosts_hint": "GitLab、Gitea 或 Forgejo。",
     "connect_another": "再连接一个",
     "connection_actions": "{{url}} 的操作",
-    "webhook_done": "我已保存"
+    "webhook_done": "我已保存",
+    "toast_connected": "已连接代码托管",
+    "toast_rotated": "已重新生成 Webhook 密钥"
   },
   "lark": {
     "section_title": "飞书",
@@ -992,7 +1011,8 @@
     "last_used": "最近使用 {{when}}",
     "last_used_never": "从未使用",
     "expired": "令牌已过期",
-    "reconnect": "重新连接"
+    "reconnect": "重新连接",
+    "section_title": "Composio"
   },
   "slack": {
     "section_title": "Slack",
@@ -1236,7 +1256,11 @@
     "url_label": "仓库 URL",
     "description_label": "描述",
     "duplicate": "这个仓库已经添加过了。",
-    "actions_aria": "{{url}} 的操作"
+    "actions_aria": "{{url}} 的操作",
+    "url_empty": "（空 URL）",
+    "complete_manual_entry_first": "请先补全或删除空的手动仓库配置，再从 GitHub 导入。",
+    "delete_aria": "删除仓库",
+    "toast_saved": "已保存代码仓库"
   },
   "desktop": {
     "tabs": {
@@ -1423,7 +1447,17 @@
     "status_connected": "已连接",
     "status_not_connected": "未连接",
     "status_loading": "正在检查...",
-    "status_unknown": "状态暂不可用"
+    "status_unknown": "状态暂不可用",
+    "description": "连接常用工具，分别管理每项集成。",
+    "code_title": "代码与仓库",
+    "messaging_title": "消息渠道",
+    "apps_title": "我的应用连接",
+    "apps_scope": "这些应用连接属于你的账号。工作区的消息渠道连接在上方管理。",
+    "github_hint": "连接 GitHub，配置拉取请求关联。",
+    "vcs_hint": "连接 GitLab、Gitea 或 Forgejo。",
+    "apps_hint": "通过 Composio 为智能体授权应用。",
+    "back": "全部集成",
+    "channel_hint": "在 {{channel}} 中与智能体对话、创建任务。"
   },
   "deployment_providers": {
     "title": "部署提供商",
@@ -1494,6 +1528,7 @@
     "instruction_hint": "发给被唤醒的智能体。留空则使用下方的内置指令。",
     "instruction_placeholder": "留空则使用内置指令",
     "builtin": "内置指令",
+    "builtin_instruction_child_done": "此任务的子任务已完成；触发信息列出了各阶段和下一阶段。如果后续阶段正在等待，请先确认其依赖项已满足，再将对应子任务移出待办状态以便开始。如果已关闭阶段中的子任务是被取消而非完成，请在继续前判断其工作是否仍有必要。所有子任务关闭后，将结果汇总到此任务并推进；如果没有剩余工作，则标记为可供审核。",
     "instruction_invalid": "指令最多 4,000 字节。",
     "save": "保存",
     "saving": "保存中…",

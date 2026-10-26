@@ -396,7 +396,9 @@
       "code": "Code",
       "channels": "Messaging",
       "apps": "Connected apps",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "repositories": "Repositories",
+      "integrations": "Integrations"
     },
     "groups": {
       "personal": "Personal",
@@ -849,7 +851,22 @@
     "feature_auto_link_description": "Links a PR to the issue whose ID, e.g. {{example}}, is in its title or branch name, or follows “Closes” in its description.",
     "status_paused": "Paused",
     "pause": "Pause GitHub features",
-    "resume": "Resume GitHub features"
+    "resume": "Resume GitHub features",
+    "page_description": "Connect a GitHub App, control how Pull Requests show up inside Multica, and decide what your agents leave behind in commit history.",
+    "section_master": "Enable GitHub features",
+    "master_description_on": "When off, every GitHub UI affordance is hidden and no new side-effects are written. Existing data is kept on the backend. Not a development team? Just turn it off here.",
+    "section_connection": "Connection",
+    "connection_title": "GitHub App",
+    "connection_description_prefix": "Link issues to pull requests automatically. A PR links when",
+    "connection_description_suffix": "is in its branch name or title, or its body says Closes MUL-123. Merging a PR with that closing keyword also moves the issue to",
+    "connection_description_done": "Done",
+    "connection_identifier_example": "MUL-123",
+    "connect_disabled_tooltip": "GitHub App is not configured on this server",
+    "read_only_hint": "Read-only view. Only workspace admins and owners can connect or disconnect GitHub.",
+    "section_features": "Features",
+    "section_repositories": "Repositories",
+    "repositories_shortcut_label": "Repository URLs live in the Repositories tab",
+    "repositories_shortcut_link": "Manage repositories →"
   },
   "vcs": {
     "section_title": "Self-hosted Git",
@@ -892,7 +909,9 @@
     "hosts_hint": "GitLab, Gitea, or Forgejo.",
     "connect_another": "Connect another",
     "connection_actions": "Actions for {{url}}",
-    "webhook_done": "I've saved it"
+    "webhook_done": "I've saved it",
+    "toast_connected": "Provider connected",
+    "toast_rotated": "Webhook secret regenerated"
   },
   "lark": {
     "section_title": "Lark",
@@ -996,7 +1015,8 @@
     "last_used": "Last used {{when}}",
     "last_used_never": "Never used",
     "expired": "Token expired",
-    "reconnect": "Reconnect"
+    "reconnect": "Reconnect",
+    "section_title": "Composio"
   },
   "slack": {
     "section_title": "Slack",
@@ -1241,7 +1261,11 @@
     "url_label": "Repository URL",
     "description_label": "Description",
     "duplicate": "This repository is already added.",
-    "actions_aria": "Actions for {{url}}"
+    "actions_aria": "Actions for {{url}}",
+    "url_empty": "(empty URL)",
+    "complete_manual_entry_first": "Complete or remove the empty manual repository before importing.",
+    "delete_aria": "Delete repository",
+    "toast_saved": "Repositories saved"
   },
   "desktop": {
     "tabs": {
@@ -1432,7 +1456,17 @@
     "status_connected": "Connected",
     "status_not_connected": "Not connected",
     "status_loading": "Checking...",
-    "status_unknown": "Status unavailable"
+    "status_unknown": "Status unavailable",
+    "description": "Connect your tools and manage each integration in one place.",
+    "code_title": "Code & repositories",
+    "messaging_title": "Messaging channels",
+    "apps_title": "Your connected apps",
+    "apps_scope": "These app connections belong to your account. Workspace channel connections are managed above.",
+    "github_hint": "Connect GitHub and configure pull request linking.",
+    "vcs_hint": "Connect GitLab, Gitea, or Forgejo.",
+    "apps_hint": "Authorize apps for your agents through Composio.",
+    "back": "All integrations",
+    "channel_hint": "Chat with agents and create issues from {{channel}}."
   },
   "deployment_providers": {
     "title": "Deployment Providers",
@@ -1503,6 +1537,7 @@
     "instruction_hint": "Sent to the woken agent. Leave empty to use the built-in instruction below.",
     "instruction_placeholder": "Leave empty to use the built-in instruction",
     "builtin": "Built-in instruction",
+    "builtin_instruction_child_done": "Sub-issues of this issue have closed; the trigger facts list each stage and which one is next. If a later stage is waiting, check that its dependencies are met, then move its sub-issues out of backlog so they start. If a sub-issue in the closed stages was cancelled rather than finished, decide whether its work is still needed before advancing. When every sub-issue is closed, bring their results together on this issue and move it forward, or mark it ready for review when nothing remains.",
     "instruction_invalid": "Keep the instruction within 4,000 bytes.",
     "save": "Save",
     "saving": "Saving…",

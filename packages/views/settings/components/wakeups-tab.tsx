@@ -45,6 +45,12 @@ export function WakeupsTab() {
   );
 }
 
+const CHILD_DONE_DEFAULT_INSTRUCTION =
+  "Sub-issues of this issue have closed; the trigger facts list each stage and which one is next. " +
+  "If a later stage is waiting, check that its dependencies are met, then move its sub-issues out of backlog so they start. " +
+  "If a sub-issue in the closed stages was cancelled rather than finished, decide whether its work is still needed before advancing. " +
+  "When every sub-issue is closed, bring their results together on this issue and move it forward, or mark it ready for review when nothing remains.";
+
 function ChildDoneDefault({ rule, canManage }: { rule: WorkspaceSystemWakeup; canManage: boolean }) {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
@@ -52,6 +58,11 @@ function ChildDoneDefault({ rule, canManage }: { rule: WorkspaceSystemWakeup; ca
   const id = useId();
   const [instruction, setInstruction] = useState(rule.instruction);
   const [error, setError] = useState("");
+  // Show a localized copy only for this known built-in; newer server defaults stay visible verbatim.
+  const builtinInstruction =
+    rule.builtin_instruction === CHILD_DONE_DEFAULT_INSTRUCTION
+      ? t(($) => $.wakeups.builtin_instruction_child_done)
+      : rule.builtin_instruction;
   // A save elsewhere (another tab, another admin) replaces an untouched draft.
   useEffect(() => setInstruction(rule.instruction), [rule.instruction]);
   const dirty = instruction.trim() !== rule.instruction;
@@ -128,7 +139,7 @@ function ChildDoneDefault({ rule, canManage }: { rule: WorkspaceSystemWakeup; ca
           {rule.builtin_instruction && (
             <div className="rounded-md bg-muted/60 px-3 py-2 text-caption leading-5 text-muted-foreground">
               <p className="font-medium">{t(($) => $.wakeups.builtin)}</p>
-              <p className="mt-0.5 whitespace-pre-wrap break-words">{rule.builtin_instruction}</p>
+              <p className="mt-0.5 whitespace-pre-wrap break-words">{builtinInstruction}</p>
             </div>
           )}
           {canManage && (
