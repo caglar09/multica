@@ -358,9 +358,12 @@ type workspaceState struct {
 	workspaceID       string
 	runtimeIDs        []string
 	reposVersion      string // stored for future use: skip refresh when version unchanged
+	allowedRepoURLs   map[string]struct{}
+	taskRepoURLs      map[string]struct{}
 	localRepos        []RepoData
 	repoCache         *repocache.Cache
 	taskRepoRefs      map[string]map[string]string // taskID -> repo URL -> checkout ref
+	deploymentSources []DeploymentSourceBinding
 	settings          json.RawMessage // workspace settings (JSONB)
 	lastRepoSyncErr   string
 	repoRefreshMu     contextLock
@@ -2183,7 +2186,7 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 	// readiness wait blocks on, so success is reported only after startup
 	// actually completed, not merely because the health port came up.
 	d.ready.Store(true)
-d.logger.Debug("background loops launched (workspace-sync, terminal-report-replay, task-wakeup, heartbeat, gc, auto-update, token-renewal, terminal-outbox); health now reporting ready")
+	d.logger.Debug("background loops launched (workspace-sync, terminal-report-replay, task-wakeup, heartbeat, gc, auto-update, token-renewal, terminal-outbox); health now reporting ready")
 	err = d.pollLoop(ctx, taskWakeups)
 	d.logger.Debug("daemon main loop returning", "error", err)
 	return err
@@ -3434,11 +3437,11 @@ func (d *Daemon) syncWorkspaceReposContext(ctx context.Context, workspaceID stri
 	}
 	var err error
 	if cache, ok := d.repoCache.(interface {
-		SyncContext(context.Context, string, []RepoData) error
+		SyncContext(context.Context, string, []repocache.RepoInfo) error
 	}); ok {
-		err = cache.SyncContext(ctx, workspaceID, repos)
+		err = cache.SyncContext(ctx, workspaceID, repoDataToInfo(repos))
 	} else {
-		d.repoCache.Sync(workspaceID, repos)
+		err = d.repoCache.Sync(workspaceID, repoDataToInfo(repos))
 	}
 	if err != nil {
 		d.logger.Warn("repo cache sync failed", "workspace_id", workspaceID, "error", err)

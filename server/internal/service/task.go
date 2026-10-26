@@ -1287,7 +1287,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
 	}
-if err := ensureIssueDependencyReady(ctx, s.Queries, issue.WorkspaceID, issue.ID); err != nil {
+	if err := ensureIssueDependencyReady(ctx, s.Queries, issue.WorkspaceID, issue.ID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	if err := guardIssueNotInTriage(ctx, s.Queries, issue.ID, origin); err != nil {
@@ -5625,7 +5625,7 @@ func resumeUnsafeFailureReason(reason string) bool {
 	// codex_resume_oversized is the strongest member of this set: a codex
 	// rollout only ever grows, so a thread whose resume response already
 	// overflowed the reader will overflow on every future attempt too.
-case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity",
+	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity",
 		"agent_error.context_overflow", "codex_resume_oversized", "opencode_clock_skew",
 		string(taskfailure.ReasonAgentProviderQuotaLimit):
 		return true
@@ -6412,10 +6412,9 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							"error", checkErr,
 						)
 					} else if !hasActive {
-updatedIssue, updateErr := s.Queries.ResetIssueToTodoAfterTaskFailure(ctx, db.ResetIssueToTodoAfterTaskFailureParams{
+						updatedIssue, updateErr := s.Queries.ResetIssueToTodoAfterTaskFailure(ctx, db.ResetIssueToTodoAfterTaskFailureParams{
 							ID:          t.IssueID,
 							WorkspaceID: issue.WorkspaceID,
-						})
 						})
 						if errors.Is(updateErr, pgx.ErrNoRows) {
 							// A concurrent autonomous workflow transition won the

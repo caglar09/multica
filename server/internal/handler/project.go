@@ -28,9 +28,11 @@ type ProjectResponse struct {
 	Description *string `json:"description"`
 	Icon        *string `json:"icon"`
 	Status      string  `json:"status"`
-	Priority    string  `json:"priority"`
-	LeadType    *string `json:"lead_type"`
-	LeadID      *string `json:"lead_id"`
+	// WorkflowID selects the project's workflow; null uses the workspace Default.
+	WorkflowID *string `json:"workflow_id"`
+	Priority   string  `json:"priority"`
+	LeadType   *string `json:"lead_type"`
+	LeadID     *string `json:"lead_id"`
 	// StartDate / DueDate are calendar days ("YYYY-MM-DD"), no time-of-day or
 	// timezone — same contract as issue.start_date / issue.due_date.
 	StartDate  *string `json:"start_date"`
@@ -58,8 +60,6 @@ type ProjectWorkingDirectoryResponse struct {
 	RuntimeID    string `json:"runtime_id"`
 	TaskID       string `json:"task_id"`
 	Status       string `json:"status"`
-	WorkflowID *string `json:"workflow_id"`
-}
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
@@ -488,13 +488,13 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		validKnowledgeKinds := map[string]bool{
-			"prd": true,
+			"prd":          true,
 			"requirements": true,
 			"architecture": true,
-			"design": true,
-			"api_spec": true,
-			"reference": true,
-			"note": true,
+			"design":       true,
+			"api_spec":     true,
+			"reference":    true,
+			"note":         true,
 		}
 		if len(bootstrapKnowledgeItems) > 50 {
 			writeError(w, http.StatusBadRequest, "bootstrap.knowledge supports at most 50 documents")
@@ -675,9 +675,9 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 					entryType = "product_decision"
 				}
 				content, _ := json.Marshal(map[string]any{
-					"kind": kind,
+					"kind":  kind,
 					"title": strings.TrimSpace(item.Title),
-					"text": strings.TrimSpace(item.Content),
+					"text":  strings.TrimSpace(item.Content),
 				})
 				if _, err := tx.Exec(r.Context(), `
 					INSERT INTO autonomous_project_brain_entry (

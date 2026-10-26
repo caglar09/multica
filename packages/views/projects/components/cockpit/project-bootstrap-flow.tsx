@@ -111,7 +111,7 @@ export function ProjectBootstrapFlow({
               ) : stage.active ? (
                 <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" aria-hidden="true" />
               ) : (
-                <Circle className="size-4 shrink-0 text-muted-foreground/50" aria-hidden="true" />
+                <Circle className="size-4 shrink-0 text-faint-foreground" aria-hidden="true" />
               )}
               <span>{stage.label}</span>
             </div>

@@ -61,14 +61,96 @@ type antigravityStreamStepUpdate struct {
 	SubagentInfo   map[string]any          `json:"subagent_info,omitempty"`
 }
 
+type antigravityStreamError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
 type antigravityStreamTool struct {
-	Name       string          `json:"name"`
-	Parameters map[string]any  `json:"parameters"`
-	Output     json.RawMessage `json:"output"`
-	Error      *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
+	Name       string                  `json:"name"`
+	Parameters map[string]any          `json:"parameters"`
+	Output     json.RawMessage         `json:"output"`
+	Error      *antigravityStreamError `json:"error"`
+}
+
+// Compatibility helpers keep the branch's stream contract directly testable.
+func antigravityToolName(step *antigravityStreamStepUpdate) string {
+	if step == nil {
+		return "antigravity_tool"
+	}
+	if strings.TrimSpace(step.ToolName) != "" {
+		return step.ToolName
+	}
+	if step.ToolInfo != nil && strings.TrimSpace(step.ToolInfo.Name) != "" {
+		return step.ToolInfo.Name
+	}
+	if len(step.SubagentInfo) > 0 {
+		return "subagent"
+	}
+	return "antigravity_tool"
+}
+
+func antigravityToolInput(value any) map[string]any {
+	switch input := value.(type) {
+	case map[string]any:
+		return antigravityNormalizeToolInput(input)
+	case *antigravityStreamStepUpdate:
+		step := input
+		if step == nil {
+			return nil
+		}
+		if step.ToolInfo != nil && len(step.ToolInfo.Parameters) > 0 {
+			return step.ToolInfo.Parameters
+		}
+		if len(step.SubagentInfo) > 0 {
+			return map[string]any{"subagent_info": step.SubagentInfo}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+func antigravityToolOutput(step *antigravityStreamStepUpdate) string {
+	if step == nil {
+		return ""
+	}
+	var output string
+	if step.ToolInfo != nil {
+		if len(step.ToolInfo.Output) > 0 && string(step.ToolInfo.Output) != "null" {
+			if err := json.Unmarshal(step.ToolInfo.Output, &output); err != nil {
+				output = string(step.ToolInfo.Output)
+			}
+		}
+		if step.ToolInfo.Error != nil {
+			detail := strings.TrimSpace(step.ToolInfo.Error.Message)
+			if detail == "" {
+				detail = strings.TrimSpace(step.ToolInfo.Error.Type)
+			}
+			if detail != "" {
+				if output != "" {
+					output += "\n"
+				}
+				output += "error: " + detail
+			}
+		}
+	} else if len(step.SubagentInfo) > 0 {
+		if raw, err := json.Marshal(step.SubagentInfo); err == nil {
+			output = string(raw)
+		}
+	}
+	return output
+}
+
+func antigravityUsageMap(model string, usage antigravityStreamUsage) map[string]TokenUsage {
+	if !usage.hasTokens() && usage.ThinkingTokens == 0 && usage.TotalTokens == 0 {
+		return map[string]TokenUsage{}
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = "unknown"
+	}
+	return map[string]TokenUsage{model: usage.tokenUsage()}
 }
 
 type antigravityToolState struct {
@@ -78,7 +160,7 @@ type antigravityToolState struct {
 
 // Normalize the shared transcript input without duplicating commands or file
 // bodies. Preserve collisions and unknown fields, and do not mutate the snapshot.
-func antigravityToolInput(parameters map[string]any) map[string]any {
+func antigravityNormalizeToolInput(parameters map[string]any) map[string]any {
 	input := maps.Clone(parameters)
 	for _, alias := range []struct {
 		from, to   string
@@ -128,7 +210,7 @@ func antigravityToolMessages(step *antigravityStreamStepUpdate, states map[int]a
 			if name == "" {
 				name = step.ToolInfo.Name
 			}
-			input = antigravityToolInput(step.ToolInfo.Parameters)
+			input = antigravityNormalizeToolInput(step.ToolInfo.Parameters)
 		}
 		if len(step.SubagentInfo) > 0 {
 			if name == "" {
@@ -271,7 +353,7 @@ func antigravityResultStatus(status string) string {
 		return "completed"
 	case "CANCELLED", "CANCELED":
 		return "cancelled"
-	case "ABORTED":
+	case "ABORTED", "INTERRUPTED":
 		return "aborted"
 	case "TIMEOUT", "TIMED_OUT":
 		return "timeout"
@@ -415,6 +497,14 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 		scanner := newAgentStreamScanner(stdout)
 
 		trySend(msgCh, Message{Type: MessageStatus, Status: "running"})
+		pinSession := func(id string) {
+			id = strings.TrimSpace(id)
+			if id == "" || streamSessionID == id {
+				return
+			}
+			streamSessionID = id
+			trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: id})
+		}
 
 	streamLoop:
 		for scanner.Scan() {
@@ -424,14 +514,14 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 				sawStructuredEvent = true
 				switch event.Event {
 				case "init":
-					streamSessionID = event.ConversationID
+					pinSession(event.ConversationID)
 					streamModel = event.Init.Model
 				case "step_update":
 					if event.StepUpdate == nil {
 						continue
 					}
 					if event.StepUpdate.ConversationID != "" {
-						streamSessionID = event.StepUpdate.ConversationID
+						pinSession(event.StepUpdate.ConversationID)
 					}
 					for _, message := range antigravityToolMessages(event.StepUpdate, streamTools) {
 						// Tool lifecycle events also drive the daemon's in-flight
@@ -466,7 +556,7 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 					}
 					sawResult = true
 					if event.Result.ConversationID != "" {
-						streamSessionID = event.Result.ConversationID
+						pinSession(event.Result.ConversationID)
 					}
 					streamResultStatus = event.Result.Status
 					streamResultError = event.Result.Error

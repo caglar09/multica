@@ -131,6 +131,7 @@ func (s *TaskService) EnqueueTaskForWorkflow(
 		handoffNote,
 		accountableUserID,
 		pgtype.UUID{},
+		OriginDerived,
 	)
 	if err != nil {
 		if contextCompilationID.Valid {

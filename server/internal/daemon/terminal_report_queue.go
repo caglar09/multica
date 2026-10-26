@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -227,7 +228,7 @@ func (s *terminalReportStore) enqueue(report terminalTaskReport) error {
 		if decodeErr != nil {
 			return fmt.Errorf("existing terminal report %s is invalid: %w", name, decodeErr)
 		}
-		if existingReport != report {
+		if !reflect.DeepEqual(existingReport, report) {
 			return fmt.Errorf("terminal report for task %s conflicts with the original pending payload", report.taskID)
 		}
 		return nil
@@ -382,7 +383,7 @@ func (s *terminalReportStore) recoverTempFiles(entries []os.DirEntry) error {
 				continue
 			}
 			existingReport, decodeErr := existing.terminalReport()
-			if decodeErr != nil || existingReport != report {
+			if decodeErr != nil || !reflect.DeepEqual(existingReport, report) {
 				errs = append(errs, fmt.Errorf("interrupted terminal report %s conflicts with existing payload", name))
 				continue
 			}
@@ -472,7 +473,7 @@ func (s *terminalReportStore) recordPermanentRejection(item pendingTerminalTaskR
 	if err != nil {
 		return false, fmt.Errorf("validate rejected terminal report: %w", err)
 	}
-	if item.fileName != terminalReportFileName(report.taskID) || report != item.report {
+	if item.fileName != terminalReportFileName(report.taskID) || !reflect.DeepEqual(report, item.report) {
 		return false, errors.New("rejected terminal report no longer matches queued payload")
 	}
 
@@ -507,7 +508,7 @@ func (s *terminalReportStore) recordPermanentRejection(item pendingTerminalTaskR
 			return false, fmt.Errorf("existing failed terminal report is unreadable: %w", decodeErr)
 		}
 		existingReport, decodeErr := existing.terminalReport()
-		if decodeErr != nil || existingReport != report {
+		if decodeErr != nil || !reflect.DeepEqual(existingReport, report) {
 			return false, errors.New("failed terminal report conflicts with queued payload")
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

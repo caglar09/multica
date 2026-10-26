@@ -184,18 +184,6 @@ function ProjectWorkflowPropRow({ project }: { project: Project }) {
   );
 }
 
-// Keep the project workflow visible while retaining the deployment and autonomous controls.
-function ProjectWorkflowPropRow({ project }: { project: Project }) {
-  const { t } = useT("issues");
-  const enabled = useFeatureEnabled(PROJECT_WORKFLOWS_V1_FLAG, false);
-  if (!enabled && !project.workflow_id) return null;
-  return (
-    <PropRow label={t(($) => $.workflows.project.label)}>
-      <ProjectWorkflowControl project={project} />
-    </PropRow>
-  );
-}
-
 // ProjectDetail
 
 export function ProjectDetail({ projectId }: { projectId: string }) {

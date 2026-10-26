@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,13 +12,14 @@ import (
 func TestAntigravityStructuredHelpers(t *testing.T) {
 	t.Parallel()
 
+	stepIndex := 7
 	step := &antigravityStreamStepUpdate{
-		StepIndex: 7,
+		StepIndex: &stepIndex,
 		StepType:  "tool",
 		ToolName:  "run_command",
-		ToolInfo: &antigravityStreamToolInfo{
+		ToolInfo: &antigravityStreamTool{
 			Parameters: map[string]any{"CommandLine": "go test ./..."},
-			Output:     "ok",
+			Output:     json.RawMessage(`"ok"`),
 		},
 	}
 	if got := antigravityToolName(step); got != "run_command" {
@@ -133,11 +135,11 @@ func TestAntigravityBackendStreamsStructuredEvents(t *testing.T) {
 		case MessageText:
 			text.WriteString(msg.Content)
 		case MessageToolUse:
-			if msg.Tool == "run_command" && msg.CallID == "antigravity-step-2" {
+			if msg.Tool == "run_command" && msg.CallID == "agy-step-2" {
 				sawToolUse = true
 			}
 		case MessageToolResult:
-			if msg.Tool == "run_command" && msg.CallID == "antigravity-step-2" && msg.Output == "ok" {
+			if msg.Tool == "run_command" && msg.CallID == "agy-step-2" && msg.Output == "ok" {
 				sawToolResult = true
 			}
 		}

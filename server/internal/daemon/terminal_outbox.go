@@ -159,7 +159,7 @@ func (d *Daemon) replayTerminalOutbox(ctx context.Context) {
 		return
 	}
 	for _, report := range reports {
-		if err := d.sendTerminalTaskReport(ctx, report); err != nil {
+		if err := d.sendTerminalTaskReport(ctx, report, defaultTerminalRetrySchedule); err != nil {
 			d.logger.Debug("replay terminal task report failed", "task", shortID(report.taskID), "error", err)
 			continue
 		}

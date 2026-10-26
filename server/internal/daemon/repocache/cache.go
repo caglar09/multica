@@ -762,8 +762,8 @@ type WorktreeParams struct {
 
 // WorktreeResult describes a successfully created worktree.
 type WorktreeResult struct {
-	Path              string `json:"path"`                // absolute path to the task worktree
-	BranchName        string `json:"branch_name"`         // git branch created for this worktree
+	Path              string `json:"path"`                          // absolute path to the task worktree
+	BranchName        string `json:"branch_name"`                   // git branch created for this worktree
 	CanonicalRepoPath string `json:"canonical_repo_path,omitempty"` // shared daemon-owned bare repo
 }
 
@@ -1009,7 +1009,7 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 			return "", err
 		}
 		if err := configureRepoCABundleContext(ctx, checkoutPath); err != nil {
-			return nil, err
+			return "", err
 		}
 		// Idempotent, and required for a workdir that was first created while
 		// the cache was still a full clone: without it, a checkout backed by a

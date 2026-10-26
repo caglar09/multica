@@ -112,6 +112,9 @@ export function readRuntimeCliVersion(metadata: Record<string, unknown> | undefi
  */
 export const MIN_CHAT_PROJECT_CONTEXT_CLI_VERSION = "0.4.10";
 
+/** First CLI release that renders assignment handoff notes in the run prompt. */
+export const MIN_HANDOFF_CLI_VERSION = "0.3.28";
+
 /**
  * Whether a daemon-reported CLI version is new enough to inject a chat
  * session's project description into the run brief. Missing / unparsable /
@@ -119,6 +122,11 @@ export const MIN_CHAT_PROJECT_CONTEXT_CLI_VERSION = "0.4.10";
  */
 export function chatProjectContextSupported(detected: string | undefined | null): boolean {
   return meetsMinCliVersion(detected, MIN_CHAT_PROJECT_CONTEXT_CLI_VERSION);
+}
+
+/** Whether a daemon can render assignment handoff notes. */
+export function handoffSupported(detected: string | undefined | null): boolean {
+  return meetsMinCliVersion(detected, MIN_HANDOFF_CLI_VERSION);
 }
 
 function meetsMinCliVersion(detected: string | undefined | null, minimum: string): boolean {

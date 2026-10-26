@@ -129,7 +129,7 @@ export function ExecutionLoopWidget({
                     ? "border-emerald-500/30 bg-emerald-500/5 text-foreground"
                     : isCurrent
                       ? "border-primary/50 bg-primary/5 text-foreground ring-1 ring-primary/20"
-                      : "border-border/40 bg-muted/20 text-muted-foreground opacity-60",
+                      : "border-border/40 bg-muted/20 text-muted-foreground",
                 )}
               >
                 <div className="flex items-center justify-center mb-1">

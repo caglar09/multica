@@ -1073,14 +1073,16 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		"runtimes": resp,
 	})
 
-repoResp := workspaceReposResponse(req.WorkspaceID, ws.Repos, ws.Settings, h.cfg.GitExtraCACerts)
+	repoResp := workspaceReposResponse(req.WorkspaceID, ws.Repos, ws.Settings, h.cfg.GitExtraCACerts)
 	repoResp.DeploymentSources = h.daemonDeploymentSources(r.Context(), req.WorkspaceID)
 	body := map[string]any{
 		"runtimes": resp, "repos": repoResp.Repos,
 		"repos_version": repoResp.ReposVersion, "settings": repoResp.Settings,
 		"deployment_sources": repoResp.DeploymentSources,
 	}
-	if repoResp.CACerts != "" { body["ca_certs"] = repoResp.CACerts }
+	if repoResp.CACerts != "" {
+		body["ca_certs"] = repoResp.CACerts
+	}
 	writeJSON(w, http.StatusOK, body)
 }
 
@@ -1289,7 +1291,7 @@ func (h *Handler) GetDaemonWorkspaceRepos(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-repoResp := workspaceReposResponse(workspaceID, ws.Repos, ws.Settings, h.cfg.GitExtraCACerts)
+	repoResp := workspaceReposResponse(workspaceID, ws.Repos, ws.Settings, h.cfg.GitExtraCACerts)
 	repoResp.DeploymentSources = h.daemonDeploymentSources(r.Context(), workspaceID)
 	writeJSON(w, http.StatusOK, repoResp)
 }
@@ -3642,7 +3644,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				`, task.AgentID, cs.WorkspaceID, cs.ProjectID).Scan(&projectManagerChat); err != nil {
 					slog.Error("chat claim: failed to resolve project manager policy; preserving task for redelivery",
 						"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
-					return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
 						outcome: "error_project_manager_policy",
 						status:  http.StatusInternalServerError,
 						message: "failed to resolve project manager policy",

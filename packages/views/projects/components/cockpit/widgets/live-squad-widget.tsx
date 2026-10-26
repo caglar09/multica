@@ -149,7 +149,7 @@ export function LiveSquadWidget({
                         <span className="truncate text-xs font-medium text-foreground group-hover:text-primary transition-colors">
                           {member.agent_name}
                         </span>
-                        <ArrowUpRight className="size-3 text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100 shrink-0" />
+                        <ArrowUpRight className="size-3 text-faint-foreground opacity-0 transition-opacity group-hover:opacity-100 shrink-0" />
                       </div>
                       <span className="text-[10px] font-mono text-muted-foreground capitalize">
                         {member.role}
