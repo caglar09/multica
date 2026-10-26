@@ -137,7 +137,7 @@ func (q *Queries) CreateDeploymentOperation(ctx context.Context, arg CreateDeplo
 const createDeploymentProviderConnection = `-- name: CreateDeploymentProviderConnection :one
 INSERT INTO deployment_provider_connection (id, workspace_id, provider, name, secret_ref, webhook_secret_ref, config, enabled)
 VALUES (COALESCE($6::uuid, gen_random_uuid()), $1, $2, $3, $7, $8, $4, $5)
-RETURNING id, workspace_id, provider, name, secret_ref, webhook_secret_ref, config, enabled, created_at, updated_at
+RETURNING id, workspace_id, provider, name, secret_ref, config, enabled, created_at, updated_at, webhook_secret_ref
 `
 
 type CreateDeploymentProviderConnectionParams struct {
@@ -169,11 +169,11 @@ func (q *Queries) CreateDeploymentProviderConnection(ctx context.Context, arg Cr
 		&i.Provider,
 		&i.Name,
 		&i.SecretRef,
-		&i.WebhookSecretRef,
 		&i.Config,
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookSecretRef,
 	)
 	return i, err
 }
@@ -475,7 +475,7 @@ func (q *Queries) GetDeploymentOperationByProviderOperation(ctx context.Context,
 }
 
 const getDeploymentProviderConnection = `-- name: GetDeploymentProviderConnection :one
-SELECT id, workspace_id, provider, name, secret_ref, webhook_secret_ref, config, enabled, created_at, updated_at FROM deployment_provider_connection WHERE workspace_id = $1 AND id = $2
+SELECT id, workspace_id, provider, name, secret_ref, config, enabled, created_at, updated_at, webhook_secret_ref FROM deployment_provider_connection WHERE workspace_id = $1 AND id = $2
 `
 
 type GetDeploymentProviderConnectionParams struct {
@@ -492,11 +492,11 @@ func (q *Queries) GetDeploymentProviderConnection(ctx context.Context, arg GetDe
 		&i.Provider,
 		&i.Name,
 		&i.SecretRef,
-		&i.WebhookSecretRef,
 		&i.Config,
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookSecretRef,
 	)
 	return i, err
 }
@@ -650,7 +650,7 @@ func (q *Queries) ListDeploymentOperations(ctx context.Context, arg ListDeployme
 }
 
 const listDeploymentProviderConnections = `-- name: ListDeploymentProviderConnections :many
-SELECT id, workspace_id, provider, name, secret_ref, webhook_secret_ref, config, enabled, created_at, updated_at FROM deployment_provider_connection WHERE workspace_id = $1 ORDER BY created_at DESC
+SELECT id, workspace_id, provider, name, secret_ref, config, enabled, created_at, updated_at, webhook_secret_ref FROM deployment_provider_connection WHERE workspace_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListDeploymentProviderConnections(ctx context.Context, workspaceID pgtype.UUID) ([]DeploymentProviderConnection, error) {
@@ -668,11 +668,11 @@ func (q *Queries) ListDeploymentProviderConnections(ctx context.Context, workspa
 			&i.Provider,
 			&i.Name,
 			&i.SecretRef,
-			&i.WebhookSecretRef,
 			&i.Config,
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WebhookSecretRef,
 		); err != nil {
 			return nil, err
 		}
@@ -838,7 +838,7 @@ const updateDeploymentProviderConnection = `-- name: UpdateDeploymentProviderCon
 UPDATE deployment_provider_connection
 SET name = $3, secret_ref = $6, webhook_secret_ref = $7, config = $4, enabled = $5, updated_at = now()
 WHERE workspace_id = $1 AND id = $2
-RETURNING id, workspace_id, provider, name, secret_ref, webhook_secret_ref, config, enabled, created_at, updated_at
+RETURNING id, workspace_id, provider, name, secret_ref, config, enabled, created_at, updated_at, webhook_secret_ref
 `
 
 type UpdateDeploymentProviderConnectionParams struct {
@@ -868,11 +868,11 @@ func (q *Queries) UpdateDeploymentProviderConnection(ctx context.Context, arg Up
 		&i.Provider,
 		&i.Name,
 		&i.SecretRef,
-		&i.WebhookSecretRef,
 		&i.Config,
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookSecretRef,
 	)
 	return i, err
 }

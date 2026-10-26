@@ -83,6 +83,7 @@ vi.mock("@multica/core/projects", () => ({
 		isPending: false,
 	}),
 }));
+vi.mock("../../workflows/project-workflow-menu", () => ({ ProjectWorkflowMenu: () => null }));
 
 vi.mock("@tanstack/react-query", () => ({
   queryOptions: (options: unknown) => options,

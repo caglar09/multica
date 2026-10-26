@@ -20,6 +20,8 @@ const CONTENT_LANG_BY_LOCALE: Record<SupportedLocale, ContentLang> = {
   ko: "ko",
   ja: "ja",
   tr: "en",
+  // Mika has no French onboarding copy yet, so use the English fallback.
+  fr: "en",
 };
 
 /**

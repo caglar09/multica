@@ -31,8 +31,13 @@ import { copyText } from "@multica/ui/lib/clipboard";
 import { toast } from "sonner";
 import { api } from "@multica/core/api";
 import type { ProjectStatus, ProjectPriority } from "@multica/core/types";
+
 import { useAuthStore } from "@multica/core/auth";
 import { projectDetailOptions } from "@multica/core/projects/queries";
+import { useFeatureEnabled } from "@multica/core/config";
+import { PROJECT_WORKFLOWS_V1_FLAG } from "@multica/core/feature-flags";
+import { ProjectWorkflowControl } from "../../workflows/project-workflow-row";
+import { ProjectWorkflowMenu } from "../../workflows/project-workflow-menu";
 import {
 	autonomousProjectOptions,
 	projectLeaderChangesOptions,
@@ -49,7 +54,7 @@ import {
 	useRetryAutonomousAction,
 	useRerunAutonomousIssue,
 } from "@multica/core/projects";
-import type { AutonomousRoleRuntimeAssignment } from "@multica/core/types";
+import type { AutonomousRoleRuntimeAssignment, Project } from "@multica/core/types";
 import {
 	useUpdateProject,
 	useDeleteProject,
@@ -90,6 +95,7 @@ import {
 	DecisionGateWidget,
 	hasPendingDecisions,
 } from "./cockpit/widgets/decision-gate-widget";
+
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { ProjectDeploymentsSection } from "../../deployments/components/project-deployments-section";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -99,6 +105,7 @@ import {
 	ResizablePanel,
 	ResizableHandle,
 } from "@multica/ui/components/ui/resizable";
+
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import {
@@ -143,9 +150,7 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { openLocalDirectory } from "../../platform/local-directory";
 import { useLocalDaemonStatus } from "../../platform/use-local-daemon-status";
 
-// ---------------------------------------------------------------------------
 // Property row — sidebar property display
-// ---------------------------------------------------------------------------
 
 function PropRow({
 	label,
@@ -166,9 +171,32 @@ function PropRow({
 	);
 }
 
-// ---------------------------------------------------------------------------
+// The project's workflow (MUL-7420). Hidden while workflows are off, unless the
+// project already uses one — it can always switch back to Default.
+function ProjectWorkflowPropRow({ project }: { project: Project }) {
+  const { t } = useT("issues");
+  const enabled = useFeatureEnabled(PROJECT_WORKFLOWS_V1_FLAG, false);
+  if (!enabled && !project.workflow_id) return null;
+  return (
+    <PropRow label={t(($) => $.workflows.project.label)}>
+      <ProjectWorkflowControl project={project} />
+    </PropRow>
+  );
+}
+
+// Keep the project workflow visible while retaining the deployment and autonomous controls.
+function ProjectWorkflowPropRow({ project }: { project: Project }) {
+  const { t } = useT("issues");
+  const enabled = useFeatureEnabled(PROJECT_WORKFLOWS_V1_FLAG, false);
+  if (!enabled && !project.workflow_id) return null;
+  return (
+    <PropRow label={t(($) => $.workflows.project.label)}>
+      <ProjectWorkflowControl project={project} />
+    </PropRow>
+  );
+}
+
 // ProjectDetail
-// ---------------------------------------------------------------------------
 
 export function ProjectDetail({ projectId }: { projectId: string }) {
 	const { t } = useT("projects");
@@ -248,6 +276,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 		// immediately and let the loopback daemon validate/open it on click.
 		return directories[0];
 	}, [project, localDaemon.daemonId]);
+
 
 	const handleOpenProjectDirectory = useCallback(async () => {
 		if (!localProjectDirectory) return;
@@ -400,6 +429,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 		);
 	};
 
+
 	const handleRerunIssue = (issueId: string, taskId?: string) => {
 		rerunAutonomousIssue.mutate(
 			{ projectId, issueId, taskId },
@@ -457,6 +487,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 			} else {
 				params.set("tab", view);
 			}
+
 
 			const search = params.toString();
 			const nextPath = `${router.pathname}${search ? `?${search}` : ""}${router.hash}`;
@@ -876,6 +907,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 									dueDate={project.due_date}
 									onUpdate={handleUpdateField}
 								/>
+							<ProjectWorkflowPropRow project={project} />
 							</PropRow>
 							{autonomousSnapshot?.enabled && (
 								<PropRow label={t(($) => $.cockpit.loop_status)}>
@@ -1137,6 +1169,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 							}
 							actions={
 								<>
+				<ProjectWorkflowMenu project={project} />
 									{autonomousSnapshot?.enabled ? (
 										<div className="hidden items-center gap-2 lg:flex">
 											<div className="flex items-center gap-1.5 text-caption font-medium">

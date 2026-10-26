@@ -245,22 +245,91 @@ afterEach(() => {
 });
 
 describe("AgentTranscriptDialog", () => {
+  it.each([
+    { type: "text", label: "Agent", icon: ".lucide-bot" },
+    { type: "thinking", label: "Thinking", icon: ".lucide-brain" },
+    { type: "error", label: "Error", icon: ".lucide-circle-alert" },
+  ] as const)("labels a $type step correctly when opened from the timeline", ({ type, label, icon }) => {
+    renderDialog([
+      { seq: 1, type, content: "Final delivered reply", created_at: baseTask.started_at! },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Model 1m 00s" }));
+
+    const inspector = screen.getByRole("complementary");
+    expect(within(inspector).getByRole("heading", { name: label })).toBeInTheDocument();
+    expect(inspector.querySelector(icon)).not.toBeNull();
+    expect(inspector).toHaveTextContent("Final delivered reply");
+    if (type === "text") {
+      expect(within(inspector).queryByText("Error")).not.toBeInTheDocument();
+      expect(inspector.querySelector(".text-destructive, .bg-destructive")).toBeNull();
+    }
+  });
+
+  it("shows what was asked, whole, under the header", () => {
+    // The lists that open this dialog cut the ask to one line; here it wraps.
+    const ask = "Merge the three split-out sub-issues back into this PR &amp; ship conditions, history and runaway protection together";
+    renderDialog(items, { task: { ...baseTask, trigger_comment_id: "comment-1", trigger_summary: ask } });
+
+    expect(screen.getByText("Trigger")).toBeInTheDocument();
+    expect(
+      screen.getByText("Merge the three split-out sub-issues back into this PR & ship conditions, history and runaway protection together"),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    { locale: "en", label: "Agent", model: "Model" },
+    { locale: "zh-Hans", label: "智能体", model: "模型" },
+    { locale: "ja", label: "エージェント", model: "モデル" },
+    { locale: "ko", label: "에이전트", model: "모델" },
+    { locale: "fr", label: "Agent", model: "Modèle" },
+  ] as const)("localizes the text step inspector in $locale", ({ locale, label, model }) => {
+    renderDialog([
+      { seq: 1, type: "text", content: "Final delivered reply", created_at: baseTask.started_at! },
+    ], { locale });
+
+    fireEvent.click(screen.getByRole("button", { name: `${model} 1m 00s` }));
+
+    const inspector = screen.getByRole("complementary");
+    expect(within(inspector).getByRole("heading", { name: label })).toBeInTheDocument();
+    expect(inspector.firstElementChild).toHaveTextContent(label);
+  });
+
+  it("has no trigger row for a run with no snapshot", () => {
+    renderDialog(items, { task: { ...baseTask, trigger_summary: undefined } });
+    expect(screen.queryByText("Trigger")).not.toBeInTheDocument();
+  });
+
+  it("opens the matching result and duration for parallel same-tool calls", () => {
+    const at = (seconds: number) =>
+      new Date(Date.parse(baseTask.started_at!) + seconds * 1000).toISOString();
+    renderDialog([
+      { seq: 1, type: "tool_use", tool: "Bash", callId: "A", input: { command: "slow-A" }, created_at: at(0) },
+      { seq: 2, type: "tool_use", tool: "Bash", callId: "B", input: { command: "fast-B" }, created_at: at(1) },
+      { seq: 3, type: "tool_result", tool: "Bash", callId: "B", output: "B finished", created_at: at(3) },
+      { seq: 4, type: "tool_result", tool: "Bash", callId: "A", output: "A finished", created_at: at(10) },
+    ]);
+    const slow = screen.getByRole("button", { name: /slow-A/ });
+    const fast = screen.getByRole("button", { name: /fast-B/ });
+    expect(slow).toHaveTextContent("10s");
+    expect(fast).toHaveTextContent("2.0s");
+    fireEvent.click(slow);
+    expect(screen.getByText("A finished", { selector: "pre" })).toBeInTheDocument();
+    expect(screen.queryByText("B finished", { selector: "pre" })).not.toBeInTheDocument();
+    fireEvent.click(fast);
+    expect(screen.getByText("B finished", { selector: "pre" })).toBeInTheDocument();
+    expect(screen.queryByText("A finished", { selector: "pre" })).not.toBeInTheDocument();
+  });
+
   it("keeps waiting for live Antigravity events before the first step arrives", async () => {
     vi.mocked(api.listRuntimes).mockResolvedValue([runtimeFor("antigravity")]);
 
     renderDialog([], { task: liveTask, isLive: true });
 
-    // Antigravity 1.1.8+ streams init/step_update/result events. The init
-    // event pins the session but does not create a transcript step, so the
-    // empty live state must wait for the first response/tool event just like
-    // every other streaming runtime.
+    // Antigravity 1.1.8+ pins its session before the first transcript step.
     await screen.findByRole("button", { name: "Run details" });
     expect(screen.getByText("Waiting for events...")).toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        "Antigravity does not currently provide live execution events. The transcript will be available after the run completes.",
-      ),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Antigravity does not currently provide live execution events. The transcript will be available after the run completes.")).not.toBeInTheDocument();
   });
 
   it("keeps waiting for live events from other runtimes", async () => {
@@ -272,6 +341,19 @@ describe("AgentTranscriptDialog", () => {
     // the runtime loaded. The non-antigravity live state still waits.
     await screen.findByRole("button", { name: "Run details" });
     expect(screen.getByText("Waiting for events...")).toBeInTheDocument();
+  });
+
+  it("shows live Antigravity tool events", async () => {
+    vi.mocked(api.listRuntimes).mockResolvedValue([runtimeFor("antigravity")]);
+
+    renderDialog([
+      { seq: 1, type: "tool_use", tool: "run_command", input: { CommandLine: "echo hello" } },
+      { seq: 2, type: "tool_result", tool: "run_command", output: "hello" },
+    ], { task: liveTask, isLive: true });
+
+    await screen.findByRole("button", { name: "Run details" });
+    expect(screen.queryByText("Waiting for events...")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/run_command/).length).toBeGreaterThan(0);
   });
 
   it("preserves selected filters across dialog remounts unconditionally", () => {
@@ -731,7 +813,7 @@ describe("AgentTranscriptDialog — work directory handoff", () => {
     expect(screen.getByText("Project directory")).toBeInTheDocument();
     expect(screen.getByText("project")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByTitle("Copy project directory"));
+    await userEvent.click(screen.getByRole("button", { name: /^Project directory/ }));
     expect(copyTextMock).toHaveBeenCalledWith("/Users/dev/project");
   });
 
@@ -750,7 +832,7 @@ describe("AgentTranscriptDialog — work directory handoff", () => {
     expect(screen.getByText("Workdir")).toBeInTheDocument();
     expect(screen.getByText("workspace/task/worktree")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByTitle("Copy working directory"));
+    await userEvent.click(screen.getByRole("button", { name: /^Workdir/ }));
     expect(copyTextMock).toHaveBeenCalledWith("/managed/task/worktree");
   });
 
@@ -768,7 +850,7 @@ describe("AgentTranscriptDialog — work directory handoff", () => {
     expect(screen.getByText("Workdir")).toBeInTheDocument();
     expect(screen.getByText("workspace/task/worktree")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByTitle("Copy working directory"));
+    await userEvent.click(screen.getByRole("button", { name: /^Workdir/ }));
     expect(copyTextMock).toHaveBeenCalledWith("/managed/preserved/worktree");
   });
 });
@@ -788,7 +870,7 @@ describe("AgentTranscriptDialog — delivered branch", () => {
     // Also shown as a produced artifact in the outcome row, hence getAllByText.
     expect(screen.getAllByText("agent/j/abc12345").length).toBeGreaterThan(0);
 
-    await userEvent.click(screen.getByTitle("Copy branch name"));
+    await userEvent.click(screen.getByRole("button", { name: /^Branch/ }));
     expect(copyTextMock).toHaveBeenCalledWith("agent/j/abc12345");
   });
 
@@ -797,7 +879,7 @@ describe("AgentTranscriptDialog — delivered branch", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Run details" }));
 
-    expect(screen.queryByTitle("Copy branch name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Branch/ })).not.toBeInTheDocument();
   });
 });
 

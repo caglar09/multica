@@ -99,4 +99,9 @@ const EMERGENCY_COPY = {
     description: "Sayfada beklenmeyen bir hata oluştu. Yeniden yüklemeyi deneyin.",
     reload: "Yeniden yükle",
   },
+  fr: {
+    title: "Une erreur s'est produite",
+    description: "La page a rencontré une erreur inattendue. Essayez de la recharger.",
+    reload: "Recharger",
+  },
 } as const;

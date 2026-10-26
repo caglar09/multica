@@ -9,7 +9,9 @@ type ModalType =
   | "create-squad"
   | "feedback"
   | "issue-set-parent"
+  | "issue-mark-duplicate"
   | "issue-add-child"
+  | "issue-rename"
   | "issue-delete-confirm"
   | "issue-run-confirm"
   | "production-deploy-confirm"
@@ -17,6 +19,7 @@ type ModalType =
   | "promote-deployment-confirm"
   | "rollback-deployment-confirm"
   | "disconnect-provider-confirm"
+  | "issue-workflow-handoff"
   | null;
 
 export type IssueLimitRecoveryReason = "issue_limit" | "autopilot_quota";

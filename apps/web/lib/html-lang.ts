@@ -9,4 +9,5 @@ export const HTML_LANG: Record<SupportedLocale, string> = {
   ko: "ko-KR",
   ja: "ja-JP",
   tr: "tr-TR",
+  fr: "fr-FR",
 };
