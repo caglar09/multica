@@ -179,15 +179,23 @@
     "diagnostics_visibility": "Görünürlük",
     "visibility_label": {
       "private": "Gizli",
-      "public": "Herkese açık"
+      "public": "Herkese açık",
+      "members": "Belirli üyeler"
+    },
+    "visibility_choice": {
+      "private": "Gizli",
+      "public": "Herkese açık",
+      "members": "Üyeler"
     },
     "visibility_hint": {
       "private": "Yalnızca siz bu runtime'da ajan oluşturabilirsiniz.",
-      "public": "Herhangi bir çalışma alanı üyesi bu runtime'da ajan oluşturabilir."
+      "public": "Herhangi bir çalışma alanı üyesi bu runtime'da ajan oluşturabilir.",
+      "members": "Bu runtime'da yalnızca siz ve seçtiğiniz üyeler ajan oluşturabilir."
     },
     "visibility_hint_readonly": {
       "private": "Bu runtime'da yalnızca runtime sahibi ajan oluşturabilir ve onu yalnızca o Herkese açık yapabilir.",
-      "public": "Herhangi bir çalışma alanı üyesi bu runtime'da ajan oluşturabilir. Onu yalnızca runtime sahibi tekrar Gizli yapabilir."
+      "public": "Herhangi bir çalışma alanı üyesi bu runtime'da ajan oluşturabilir. Onu yalnızca runtime sahibi tekrar Gizli yapabilir.",
+      "members": "Bu runtime'da yalnızca sahibi ve seçilen üyeler ajan oluşturabilir. Görünürlüğü yalnızca sahibi değiştirebilir."
     },
     "visibility_toast_updated": "Görünürlük {{visibility}} olarak ayarlandı",
     "visibility_toast_failed": "Görünürlük güncellenemedi",
