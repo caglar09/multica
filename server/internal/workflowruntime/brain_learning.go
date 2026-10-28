@@ -19,7 +19,7 @@ func shouldEnqueueBrainLearning(task db.AgentTaskQueue) bool {
 		return false
 	}
 	if output, err := parseImplementationHandoff(task.Result); err == nil {
-		return len(output.Decisions) > 0 || len(output.Artifacts) > 0 ||
+		return len(output.Artifacts) > 0 ||
 			len(output.ChangedFiles) > 0 || len(output.Findings) > 0 ||
 			len(output.Risks) > 0 || len(output.Blockers) > 0
 	}
@@ -49,7 +49,22 @@ func (r *Runtime) enqueueBrainLearning(ctx context.Context, task db.AgentTaskQue
 		"task_status": task.Status,
 	}
 	if len(task.Result) > 0 {
-		if len(task.Result) <= maxEvidenceBytes {
+		if output, err := parseImplementationHandoff(task.Result); err == nil {
+			// Critical decisions are synchronously persisted with the completion
+			// artifact. Keep the rest of this evidence available to the async learner
+			// without asking it to create a second decision entry from the same field.
+			rawOutput, marshalErr := json.Marshal(output)
+			if marshalErr != nil {
+				return fmt.Errorf("encode asynchronous handoff evidence: %w", marshalErr)
+			}
+			var asyncOutput map[string]any
+			if err := json.Unmarshal(rawOutput, &asyncOutput); err != nil {
+				return fmt.Errorf("decode asynchronous handoff evidence: %w", err)
+			}
+			delete(asyncOutput, "decisions")
+			delete(asyncOutput, "architecture_choices")
+			evidence["result"] = asyncOutput
+		} else if len(task.Result) <= maxEvidenceBytes {
 			var result any
 			if json.Unmarshal(task.Result, &result) == nil {
 				evidence["result"] = result
@@ -75,6 +90,70 @@ func (r *Runtime) enqueueBrainLearning(ctx context.Context, task db.AgentTaskQue
 		40,
 		3,
 	)
+}
+
+func prepareSynchronousCompletionDecisions(
+	ctx context.Context,
+	task db.AgentTaskQueue,
+	issue db.Issue,
+	kind projectorchestration.NodeKind,
+	nodeKey string,
+) ([]projectorchestration.SynchronousBrainDecision, error) {
+	switch kind {
+	case projectorchestration.NodeArchitecture, projectorchestration.NodeImplementation,
+		projectorchestration.NodeMigration, projectorchestration.NodeIntegration:
+	default:
+		return nil, nil
+	}
+	handoff, err := parseImplementationHandoff(task.Result)
+	if err != nil {
+		return nil, nil
+	}
+	decisions := make([]string, 0, len(handoff.Decisions))
+	architectureChoices := make([]string, 0, len(handoff.ArchitectureChoices))
+	seen := make(map[string]struct{}, len(handoff.Decisions)+len(handoff.ArchitectureChoices))
+	cleanValues := func(values []string) []string {
+		clean := make([]string, 0, len(values))
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			key := strings.ToLower(value)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			clean = append(clean, value)
+		}
+		return clean
+	}
+	decisions = cleanValues(handoff.Decisions)
+	architectureChoices = cleanValues(handoff.ArchitectureChoices)
+	if len(decisions)+len(architectureChoices) == 0 {
+		return nil, nil
+	}
+	subject := "Architecture and technology decisions: " + strings.TrimSpace(issue.Title)
+	content, err := json.Marshal(map[string]any{
+		"decisions":            decisions,
+		"architecture_choices": architectureChoices,
+		"node_key":             strings.TrimSpace(nodeKey),
+		"node_kind":            kind,
+		"task_id":              util.UUIDToString(task.ID),
+		"issue_id":             util.UUIDToString(issue.ID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode synchronous completion decisions: %w", err)
+	}
+	embedding, err := projectorchestration.PrepareBrainMemoryEmbedding(ctx, subject, content)
+	if err != nil {
+		return nil, fmt.Errorf("embed synchronous completion decisions: %w", err)
+	}
+	return []projectorchestration.SynchronousBrainDecision{{
+		Subject: subject, Content: content,
+		SourceID:  "task:" + util.UUIDToString(task.ID) + ":architecture-decisions",
+		Embedding: embedding,
+	}}, nil
 }
 
 // runBrainWorker is retained as the startup hook used by Runtime registration.

@@ -43,6 +43,10 @@ func (s *Store) PersistPlan(
 	if err := ValidatePlan(plan, DefaultMaxNodes); err != nil {
 		return StoredPlan{}, err
 	}
+	brainMemories, err := preparePlanBrainMemories(ctx, plan)
+	if err != nil {
+		return StoredPlan{}, fmt.Errorf("prepare project plan brain embeddings: %w", err)
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -75,7 +79,7 @@ func (s *Store) PersistPlan(
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return StoredPlan{}, fmt.Errorf("check existing project plan revision: %w", err)
 	}
-	stored, err := s.persistPlanTx(ctx, tx, workspaceID, projectID, sourceRevision, plannerName, plannerModel, plan)
+	stored, err := s.persistPlanTx(ctx, tx, workspaceID, projectID, sourceRevision, plannerName, plannerModel, plan, brainMemories)
 	if err != nil {
 		return StoredPlan{}, err
 	}
@@ -157,6 +161,19 @@ func (s *Store) AppendPlanDelta(
 	}
 	if strings.TrimSpace(primaryNodeKey) == "" || !issueID.Valid {
 		return errors.New("primary discovered node and issue are required")
+	}
+	var brainRaw []byte
+	var brainEmbedding string
+	if brainContent != nil {
+		raw, err := json.Marshal(brainContent)
+		if err != nil {
+			return err
+		}
+		brainRaw = raw
+		brainEmbedding, err = PrepareBrainMemoryEmbedding(ctx, brainSubject, raw)
+		if err != nil {
+			return fmt.Errorf("prepare discovered project brain embedding: %w", err)
+		}
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -289,17 +306,13 @@ func (s *Store) AppendPlanDelta(
 	}
 
 	if brainContent != nil {
-		raw, err := json.Marshal(brainContent)
-		if err != nil {
-			return err
-		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO autonomous_project_brain_entry (
 				workspace_id, project_id, plan_id, entry_type, subject, content,
-				source_type, source_id, confidence, created_by_type
+				source_type, source_id, confidence, created_by_type, embedding
 			)
 			SELECT $1, $2, $3, 'fact', $4, $5,
-			       'discovered_issue', $6, 0.9, 'agent'
+			       'discovered_issue', $6, 0.9, 'agent', NULLIF($7, '')::vector
 			WHERE NOT EXISTS (
 				SELECT 1
 				FROM autonomous_project_brain_entry
@@ -308,7 +321,7 @@ func (s *Store) AppendPlanDelta(
 				  AND source_type = 'discovered_issue'
 				  AND source_id = $6
 			)
-		`, workspaceID, projectID, planID, brainSubject, raw, util.UUIDToString(issueID)); err != nil {
+		`, workspaceID, projectID, planID, brainSubject, brainRaw, util.UUIDToString(issueID), brainEmbedding); err != nil {
 			return fmt.Errorf("record discovered work in project brain: %w", err)
 		}
 	}
@@ -319,33 +332,54 @@ func (s *Store) AppendPlanDelta(
 	return tx.Commit(ctx)
 }
 
-func seedBrain(ctx context.Context, tx pgx.Tx, workspaceID, projectID, planID pgtype.UUID, plan Plan) error {
-	insert := func(entryType, subject string, content any) error {
+type preparedBrainMemory struct {
+	entryType string
+	subject   string
+	content   []byte
+	embedding string
+}
+
+func preparePlanBrainMemories(ctx context.Context, plan Plan) ([]preparedBrainMemory, error) {
+	memories := make([]preparedBrainMemory, 0, 1+len(plan.Specification.Requirements)+len(plan.Specification.Constraints))
+	prepare := func(entryType, subject string, content any) error {
 		raw, err := json.Marshal(content)
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `
-			INSERT INTO autonomous_project_brain_entry (
-				workspace_id, project_id, plan_id, entry_type, subject, content,
-				source_type, source_id, confidence, created_by_type
-			)
-			VALUES ($1, $2, $3, $4, $5, $6, 'project_plan', $7, 1.0, 'system')
-		`, workspaceID, projectID, planID, entryType, subject, raw, util.UUIDToString(planID))
-		return err
+		embedding, err := PrepareBrainMemoryEmbedding(ctx, subject, raw)
+		if err != nil {
+			return err
+		}
+		memories = append(memories, preparedBrainMemory{entryType: entryType, subject: subject, content: raw, embedding: embedding})
+		return nil
 	}
-
-	if err := insert("requirement", "goal", map[string]any{"goal": plan.Goal}); err != nil {
-		return fmt.Errorf("seed project brain goal: %w", err)
+	if err := prepare("requirement", "goal", map[string]any{"goal": plan.Goal}); err != nil {
+		return nil, err
 	}
 	for i, requirement := range plan.Specification.Requirements {
-		if err := insert("requirement", fmt.Sprintf("requirement:%d", i+1), map[string]any{"text": requirement}); err != nil {
-			return fmt.Errorf("seed project brain requirement: %w", err)
+		if err := prepare("requirement", fmt.Sprintf("requirement:%d", i+1), map[string]any{"text": requirement}); err != nil {
+			return nil, err
 		}
 	}
 	for i, constraint := range plan.Specification.Constraints {
-		if err := insert("constraint", fmt.Sprintf("constraint:%d", i+1), map[string]any{"text": constraint}); err != nil {
-			return fmt.Errorf("seed project brain constraint: %w", err)
+		if err := prepare("constraint", fmt.Sprintf("constraint:%d", i+1), map[string]any{"text": constraint}); err != nil {
+			return nil, err
+		}
+	}
+	return memories, nil
+}
+
+func seedBrain(ctx context.Context, tx pgx.Tx, workspaceID, projectID, planID pgtype.UUID, memories []preparedBrainMemory) error {
+	for _, memory := range memories {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO autonomous_project_brain_entry (
+				workspace_id, project_id, plan_id, entry_type, subject, content,
+				source_type, source_id, confidence, created_by_type, embedding
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, 'project_plan', $7, 1.0, 'system', NULLIF($8, '')::vector)
+		`, workspaceID, projectID, planID, memory.entryType, memory.subject, memory.content, util.UUIDToString(planID), memory.embedding)
+		if err != nil {
+			return fmt.Errorf("seed project brain %s: %w", memory.subject, err)
 		}
 	}
 	return nil
@@ -1765,9 +1799,13 @@ func (s *Store) CleanupProject(
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT set_config('multica.allow_release_manifest_delete', 'on', true)`); err != nil {
+		return err
+	}
 	statements := []string{
 		`DELETE FROM autonomous_project_incident WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_deployment WHERE workspace_id = $1 AND project_id = $2`,
+		`DELETE FROM autonomous_project_release_manifest WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_escalation WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_quality_gate_run WHERE workspace_id = $1 AND project_id = $2`,
 		`DELETE FROM autonomous_project_artifact WHERE workspace_id = $1 AND project_id = $2`,
@@ -1798,9 +1836,13 @@ func (s *Store) CleanupWorkspace(ctx context.Context, workspaceID pgtype.UUID) e
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT set_config('multica.allow_release_manifest_delete', 'on', true)`); err != nil {
+		return err
+	}
 	statements := []string{
 		`DELETE FROM autonomous_project_incident WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_deployment WHERE workspace_id = $1`,
+		`DELETE FROM autonomous_project_release_manifest WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_escalation WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_quality_gate_run WHERE workspace_id = $1`,
 		`DELETE FROM autonomous_project_artifact WHERE workspace_id = $1`,

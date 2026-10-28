@@ -729,7 +729,7 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
-	if autonomousRuntime := startAutonomousWorkflow(sweepCtx, bus, pool, taskSvc); autonomousRuntime != nil {
+	if autonomousRuntime := startAutonomousWorkflow(sweepCtx, bus, pool, taskSvc, h.Storage); autonomousRuntime != nil {
 		h.AutonomousWorkflowRestart = autonomousRuntime.RestartProjectWorkflow
 		h.ProjectLeaderSession = autonomousRuntime.EnsureProjectLeaderSession
 		h.ProjectLeaderCompletion = autonomousRuntime.ProcessProjectLeaderCompletion

@@ -710,12 +710,12 @@ Aşağıdaki 20 görev, sistemin tüm açıklarını uçtan uca kapatacak şekil
   * **İş Akışı:**
     1. Dağıtım düğümü `deployment.AsyncDispatcher.Dispatch(...)` metodunu çağırır.
     2. Dağıtım motoru veritabanında global bir `Operation` kaydı açar (`operation_id` döner).
-    3. Otonom proje tablosu (`autonomous_project_deployment`), bu `operation_id`'yi yabancı anahtar (foreign key / correlation id) olarak saklar.
+    3. Otonom proje tablosu (`autonomous_project_deployment`), bu `operation_id`'yi korelasyon kimliği olarak saklar; tablolar arasında yabancı anahtar oluşturulmaz.
     4. Sunucu kapansa veya kilitlense bile, genel `deployment.Reconciler` arka planda çalışarak sağlayıcıdan (Cloudflare, Vercel, AWS ECS) durumu periyodik sorgular ve terminal durumu (`completed` / `failed`) otonom projeye geri yansıtır.
 * **Değiştirilecek Dosyalar:**
   * `server/internal/workflowruntime/project_orchestrator.go`
   * `server/internal/workflowruntime/runtime.go`
-  * `server/internal/deployment/bridge.go` (Yeni dosya)
+  * `server/internal/workflowruntime/deployment_bridge.go` (Yeni dosya; proje uyarlaması workflow katmanında kalır, genel deployment motoru bağımsızdır)
 * **Veritabanı Değişiklikleri:**
   * `autonomous_project_deployment` tablosuna `generic_operation_id UUID` kolonu eklenir.
 * **Test Senaryoları:**
@@ -1165,6 +1165,19 @@ Görevler, sisteme en hızlı güvenilirlik kazandıracak ve bloklayıcı riskle
 * **TASK-M1:** Hibrit Bellek Arama Motoru (pgvector + FTS + RRF)
 * **TASK-M2:** Senkron Mimari Karar Kaydı & Hafıza Yarış Koşulunun Giderilmesi
 * *Hedef:* Dağıtılan kodun test edilen kodla %100 aynı olmasının garanti edilmesi, geri alma otomasyonu ve semantik hafıza.
+
+### Dalga 3 Gerçekleştirme Durumu
+
+Durumlar, aşağıdaki yerel görev ve dal entegrasyon kapılarının ebeveyn doğrulamasına dayanır. **Production remains human-approved.** Bu doğrulama sırasında canlı üretim dağıtımı yapılmadı.
+
+| Görev | Durum | Yerel kanıt |
+|---|---|---|
+| TASK-D1 | implemented — verified | `leaf-3.1.1:G1-G7`, `leaf-3.1.6:G1-G2`, `node-3.1:G1-G2`: committed release contract’tan pinned OCI Go builder ile gerçek ELF artifact üretimi, deterministik paketleme ve SHA-256 anahtarlı saklama/geri-okuma; gerçek commit/tree, sağlayıcı kimlik onayı, timestamp-only ref reddi, retry-safe 602 indeksi ve yalnızca tenant cleanup transaction’ında manifest silimi |
+| TASK-D2 | implemented — verified | `leaf-3.2.1:G1-G4`, `node-3.1:G1-G2`: workflow katmanındaki köprü genel deployment sıfır-bağımlılık sınırını koruyor; genel operation, restart uzlaştırması, korelasyon ve migration sözleşmeleri |
+| TASK-D3 | implemented — verified | `leaf-3.3.1:G1-G4`: staging smoke/sağlık kapısı, güncel revizyon/düğüm/ortam/manifest için insan onayı ve bilinen sağlıklı manifest kimliğine geri alma |
+| TASK-S3 | implemented — verified | `leaf-3.1.2:G1-G3`: yeni spesifikasyon revizyonu ve eski issue revizyonunda transaction rollback |
+| TASK-M1 | implemented — verified | `leaf-3.1.3:G1-G4`, `leaf-3.1.4:G1-G2`, `leaf-3.1.5:G1-G2`, `node-3.2:G1-G2`: hibrit recall, tüm bellek yazıcılarında vektör hazırlığı, embedding kapalıyken sıfır dış istek ve retry-safe 604 indeksi |
+| TASK-M2 | implemented — verified | `leaf-3.2.2:G1-G3`, `node-3.2:G1-G2`: kritik kararların senkron kaydı, güncel beyin revizyonu ve bağımlı düğüm dispatch bariyeri |
 
 ### Dalga 4: İleri Otonomi & Kullanıcı Kontrolü (Advanced Autonomy & UI) — Hafta 4
 * **TASK-G3:** Otonom Git Çatışma Çözücü Ajan (`GitConflictResolverAgent`)

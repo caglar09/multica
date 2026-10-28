@@ -52,6 +52,45 @@ func TestImplementationHandoffContract(t *testing.T) {
 	}
 }
 
+func TestImplementationHandoff_ArchitectureChoices(t *testing.T) {
+	raw := `{"summary":"implemented","architecture_choices":["Use PostgreSQL pgvector for vector recall."],"artifacts":[],"changed_files":[],"commit_sha":"","diff":"","tests":[],"findings":[],"risks":[],"blockers":[]}`
+	out, err := parseImplementationHandoff(wrappedOutput(raw))
+	if err != nil {
+		t.Fatalf("parse architecture choices: %v", err)
+	}
+	if len(out.ArchitectureChoices) != 1 || out.ArchitectureChoices[0] != "Use PostgreSQL pgvector for vector recall." {
+		t.Fatalf("architecture choices = %#v", out.ArchitectureChoices)
+	}
+	if out.Decisions != nil {
+		t.Fatalf("omitted decisions field should remain optional, got %#v", out.Decisions)
+	}
+	durableRaw, err := json.Marshal(durableHandoffEnvelope{ArchitectureChoices: out.ArchitectureChoices})
+	if err != nil {
+		t.Fatalf("encode durable architecture choices: %v", err)
+	}
+	var durable durableHandoffEnvelope
+	if err := json.Unmarshal(durableRaw, &durable); err != nil {
+		t.Fatalf("decode durable architecture choices: %v", err)
+	}
+	if len(durable.ArchitectureChoices) != 1 || durable.ArchitectureChoices[0] != out.ArchitectureChoices[0] {
+		t.Fatalf("durable architecture choices = %#v", durable.ArchitectureChoices)
+	}
+
+	tooMany := make([]string, 101)
+	for i := range tooMany {
+		tooMany[i] = "choice"
+	}
+	oversized, err := json.Marshal(map[string]any{
+		"summary": "implemented", "architecture_choices": tooMany,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseImplementationHandoff(wrappedOutput(string(oversized))); err == nil {
+		t.Fatal("architecture choices over the 100-item limit were accepted")
+	}
+}
+
 func TestWorkflowDefinitionProjectsInProgressStatus(t *testing.T) {
 	def := definition()
 	actions := def.States["in_progress"].OnEnter

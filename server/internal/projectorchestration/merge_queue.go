@@ -32,12 +32,23 @@ var ErrMergeQueueBusy = errors.New("project merge queue is being processed")
 // the integration ref with compare-and-swap. The integration ref never points
 // at an unverified candidate.
 type MergeQueue struct {
-	store  *Store
-	runner QualityGateRunner
+	store           *Store
+	runner          QualityGateRunner
+	artifactStore   ReleaseArtifactStore
+	artifactBuilder ReleaseArtifactBuilder
 }
 
 func NewMergeQueue(store *Store, runner QualityGateRunner) *MergeQueue {
-	return &MergeQueue{store: store, runner: runner}
+	queue := &MergeQueue{store: store, runner: runner}
+	if configured, ok := runner.(ReleaseArtifactStore); ok {
+		queue.artifactStore = configured
+	}
+	if configured, ok := runner.(ReleaseArtifactBuilder); ok {
+		queue.artifactBuilder = configured
+	} else {
+		queue.artifactBuilder, _ = NewDaemonQualityGateRunner().(ReleaseArtifactBuilder)
+	}
+	return queue
 }
 
 func (q *MergeQueue) ProcessNext(ctx context.Context, workspaceID, projectID pgtype.UUID) (result MergeResult, retErr error) {
@@ -203,14 +214,23 @@ func (q *MergeQueue) prepareVerifyPromote(ctx context.Context, claim MergeQueueC
 	if !gitCommitSHA.MatchString(candidateSHA) {
 		return result, errors.New("git produced an invalid integration commit SHA")
 	}
+	candidateTreeSHA, err := runGit(ctx, worktreePath, "rev-parse", candidateSHA+"^{tree}")
+	if err != nil {
+		return result, fmt.Errorf("read merged candidate tree SHA: %w", err)
+	}
+	if !gitCommitSHA.MatchString(candidateTreeSHA) {
+		return result, errors.New("git produced an invalid merged candidate tree SHA")
+	}
 	evidence["candidate_sha"] = candidateSHA
+	evidence["candidate_tree_sha"] = candidateTreeSHA
 	evidence["phase"] = "verifying"
 	if err := q.store.persistMergeEvidence(ctx, claim, evidence); err != nil {
 		return result, err
 	}
 	gates := make([]map[string]any, 0, 2)
+	qualityRunIDs := make([]string, 0, 3)
 	for _, gateType := range []string{"build", "integration_test"} {
-		gateEvidence, gateErr := q.verifyCandidate(ctx, claim, repoRoot, worktreePath, candidateSHA, gateType)
+		gateEvidence, gateErr := q.verifyCandidate(ctx, claim, repoRoot, worktreePath, candidateSHA, candidateTreeSHA, gateType)
 		gates = append(gates, gateEvidence)
 		evidence["gates"] = gates
 		if gateErr != nil {
@@ -222,12 +242,21 @@ func (q *MergeQueue) prepareVerifyPromote(ctx context.Context, claim MergeQueueC
 			result.Status, result.ErrorDetails = "integration_failed", gateErr.Error()
 			return result, nil
 		}
+		runID, err := q.store.persistMergedCandidateQualityRun(ctx, claim, candidateSHA, candidateTreeSHA, "merged_candidate", gateEvidence)
+		if err != nil {
+			return result, fmt.Errorf("persist merged-candidate %s quality run: %w", gateType, err)
+		}
+		gateEvidence["quality_gate_run_id"] = runID
+		qualityRunIDs = append(qualityRunIDs, runID)
+		evidence["quality_gate_run_ids"] = append([]string(nil), qualityRunIDs...)
 		if err := q.store.persistMergeEvidence(ctx, claim, evidence); err != nil {
 			return result, err
 		}
 	}
 	evidence["phase"] = "quality_verified"
 	evidence["candidate_sha"] = candidateSHA
+	evidence["candidate_tree_sha"] = candidateTreeSHA
+	evidence["quality_gate_run_ids"] = append([]string(nil), qualityRunIDs...)
 	if err := q.store.persistMergeEvidence(ctx, claim, evidence); err != nil {
 		return result, err
 	}
@@ -237,7 +266,7 @@ func (q *MergeQueue) prepareVerifyPromote(ctx context.Context, claim MergeQueueC
 func (q *MergeQueue) verifyCandidate(
 	ctx context.Context,
 	claim MergeQueueClaim,
-	repoRoot, worktreePath, commitSHA, gateType string,
+	repoRoot, worktreePath, commitSHA, treeSHA, gateType string,
 ) (map[string]any, error) {
 	request := QualityGateRequest{
 		WorkspaceID: claim.WorkspaceID, ProjectID: claim.ProjectID, PlanID: claim.PlanID,
@@ -245,15 +274,16 @@ func (q *MergeQueue) verifyCandidate(
 		GateType: gateType, WorktreePath: worktreePath, RepoPath: repoRoot,
 		CommitSHA: commitSHA,
 		Artifact: map[string]any{
-			"purpose":           "project_merge_integration",
-			"source_task_id":    util.UUIDToString(claim.SourceTaskID),
-			"source_commit_sha": claim.CommitSHA,
+			"purpose":            "project_merge_integration",
+			"source_task_id":     util.UUIDToString(claim.SourceTaskID),
+			"source_commit_sha":  claim.CommitSHA,
+			"candidate_tree_sha": treeSHA,
 		},
 	}
 	result, err := q.runner.Run(ctx, request)
 	evidence := map[string]any{
 		"gate_type": gateType, "task_id": util.UUIDToString(claim.SourceTaskID),
-		"commit_sha": commitSHA, "worktree_path": worktreePath, "repo_path": repoRoot,
+		"commit_sha": commitSHA, "tree_sha": treeSHA, "worktree_path": worktreePath, "repo_path": repoRoot,
 	}
 	if err != nil {
 		evidence["error"] = err.Error()
@@ -262,7 +292,9 @@ func (q *MergeQueue) verifyCandidate(
 	evidence["passed"] = result.Passed
 	evidence["runner_type"] = result.RunnerType
 	evidence["executed_command"] = result.ExecutedCommand
-	evidence["exit_code"] = result.ExitCode
+	if result.ExitCode != nil {
+		evidence["exit_code"] = *result.ExitCode
+	}
 	evidence["duration_ms"] = result.DurationMs
 	evidence["artifact_digest"] = result.ArtifactDigest
 	evidence["attestation"] = result.Attestation
@@ -301,6 +333,9 @@ func (q *MergeQueue) promoteVerified(ctx context.Context, claim MergeQueueClaim,
 	}
 	if !proofCurrent {
 		return q.returnForCurrentProof(ctx, claim, evidence)
+	}
+	if err := q.ensureReleaseArtifact(ctx, claim, repoRoot, evidence); err != nil {
+		return result, fmt.Errorf("prepare immutable release artifact: %w", err)
 	}
 	if err := compareAndSwapRef(ctx, repoRoot, ref, candidateSHA, baseSHA, evidence["integration_ref_missing"] == true); err != nil {
 		currentSHA, exists, readErr := readRef(ctx, repoRoot, ref)
@@ -363,6 +398,18 @@ func (q *MergeQueue) reconcileVerifiedClaim(ctx context.Context, claim MergeQueu
 
 func (q *MergeQueue) finalizePromoted(ctx context.Context, claim MergeQueueClaim, evidence map[string]any) (MergeResult, error) {
 	sha := mergeEvidenceString(evidence, "candidate_sha")
+	repoRoot, err := validateRecordedRepoPath(ctx, claim.RepoPath)
+	if err != nil {
+		return MergeResult{ChangeSetID: claim.ChangeSetID, MergedSHA: sha}, err
+	}
+	if err := q.ensureReleaseArtifact(ctx, claim, repoRoot, evidence); err != nil {
+		return MergeResult{ChangeSetID: claim.ChangeSetID, MergedSHA: sha}, fmt.Errorf("prepare immutable release artifact: %w", err)
+	}
+	manifest, err := q.sealCandidateReleaseManifest(ctx, claim, evidence)
+	if err != nil {
+		return MergeResult{ChangeSetID: claim.ChangeSetID, MergedSHA: sha}, err
+	}
+	evidence["manifest_digest"] = manifest.ManifestDigest
 	evidence["phase"] = "merged"
 	evidence["promoted_at"] = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := q.store.finishMerge(ctx, claim, "merged", sha, "", evidence); err != nil {
@@ -370,6 +417,156 @@ func (q *MergeQueue) finalizePromoted(ctx context.Context, claim MergeQueueClaim
 	}
 	_ = cleanupMergeWorktree(context.Background(), claim, evidence)
 	return MergeResult{ChangeSetID: claim.ChangeSetID, MergedSHA: sha, Status: "merged"}, nil
+}
+
+func (q *MergeQueue) ensureReleaseArtifact(ctx context.Context, claim MergeQueueClaim, repoRoot string, evidence map[string]any) error {
+	if q.artifactStore == nil {
+		return errors.New("private release artifact storage with short-lived presigning is not configured")
+	}
+	if q.artifactBuilder == nil {
+		return errors.New("isolated release artifact builder is not configured")
+	}
+	candidateSHA := mergeEvidenceString(evidence, "candidate_sha")
+	treeSHA := mergeEvidenceString(evidence, "candidate_tree_sha")
+	if !gitCommitSHA.MatchString(candidateSHA) || !gitCommitSHA.MatchString(treeSHA) {
+		return errors.New("release artifact requires exact candidate commit and tree SHAs")
+	}
+	actualTree, err := runGit(ctx, repoRoot, "rev-parse", candidateSHA+"^{tree}")
+	if err != nil || !strings.EqualFold(actualTree, treeSHA) {
+		return errors.New("release candidate tree does not match the verified merge evidence")
+	}
+	if artifactDigest := mergeEvidenceString(evidence, "release_artifact_digest"); artifactDigest != "" {
+		key := mergeEvidenceString(evidence, "release_artifact_storage_key")
+		if err := VerifyStoredReleaseArtifact(ctx, q.artifactStore, key, artifactDigest); err != nil {
+			return err
+		}
+		return nil
+	}
+	worktreeParent, err := os.MkdirTemp("", "multica-release-build-")
+	if err != nil {
+		return fmt.Errorf("create exact candidate worktree: %w", err)
+	}
+	defer os.RemoveAll(worktreeParent)
+	worktreePath := filepath.Join(worktreeParent, "candidate")
+	if _, err := runGit(ctx, repoRoot, "worktree", "add", "--detach", worktreePath, candidateSHA); err != nil {
+		return fmt.Errorf("create exact candidate worktree: %w", err)
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeGitLockTimeout)
+		defer cancel()
+		_, _ = runGit(cleanupCtx, repoRoot, "worktree", "remove", "--force", worktreePath)
+	}()
+	if err := validateReleaseWorktree(ctx, worktreePath, repoRoot, candidateSHA, treeSHA); err != nil {
+		return err
+	}
+	contract, err := ReadReleaseContract(ctx, worktreePath, candidateSHA)
+	if err != nil {
+		return fmt.Errorf("load required %s: %w", releaseContractPath, err)
+	}
+	request := QualityGateRequest{
+		WorkspaceID: claim.WorkspaceID, ProjectID: claim.ProjectID, PlanID: claim.PlanID,
+		NodeID: claim.NodeID, IssueID: claim.IssueID, TaskID: claim.SourceTaskID,
+		GateType: "build", WorktreePath: worktreePath, RepoPath: repoRoot,
+		CommitSHA: candidateSHA,
+		Artifact: map[string]any{
+			"purpose": "release_artifact_build", "change_set_id": util.UUIDToString(claim.ChangeSetID),
+			"candidate_tree_sha": treeSHA,
+		},
+	}
+	artifact, result, err := q.artifactBuilder.BuildReleaseArtifact(ctx, request, contract)
+	if err != nil {
+		return fmt.Errorf("isolated release build failed: %w", err)
+	}
+	if err := ValidateQualityGatePass(request, result); err != nil {
+		return fmt.Errorf("release builder returned unverified quality evidence: %w", err)
+	}
+	if !result.Passed || len(artifact.Bytes) == 0 || artifact.Digest != result.BuildArtifactDigest {
+		return errors.New("isolated release builder did not return the exact built artifact")
+	}
+	storageKey, err := uploadReleaseArtifact(ctx, q.artifactStore, artifact)
+	if err != nil {
+		return err
+	}
+	gateEvidence := map[string]any{
+		"gate_type": "build", "task_id": util.UUIDToString(claim.SourceTaskID),
+		"commit_sha": candidateSHA, "tree_sha": treeSHA, "worktree_path": worktreePath,
+		"repo_path": repoRoot, "passed": true, "runner_type": result.RunnerType,
+		"executed_command": result.ExecutedCommand, "exit_code": 0,
+		"duration_ms": result.DurationMs, "artifact_digest": result.ArtifactDigest,
+		"build_artifact_digest": artifact.Digest, "build_artifact_size": artifact.Size,
+		"build_artifact_file_count": artifact.FileCount, "attestation": result.Attestation,
+		"runner_evidence": result.Evidence, "builder": artifact.Builder,
+		"outputs": artifact.Outputs,
+	}
+	runID, err := q.store.persistMergedCandidateQualityRun(ctx, claim, candidateSHA, treeSHA, "merged_candidate_release_artifact", gateEvidence)
+	if err != nil {
+		return fmt.Errorf("persist release artifact quality run: %w", err)
+	}
+	gateEvidence["quality_gate_run_id"] = runID
+	evidence["release_artifact_digest"] = artifact.Digest
+	evidence["release_artifact_storage_key"] = storageKey
+	evidence["release_artifact_builder"] = artifact.Builder
+	evidence["release_artifact_outputs"] = artifact.Outputs
+	evidence["release_artifact_quality_gate_run_id"] = runID
+	qualityRunIDs := mergeEvidenceStrings(evidence, "quality_gate_run_ids")
+	qualityRunIDs = append(qualityRunIDs, runID)
+	evidence["quality_gate_run_ids"] = qualityRunIDs
+	evidence["release_artifact_evidence"] = gateEvidence
+	return q.store.persistMergeEvidence(ctx, claim, evidence)
+}
+
+func validateReleaseWorktree(ctx context.Context, worktreePath, repoPath, commitSHA, treeSHA string) error {
+	worktree, repo, err := validateQualityWorktree(ctx, worktreePath, repoPath, commitSHA)
+	if err != nil {
+		return fmt.Errorf("validate isolated release source: %w", err)
+	}
+	actualTree, err := runGit(ctx, worktree, "rev-parse", "HEAD^{tree}")
+	if err != nil || !strings.EqualFold(actualTree, treeSHA) {
+		return errors.New("isolated release source tree does not match merged candidate evidence")
+	}
+	if repo != repoPath {
+		return errors.New("isolated release source belongs to a different repository")
+	}
+	return nil
+}
+
+func (q *MergeQueue) sealCandidateReleaseManifest(ctx context.Context, claim MergeQueueClaim, evidence map[string]any) (ReleaseManifest, error) {
+	if q.artifactStore == nil {
+		return ReleaseManifest{}, errors.New("private release artifact storage is not configured")
+	}
+	manifest := ReleaseManifest{
+		Version:     releaseManifestVersion,
+		WorkspaceID: util.UUIDToString(claim.WorkspaceID), ProjectID: util.UUIDToString(claim.ProjectID),
+		PlanID: util.UUIDToString(claim.PlanID), ChangeSetID: util.UUIDToString(claim.ChangeSetID),
+		Environment: "production", CommitSHA: mergeEvidenceString(evidence, "candidate_sha"),
+		TreeSHA:            mergeEvidenceString(evidence, "candidate_tree_sha"),
+		Builder:            mergeEvidenceString(evidence, "release_artifact_builder"),
+		Outputs:            mergeEvidenceStrings(evidence, "release_artifact_outputs"),
+		ArtifactDigest:     mergeEvidenceString(evidence, "release_artifact_digest"),
+		ArtifactStorageKey: mergeEvidenceString(evidence, "release_artifact_storage_key"),
+		QualityGateRunIDs:  mergeEvidenceStrings(evidence, "quality_gate_run_ids"),
+	}
+	if manifest.ArtifactDigest == "" || manifest.ArtifactStorageKey == "" {
+		return ReleaseManifest{}, errors.New("merged candidate has no durable release artifact")
+	}
+	if err := VerifyStoredReleaseArtifact(ctx, q.artifactStore, manifest.ArtifactStorageKey, manifest.ArtifactDigest); err != nil {
+		return ReleaseManifest{}, err
+	}
+	if err := q.store.pool.QueryRow(ctx, `
+		SELECT revision, plan_digest
+		FROM autonomous_project_plan
+		WHERE id=$1 AND workspace_id=$2 AND project_id=$3
+	`, claim.PlanID, claim.WorkspaceID, claim.ProjectID).Scan(&manifest.PlanRevision, &manifest.PlanDigest); err != nil {
+		return ReleaseManifest{}, fmt.Errorf("read candidate plan revision: %w", err)
+	}
+	sealed, err := SealReleaseManifest(manifest)
+	if err != nil {
+		return ReleaseManifest{}, err
+	}
+	if err := persistReleaseManifest(ctx, q.store.pool, sealed); err != nil {
+		return ReleaseManifest{}, err
+	}
+	return sealed, nil
 }
 
 func (q *MergeQueue) finishTerminal(ctx context.Context, claim MergeQueueClaim, status, message string, evidence map[string]any) (MergeResult, error) {

@@ -31,17 +31,18 @@ type rankedContextMemory struct {
 }
 
 type contextPlanState struct {
-	PlanID             pgtype.UUID
-	PlanRevision       int64
-	Goal               string
-	Specification      []byte
-	Policy             []byte
-	NodeID             pgtype.UUID
-	NodeKey            string
-	NodeKind           NodeKind
-	NodeTitle          string
-	NodeDescription    string
-	RequiredRoleFamily string
+	PlanID                 pgtype.UUID
+	PlanRevision           int64
+	Goal                   string
+	Specification          []byte
+	Policy                 []byte
+	NodeID                 pgtype.UUID
+	NodeKey                string
+	NodeKind               NodeKind
+	NodeTitle              string
+	NodeDescription        string
+	NodeAcceptanceCriteria string
+	RequiredRoleFamily     string
 }
 
 func authoritativeSpecificationItems(goal string, raw []byte, planID string) ([]ContextItem, error) {
@@ -280,10 +281,14 @@ func CompileWorkflowContext(
 		Authority: string(AuthoritySystemDerived), Text: policy,
 	})
 
-	query := strings.TrimSpace(plan.NodeTitle)
-	if query == "" {
-		query = strings.TrimSpace(issue.Title)
-	}
+	query := buildContextMemoryQuery(
+		plan.NodeTitle,
+		issue.Title,
+		plan.NodeDescription,
+		optionalContextText(issue.Description),
+		[]byte(plan.NodeAcceptanceCriteria),
+		issue.AcceptanceCriteria,
+	)
 	memories, err := recallContextMemories(ctx, tx, issue.WorkspaceID, issue.ProjectID, query, roleFamily, repositoryRevision)
 	if err != nil {
 		return ContextPackage{}, err
@@ -381,10 +386,11 @@ func loadContextPlanState(ctx context.Context, tx pgx.Tx, issue db.Issue) (conte
 	var out contextPlanState
 	var specification, policy []byte
 	var nodeID pgtype.UUID
-	var nodeKey, nodeKind, nodeTitle, nodeDescription, requiredFamily pgtype.Text
+	var nodeKey, nodeKind, nodeTitle, nodeDescription, requiredFamily, nodeAcceptanceCriteria pgtype.Text
 	err := tx.QueryRow(ctx, `
 		SELECT p.id,p.revision,p.goal,p.specification,p.policy,
-		       n.id,n.node_key,n.kind,n.title,n.description,n.required_role_family
+		       n.id,n.node_key,n.kind,n.title,n.description,n.required_role_family,
+	       n.acceptance_criteria::text
 		FROM autonomous_project_plan p
 		LEFT JOIN autonomous_project_plan_node n
 		  ON n.plan_id=p.id AND n.materialized_issue_id=$3::uuid
@@ -394,7 +400,7 @@ func loadContextPlanState(ctx context.Context, tx pgx.Tx, issue db.Issue) (conte
 		LIMIT 1
 	`, issue.WorkspaceID, issue.ProjectID, issue.ID).Scan(
 		&out.PlanID, &out.PlanRevision, &out.Goal, &specification, &policy,
-		&nodeID, &nodeKey, &nodeKind, &nodeTitle, &nodeDescription, &requiredFamily,
+		&nodeID, &nodeKey, &nodeKind, &nodeTitle, &nodeDescription, &requiredFamily, &nodeAcceptanceCriteria,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return contextPlanState{}, ErrContextPlanNotFound
@@ -416,6 +422,9 @@ func loadContextPlanState(ctx context.Context, tx pgx.Tx, issue db.Issue) (conte
 	}
 	if nodeDescription.Valid {
 		out.NodeDescription = strings.TrimSpace(nodeDescription.String)
+	}
+	if nodeAcceptanceCriteria.Valid {
+		out.NodeAcceptanceCriteria = strings.TrimSpace(nodeAcceptanceCriteria.String)
 	}
 	if requiredFamily.Valid {
 		out.RequiredRoleFamily = strings.TrimSpace(requiredFamily.String)
@@ -491,71 +500,119 @@ func refreshContextMemoryFreshness(ctx context.Context, tx pgx.Tx, workspaceID, 
 }
 
 func recallContextMemories(ctx context.Context, tx pgx.Tx, workspaceID, projectID pgtype.UUID, query, role, repositoryRevision string) ([]rankedContextMemory, error) {
-	load := func(search string) ([]rankedContextMemory, error) {
-		rows, err := tx.Query(ctx, `
-			WITH q AS (
-				SELECT CASE WHEN btrim($3::text)='' THEN NULL ELSE websearch_to_tsquery('simple'::regconfig,$3::text) END AS tsq
-			)
-			SELECT b.id,COALESCE(b.canonical_key,''),b.entry_type,b.subject,
-			       left(b.content::text,6000),b.authority
-			FROM autonomous_project_brain_entry b
-			CROSS JOIN q
-			WHERE b.workspace_id=$1 AND b.project_id=$2
-			  AND b.status='active' AND b.superseded_by IS NULL
-			  AND b.governance_state='current'
-			  AND (b.expires_at IS NULL OR b.expires_at>now())
-			  AND ($5::text='' OR b.repository_revision IS NULL OR b.repository_revision=$5::text)
-			  AND (q.tsq IS NULL OR to_tsvector('simple'::regconfig,
-			      COALESCE(b.subject,'') || ' ' || COALESCE(b.canonical_key,'') || ' ' || COALESCE(b.content::text,'')) @@ q.tsq)
-			ORDER BY (
-			  CASE WHEN q.tsq IS NULL THEN 0 ELSE ts_rank_cd(to_tsvector('simple'::regconfig,
-			    COALESCE(b.subject,'') || ' ' || COALESCE(b.canonical_key,'') || ' ' || COALESCE(b.content::text,'')),q.tsq)*4.0 END
-			  + b.importance*1.5 + LEAST(b.confirmation_count,5)*0.10 + COALESCE(b.confidence,0)*0.50
-			  + CASE b.authority WHEN 'user_decision' THEN 2.0 WHEN 'authoritative_spec' THEN 1.8
-			    WHEN 'deterministic_observation' THEN 1.6 WHEN 'trusted_external' THEN 1.3
-			    WHEN 'system_derived' THEN 1.0 ELSE 0.6 END
-			  + CASE WHEN $4::text IN ('qa','review') AND b.entry_type IN ('requirement','risk','lesson') THEN 0.8
-			    WHEN $4::text='security' AND b.entry_type IN ('risk','constraint','architecture_decision') THEN 0.8
-			    WHEN $4::text IN ('frontend','design') AND b.entry_type IN ('product_decision','requirement','architecture_decision') THEN 0.8
-			    WHEN $4::text IN ('backend','implementation','architecture') AND b.entry_type IN ('architecture_decision','repository_fact','constraint','dependency') THEN 0.8
-			    WHEN $4::text='product' AND b.entry_type IN ('requirement','product_decision','constraint') THEN 0.8 ELSE 0 END
-			  + (1.0/(1.0+GREATEST(EXTRACT(EPOCH FROM (now()-b.observed_at)),0)/2592000.0))
-			) DESC,b.brain_revision DESC,b.id
-			LIMIT 60
-		`, workspaceID, projectID, strings.TrimSpace(search), strings.ToLower(strings.TrimSpace(role)), strings.TrimSpace(repositoryRevision))
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		out := []rankedContextMemory{}
-		seen := map[string]struct{}{}
-		for rows.Next() {
-			var id pgtype.UUID
-			var m rankedContextMemory
-			if err := rows.Scan(&id, &m.CanonicalKey, &m.Type, &m.Subject, &m.Content, &m.Authority); err != nil {
-				return nil, err
-			}
-			m.ID = util.UUIDToString(id)
-			identity := m.Type + "\x00" + m.CanonicalKey
-			if m.CanonicalKey == "" {
-				identity = m.Type + "\x00" + strings.ToLower(strings.TrimSpace(m.Subject))
-			}
-			if _, ok := seen[identity]; ok {
-				continue
-			}
-			seen[identity] = struct{}{}
-			out = append(out, m)
-		}
-		return out, rows.Err()
+	if strings.TrimSpace(query) == "" {
+		return []rankedContextMemory{}, nil
 	}
-	memories, err := load(query)
+	embedder, err := memoryEmbedderFromEnvironment()
 	if err != nil {
 		return nil, err
 	}
-	if len(memories) == 0 && strings.TrimSpace(query) != "" {
-		return load("")
+	return recallContextMemoriesWithEmbedder(ctx, tx, workspaceID, projectID, query, role, repositoryRevision, embedder)
+}
+
+func recallContextMemoriesWithEmbedder(
+	ctx context.Context,
+	tx pgx.Tx,
+	workspaceID, projectID pgtype.UUID,
+	query, role, repositoryRevision string,
+	embedder MemoryEmbedder,
+) ([]rankedContextMemory, error) {
+	memories, err := queryHybridBrainMemories(ctx, tx, workspaceID, projectID, RecallOptions{
+		Query: query, RoleFamily: role, Limit: 8, MaxTokens: 16000,
+		CurrentRepositoryRevision: repositoryRevision,
+	}, embedder)
+	if err != nil {
+		return nil, err
 	}
-	return memories, nil
+	out := make([]rankedContextMemory, 0, len(memories))
+	seen := map[string]struct{}{}
+	for _, memory := range memories {
+		if len(out) >= 8 {
+			break
+		}
+		identity := memory.Type + "\x00" + normalizeBrainKey(memory.CanonicalKey)
+		if memory.CanonicalKey == "" {
+			identity = memory.Type + "\x00" + strings.ToLower(strings.TrimSpace(memory.Subject))
+		}
+		if _, ok := seen[identity]; ok {
+			continue
+		}
+		seen[identity] = struct{}{}
+		out = append(out, rankedContextMemory{
+			ID: memory.ID, CanonicalKey: memory.CanonicalKey, Type: memory.Type,
+			Subject: memory.Subject, Content: memory.Content, Authority: string(memory.Authority),
+		})
+	}
+	return out, nil
+}
+
+func buildContextMemoryQuery(nodeTitle, issueTitle, nodeDescription, issueDescription string, acceptanceCriteria ...[]byte) string {
+	parts := make([]string, 0, 5)
+	seen := map[string]struct{}{}
+	appendPart := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		key := strings.ToLower(text)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		parts = append(parts, text)
+	}
+	appendPart(nodeTitle)
+	appendPart(issueTitle)
+	appendPart(nodeDescription)
+	appendPart(issueDescription)
+	for _, rawCriteria := range acceptanceCriteria {
+		for _, criterion := range acceptanceCriteriaText(rawCriteria) {
+			appendPart(criterion)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func optionalContextText(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
+	}
+	return strings.TrimSpace(value.String)
+}
+
+func acceptanceCriteriaText(raw []byte) []string {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return []string{strings.TrimSpace(string(raw))}
+	}
+	var values []string
+	var visit func(any)
+	visit = func(current any) {
+		switch typed := current.(type) {
+		case string:
+			if text := strings.TrimSpace(typed); text != "" {
+				values = append(values, text)
+			}
+		case []any:
+			for _, item := range typed {
+				visit(item)
+			}
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				visit(typed[key])
+			}
+		}
+	}
+	visit(value)
+	return values
 }
 
 func contextPredecessorArtifacts(ctx context.Context, tx pgx.Tx, issue db.Issue, plan contextPlanState) ([]ContextItem, error) {

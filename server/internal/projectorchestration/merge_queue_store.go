@@ -659,6 +659,76 @@ func (s *Store) finishMerge(ctx context.Context, claim MergeQueueClaim, status, 
 	return nil
 }
 
+func (s *Store) persistMergedCandidateQualityRun(
+	ctx context.Context,
+	claim MergeQueueClaim,
+	commitSHA, treeSHA, scope string,
+	gateEvidence map[string]any,
+) (string, error) {
+	if s == nil || s.pool == nil {
+		return "", errors.New("merged-candidate quality run store is not configured")
+	}
+	if !gitCommitSHA.MatchString(commitSHA) || !gitCommitSHA.MatchString(treeSHA) {
+		return "", errors.New("merged-candidate quality run requires exact commit and tree SHAs")
+	}
+	gateType := mergeEvidenceString(gateEvidence, "gate_type")
+	if gateType != "build" && gateType != "integration_test" {
+		return "", fmt.Errorf("unsupported merged-candidate quality gate %q", gateType)
+	}
+	if gateEvidence["passed"] != true {
+		return "", errors.New("only passed merged-candidate quality evidence can be persisted")
+	}
+	command := mergeEvidenceString(gateEvidence, "executed_command")
+	runner := mergeEvidenceString(gateEvidence, "runner_type")
+	worktree := mergeEvidenceString(gateEvidence, "worktree_path")
+	exitCode, ok := gateEvidence["exit_code"].(int)
+	if !ok {
+		if value, isInt32 := gateEvidence["exit_code"].(int32); isInt32 {
+			exitCode, ok = int(value), true
+		}
+	}
+	if command == "" || runner == "" || worktree == "" || !ok || exitCode != 0 {
+		return "", errors.New("merged-candidate quality evidence is incomplete")
+	}
+	evidence := map[string]any{
+		"scope": scope, "change_set_id": util.UUIDToString(claim.ChangeSetID),
+		"source_task_id": util.UUIDToString(claim.SourceTaskID),
+		"candidate_sha":  commitSHA, "candidate_tree_sha": treeSHA,
+		"gate_type": gateType, "passed": true,
+		"quality_result_digest": gateEvidence["artifact_digest"],
+		"attestation":           gateEvidence["attestation"],
+		"runner_evidence":       gateEvidence["runner_evidence"],
+	}
+	if value, exists := gateEvidence["build_artifact_digest"]; exists {
+		evidence["build_artifact_digest"] = value
+	}
+	if value, exists := gateEvidence["builder"]; exists {
+		evidence["builder"] = value
+	}
+	if value, exists := gateEvidence["outputs"]; exists {
+		evidence["outputs"] = value
+	}
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		return "", fmt.Errorf("encode merged-candidate quality evidence: %w", err)
+	}
+	var runID pgtype.UUID
+	err = s.pool.QueryRow(ctx, `
+		INSERT INTO autonomous_project_quality_gate_run (
+			workspace_id, project_id, plan_id, node_id, gate_type, status, required,
+			evidence, attempt, executed_command, exit_code, worktree_path, commit_sha,
+			runner_type, started_at, completed_at
+		)
+		VALUES ($1,$2,$3,$4,$5,'passed',TRUE,$6,1,$7,$8,$9,$10,$11,now(),now())
+		RETURNING id
+	`, claim.WorkspaceID, claim.ProjectID, claim.PlanID, claim.NodeID, gateType,
+		encoded, command, exitCode, worktree, commitSHA, runner).Scan(&runID)
+	if err != nil {
+		return "", fmt.Errorf("persist merged-candidate quality run: %w", err)
+	}
+	return util.UUIDToString(runID), nil
+}
+
 func projectMergeLockKey(workspaceID, projectID pgtype.UUID) string {
 	return "autonomous-project-merge:" + util.UUIDToString(workspaceID) + ":" + util.UUIDToString(projectID)
 }
@@ -674,4 +744,21 @@ func normalizeMergeEvidence(raw json.RawMessage) map[string]any {
 func mergeEvidenceString(evidence map[string]any, key string) string {
 	value, _ := evidence[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func mergeEvidenceStrings(evidence map[string]any, key string) []string {
+	switch values := evidence[key].(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }

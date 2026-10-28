@@ -3,6 +3,7 @@ package projectorchestration
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,17 +18,19 @@ import (
 
 func TestWebhookDeploymentAdapter(t *testing.T) {
 	var auth string
+	var bodyBytes []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth = r.Header.Get("Authorization")
+		bodyBytes, _ = io.ReadAll(r.Body)
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.Unmarshal(bodyBytes, &body); err != nil {
 			t.Fatal(err)
 		}
 		if body["action"] != "deploy" {
 			t.Fatalf("unexpected action: %v", body["action"])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"provider":"test","external_ref":"deploy-1","status":"succeeded","evidence":{"ok":true}}`))
+		_, _ = w.Write([]byte(`{"provider":"test","external_ref":"deploy-1","status":"succeeded","evidence":{"manifest_digest":"` + strings.Repeat("a", 64) + `","artifact_digest":"` + strings.Repeat("c", 64) + `","deployed_commit_sha":"` + strings.Repeat("b", 40) + `","artifact_verified":true}}`))
 	}))
 	defer server.Close()
 
@@ -36,13 +39,23 @@ func TestWebhookDeploymentAdapter(t *testing.T) {
 		BearerToken:   "secret",
 		Timeout:       time.Second,
 	})
+	manifest := ProviderReleaseManifest{
+		Version: 1, ManifestID: "00000000-0000-4000-8000-000000000001",
+		ManifestDigest: strings.Repeat("a", 64), PlanRevision: 1, PlanDigest: strings.Repeat("d", 64),
+		CommitSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("e", 40), Builder: "go_binary",
+		Outputs: []string{"bin/server"}, ArtifactDigest: strings.Repeat("c", 64),
+		QualityGateRunIDs: []string{"00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003"},
+	}
+	artifactURL := "https://private.example.invalid/release.tar?signature=one-time"
 	result, err := adapter.Deploy(context.Background(), DeploymentRequest{
 		WorkspaceID: pgtype.UUID{Valid: true},
 		ProjectID:   pgtype.UUID{Valid: true},
 		PlanID:      pgtype.UUID{Valid: true},
 		Environment: "production",
-		ReleaseRef:  "rev-1",
-		Policy:      DefaultPolicy(),
+		ReleaseRef:  "sha256:" + manifest.ManifestDigest,
+		Manifest:    manifest, ArtifactDigest: manifest.ArtifactDigest,
+		CommitSHA: manifest.CommitSHA, ArtifactURL: artifactURL,
+		Policy: DefaultPolicy(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +65,74 @@ func TestWebhookDeploymentAdapter(t *testing.T) {
 	}
 	if result.Status != "succeeded" || result.ExternalRef != "deploy-1" {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	if strings.Count(string(bodyBytes), artifactURL) != 1 {
+		t.Fatalf("fresh artifact URL appeared %d times in outbound request; want once", strings.Count(string(bodyBytes), artifactURL))
+	}
+	if strings.Contains(string(bodyBytes), "artifact_storage_key") {
+		t.Fatal("provider payload exposed the private artifact storage key")
+	}
+}
+
+func TestWebhookDeploymentAdapter_RequiresExactManifestAcknowledgement(t *testing.T) {
+	manifest := ProviderReleaseManifest{
+		Version: 1, ManifestID: "00000000-0000-4000-8000-000000000011",
+		ManifestDigest: strings.Repeat("a", 64), PlanRevision: 4, PlanDigest: strings.Repeat("d", 64),
+		CommitSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("e", 40), Builder: "go_binary",
+		Outputs: []string{"bin/server"}, ArtifactDigest: strings.Repeat("c", 64),
+		QualityGateRunIDs: []string{"00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013"},
+	}
+	tests := []struct {
+		name      string
+		ack       map[string]any
+		wantError bool
+	}{
+		{name: "exact acknowledgement", ack: map[string]any{
+			"manifest_digest": manifest.ManifestDigest, "artifact_digest": manifest.ArtifactDigest,
+			"deployed_commit_sha": manifest.CommitSHA, "artifact_verified": true,
+		}},
+		{name: "wrong manifest", ack: map[string]any{
+			"manifest_digest": strings.Repeat("f", 64), "artifact_digest": manifest.ArtifactDigest,
+			"deployed_commit_sha": manifest.CommitSHA, "artifact_verified": true,
+		}, wantError: true},
+		{name: "wrong artifact", ack: map[string]any{
+			"manifest_digest": manifest.ManifestDigest, "artifact_digest": strings.Repeat("f", 64),
+			"deployed_commit_sha": manifest.CommitSHA, "artifact_verified": true,
+		}, wantError: true},
+		{name: "wrong commit", ack: map[string]any{
+			"manifest_digest": manifest.ManifestDigest, "artifact_digest": manifest.ArtifactDigest,
+			"deployed_commit_sha": strings.Repeat("f", 40), "artifact_verified": true,
+		}, wantError: true},
+		{name: "artifact not verified", ack: map[string]any{
+			"manifest_digest": manifest.ManifestDigest, "artifact_digest": manifest.ArtifactDigest,
+			"deployed_commit_sha": manifest.CommitSHA, "artifact_verified": false,
+		}, wantError: true},
+		{name: "missing acknowledgement", ack: map[string]any{"ok": true}, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response, err := json.Marshal(map[string]any{
+				"provider": "test", "status": "succeeded", "evidence": tt.ack,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(response)
+			}))
+			defer server.Close()
+			adapter := NewWebhookDeploymentAdapter(WebhookAdapterConfig{DeploymentURL: server.URL})
+			_, err = adapter.Deploy(context.Background(), DeploymentRequest{
+				WorkspaceID: pgtype.UUID{Valid: true}, ProjectID: pgtype.UUID{Valid: true}, PlanID: pgtype.UUID{Valid: true},
+				Environment: "production", ReleaseRef: "sha256:" + manifest.ManifestDigest,
+				Manifest: manifest, ArtifactDigest: manifest.ArtifactDigest, CommitSHA: manifest.CommitSHA,
+				ArtifactURL: "https://private.example.invalid/release.tar?signature=fresh",
+			})
+			if (err != nil) != tt.wantError {
+				t.Fatalf("Deploy error = %v, wantError %v", err, tt.wantError)
+			}
+		})
 	}
 }
 
@@ -83,6 +164,90 @@ func TestWebhookObservationAdapter(t *testing.T) {
 	}
 }
 
+func TestWebhookRollbackAdapterBindsKnownGoodManifest(t *testing.T) {
+	targetManifestID := "00000000-0000-4000-8000-000000000091"
+	targetManifestDigest := strings.Repeat("a", 64)
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"provider": "test", "external_ref": "rollback-1", "status": "rolled_back",
+			"evidence": map[string]any{
+				"target_manifest_id": targetManifestID, "target_manifest_digest": targetManifestDigest,
+			},
+		})
+	}))
+	defer server.Close()
+
+	adapter := NewWebhookDeploymentAdapter(WebhookAdapterConfig{DeploymentURL: server.URL})
+	result, err := adapter.Rollback(context.Background(), RollbackRequest{
+		WorkspaceID: pgtype.UUID{Valid: true}, ProjectID: pgtype.UUID{Valid: true},
+		DeploymentID: pgtype.UUID{Valid: true}, TargetManifestID: targetManifestID,
+		TargetManifestDigest: targetManifestDigest, TargetEnvironment: "production",
+		Reason: "production health check failed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "rolled_back" || received["target_manifest_id"] != targetManifestID ||
+		received["target_manifest_digest"] != targetManifestDigest || received["target_environment"] != "production" {
+		t.Fatalf("rollback request/result did not preserve known-good manifest identity: request=%#v result=%+v", received, result)
+	}
+}
+
+func TestWebhookRollbackAdapterRejectsMismatchedManifestAcknowledgement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"rolled_back","evidence":{"target_manifest_id":"00000000-0000-4000-8000-000000000099","target_manifest_digest":"` + strings.Repeat("f", 64) + `"}}`))
+	}))
+	defer server.Close()
+	adapter := NewWebhookDeploymentAdapter(WebhookAdapterConfig{DeploymentURL: server.URL})
+	_, err := adapter.Rollback(context.Background(), RollbackRequest{
+		WorkspaceID: pgtype.UUID{Valid: true}, ProjectID: pgtype.UUID{Valid: true},
+		DeploymentID: pgtype.UUID{Valid: true}, TargetManifestID: "00000000-0000-4000-8000-000000000091",
+		TargetManifestDigest: strings.Repeat("a", 64), TargetEnvironment: "production",
+	})
+	if err == nil {
+		t.Fatal("accepted rollback acknowledgement for a different known-good manifest")
+	}
+}
+
+func TestWebhookStagingSmokeTestBindsExactManifest(t *testing.T) {
+	manifestID := "00000000-0000-4000-8000-000000000092"
+	manifestDigest := strings.Repeat("a", 64)
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(StagingSmokeResult{
+			Passed: true, ManifestDigest: manifestDigest, Evidence: map[string]any{"checks": []string{"healthz", "readyz"}},
+		})
+	}))
+	defer server.Close()
+	adapter := NewWebhookDeploymentAdapter(WebhookAdapterConfig{DeploymentURL: server.URL})
+	smokeAdapter, ok := adapter.(StagingSmokeAdapter)
+	if !ok {
+		t.Fatal("deployment webhook does not expose the staging smoke gate")
+	}
+	result, err := smokeAdapter.SmokeTest(context.Background(), StagingSmokeRequest{
+		WorkspaceID: pgtype.UUID{Valid: true}, ProjectID: pgtype.UUID{Valid: true}, DeploymentID: pgtype.UUID{Valid: true},
+		Environment: "staging", ExternalRef: "staging-release-1", ManifestID: manifestID,
+		ManifestDigest: manifestDigest, ArtifactDigest: strings.Repeat("c", 64), CommitSHA: strings.Repeat("b", 40),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Passed || result.ManifestDigest != manifestDigest || received["action"] != "staging_smoke_test" ||
+		received["environment"] != "staging" || received["manifest_id"] != manifestID || received["manifest_digest"] != manifestDigest {
+		t.Fatalf("staging smoke evidence did not bind the exact release: result=%+v request=%#v", result, received)
+	}
+}
+
 func TestWebhookDeploymentAdapterRejectsNonTerminalStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -91,7 +256,18 @@ func TestWebhookDeploymentAdapterRejectsNonTerminalStatus(t *testing.T) {
 	defer server.Close()
 
 	adapter := NewWebhookDeploymentAdapter(WebhookAdapterConfig{DeploymentURL: server.URL})
-	_, err := adapter.Deploy(context.Background(), DeploymentRequest{})
+	manifest := ProviderReleaseManifest{
+		Version: 1, ManifestID: "00000000-0000-4000-8000-000000000041",
+		ManifestDigest: strings.Repeat("a", 64), PlanRevision: 1, PlanDigest: strings.Repeat("d", 64),
+		CommitSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("e", 40), Builder: "go_binary",
+		Outputs: []string{"bin/server"}, ArtifactDigest: strings.Repeat("c", 64),
+	}
+	_, err := adapter.Deploy(context.Background(), DeploymentRequest{
+		WorkspaceID: pgtype.UUID{Valid: true}, ProjectID: pgtype.UUID{Valid: true}, PlanID: pgtype.UUID{Valid: true},
+		Environment: "production", ReleaseRef: "sha256:" + manifest.ManifestDigest,
+		Manifest: manifest, ArtifactDigest: manifest.ArtifactDigest, CommitSHA: manifest.CommitSHA,
+		ArtifactURL: "https://private.example.invalid/release.tar?signature=fresh",
+	})
 	if err == nil {
 		t.Fatal("expected non-terminal deployment status to be rejected")
 	}

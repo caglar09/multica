@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS autonomous_project_release_manifest_digest_idx
+ON autonomous_project_release_manifest (manifest_digest);

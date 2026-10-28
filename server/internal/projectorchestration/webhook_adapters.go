@@ -38,6 +38,23 @@ type webhookAdapters struct {
 	client         *http.Client
 }
 
+// webhookDeploymentPayload exists only for the outbound call. It is never
+// persisted as a deployment operation; the artifact URL is freshly presigned.
+type webhookDeploymentPayload struct {
+	Action         string                  `json:"action"`
+	WorkspaceID    string                  `json:"workspace_id"`
+	ProjectID      string                  `json:"project_id"`
+	PlanID         string                  `json:"plan_id"`
+	Environment    string                  `json:"environment"`
+	ReleaseRef     string                  `json:"release_ref"`
+	Manifest       ProviderReleaseManifest `json:"manifest"`
+	ManifestDigest string                  `json:"manifest_digest"`
+	ArtifactDigest string                  `json:"artifact_digest"`
+	CommitSHA      string                  `json:"commit_sha"`
+	ArtifactURL    string                  `json:"artifact_url"`
+	Policy         Policy                  `json:"policy"`
+}
+
 func NewWebhookRepositoryAnalyzer(cfg WebhookAdapterConfig) RepositoryAnalyzer {
 	if strings.TrimSpace(cfg.RepositoryURL) == "" {
 		return nil
@@ -466,14 +483,20 @@ func (a *webhookAdapters) Deploy(ctx context.Context, request DeploymentRequest)
 	if a == nil || a.deploymentURL == "" {
 		return DeploymentResult{}, ErrAdapterNotConfigured
 	}
-	payload := map[string]any{
-		"action":       "deploy",
-		"workspace_id": util.UUIDToString(request.WorkspaceID),
-		"project_id":   util.UUIDToString(request.ProjectID),
-		"plan_id":      util.UUIDToString(request.PlanID),
-		"environment":  request.Environment,
-		"release_ref":  request.ReleaseRef,
-		"policy":       request.Policy,
+	manifestDigest, err := ParseReleaseReference(request.ReleaseRef)
+	if err != nil {
+		return DeploymentResult{}, err
+	}
+	if manifestDigest != request.Manifest.ManifestDigest || request.ArtifactURL == "" {
+		return DeploymentResult{}, errors.New("deployment requires the exact manifest identity and a fresh artifact retrieval URL")
+	}
+	payload := webhookDeploymentPayload{
+		Action: "deploy", WorkspaceID: util.UUIDToString(request.WorkspaceID),
+		ProjectID: util.UUIDToString(request.ProjectID), PlanID: util.UUIDToString(request.PlanID),
+		Environment: request.Environment, ReleaseRef: request.ReleaseRef,
+		Manifest: request.Manifest, ManifestDigest: request.Manifest.ManifestDigest,
+		ArtifactDigest: request.ArtifactDigest, CommitSHA: request.CommitSHA,
+		ArtifactURL: request.ArtifactURL, Policy: request.Policy,
 	}
 	var result DeploymentResult
 	if err := a.post(ctx, a.deploymentURL, payload, &result); err != nil {
@@ -487,6 +510,11 @@ func (a *webhookAdapters) Deploy(ctx context.Context, request DeploymentRequest)
 	default:
 		return DeploymentResult{}, fmt.Errorf("deployment webhook returned unsupported terminal status %q", result.Status)
 	}
+	if result.Status == "succeeded" {
+		if err := ValidateProviderAcknowledgement(result.Evidence, request.Manifest, request.CommitSHA, request.ArtifactDigest); err != nil {
+			return DeploymentResult{}, err
+		}
+	}
 	return result, nil
 }
 
@@ -494,12 +522,25 @@ func (a *webhookAdapters) Rollback(ctx context.Context, request RollbackRequest)
 	if a == nil || a.deploymentURL == "" {
 		return DeploymentResult{}, ErrAdapterNotConfigured
 	}
+	if !request.WorkspaceID.Valid || !request.ProjectID.Valid || !request.DeploymentID.Valid ||
+		(request.TargetEnvironment != "staging" && request.TargetEnvironment != "production") {
+		return DeploymentResult{}, errors.New("rollback requires a deployment and target release identity")
+	}
+	if _, err := util.ParseUUID(request.TargetManifestID); err != nil {
+		return DeploymentResult{}, errors.New("rollback target manifest ID is invalid")
+	}
+	if _, err := ParseReleaseReference("sha256:" + request.TargetManifestDigest); err != nil {
+		return DeploymentResult{}, errors.New("rollback target manifest digest is invalid")
+	}
 	payload := map[string]any{
-		"action":        "rollback",
-		"workspace_id":  util.UUIDToString(request.WorkspaceID),
-		"project_id":    util.UUIDToString(request.ProjectID),
-		"deployment_id": util.UUIDToString(request.DeploymentID),
-		"reason":        request.Reason,
+		"action":                 "rollback",
+		"workspace_id":           util.UUIDToString(request.WorkspaceID),
+		"project_id":             util.UUIDToString(request.ProjectID),
+		"deployment_id":          util.UUIDToString(request.DeploymentID),
+		"target_manifest_id":     request.TargetManifestID,
+		"target_manifest_digest": request.TargetManifestDigest,
+		"target_environment":     request.TargetEnvironment,
+		"reason":                 request.Reason,
 	}
 	var result DeploymentResult
 	if err := a.post(ctx, a.deploymentURL, payload, &result); err != nil {
@@ -512,6 +553,12 @@ func (a *webhookAdapters) Rollback(ctx context.Context, request RollbackRequest)
 	case "succeeded", "rolled_back", "failed":
 	default:
 		return DeploymentResult{}, fmt.Errorf("deployment webhook returned unsupported rollback status %q", result.Status)
+	}
+	if result.Status == "succeeded" || result.Status == "rolled_back" {
+		if result.Evidence == nil || result.Evidence["target_manifest_id"] != request.TargetManifestID ||
+			result.Evidence["target_manifest_digest"] != request.TargetManifestDigest {
+			return DeploymentResult{}, errors.New("deployment rollback acknowledgement does not match its target manifest")
+		}
 	}
 	return result, nil
 }
@@ -530,6 +577,42 @@ func (a *webhookAdapters) Observe(ctx context.Context, request ObservationReques
 	var result ObservationResult
 	if err := a.post(ctx, a.observationURL, payload, &result); err != nil {
 		return ObservationResult{}, err
+	}
+	return result, nil
+}
+
+func (a *webhookAdapters) SmokeTest(ctx context.Context, request StagingSmokeRequest) (StagingSmokeResult, error) {
+	if a == nil || a.deploymentURL == "" {
+		return StagingSmokeResult{}, ErrAdapterNotConfigured
+	}
+	if !request.WorkspaceID.Valid || !request.ProjectID.Valid || !request.DeploymentID.Valid || request.Environment != "staging" {
+		return StagingSmokeResult{}, errors.New("staging smoke test requires a staging deployment identity")
+	}
+	if _, err := util.ParseUUID(request.ManifestID); err != nil {
+		return StagingSmokeResult{}, errors.New("staging smoke test manifest ID is invalid")
+	}
+	if _, err := ParseReleaseReference("sha256:" + request.ManifestDigest); err != nil {
+		return StagingSmokeResult{}, errors.New("staging smoke test manifest digest is invalid")
+	}
+	if _, err := ParseReleaseReference("sha256:" + request.ArtifactDigest); err != nil {
+		return StagingSmokeResult{}, errors.New("staging smoke test artifact digest is invalid")
+	}
+	if !gitCommitSHA.MatchString(request.CommitSHA) {
+		return StagingSmokeResult{}, errors.New("staging smoke test commit identity is invalid")
+	}
+	payload := map[string]any{
+		"action": "staging_smoke_test", "workspace_id": util.UUIDToString(request.WorkspaceID),
+		"project_id": util.UUIDToString(request.ProjectID), "deployment_id": util.UUIDToString(request.DeploymentID),
+		"environment": request.Environment, "external_ref": request.ExternalRef,
+		"manifest_id": request.ManifestID, "manifest_digest": request.ManifestDigest,
+		"artifact_digest": request.ArtifactDigest, "commit_sha": request.CommitSHA,
+	}
+	var result StagingSmokeResult
+	if err := a.post(ctx, a.deploymentURL, payload, &result); err != nil {
+		return StagingSmokeResult{}, err
+	}
+	if result.ManifestDigest != request.ManifestDigest {
+		return StagingSmokeResult{}, errors.New("staging smoke test acknowledged a different manifest digest")
 	}
 	return result, nil
 }

@@ -408,7 +408,7 @@ func (s *Store) BindChangeApprovalEscalation(ctx context.Context, id, escalation
 }
 
 func (s *Store) LoadLogicalPlanNodes(ctx context.Context, workspaceID, projectID pgtype.UUID, planID string) ([]LogicalPlanNode, error) {
-	rows, err := s.pool.Query(ctx, `SELECT logical_node_id,node_key,kind,title,description,priority,COALESCE(required_role_family,''),required_capabilities,acceptance_criteria,requirement_ids,risk_level,max_attempts,status,materialized_issue_id FROM autonomous_project_plan_node WHERE workspace_id=$1 AND project_id=$2 AND plan_id=$3::uuid ORDER BY created_at,node_key`, workspaceID, projectID, planID)
+	rows, err := s.pool.Query(ctx, `SELECT n.logical_node_id,n.node_key,n.kind,n.title,n.description,n.priority,COALESCE(n.required_role_family,''),n.required_capabilities,n.acceptance_criteria,n.requirement_ids,n.risk_level,n.max_attempts,n.status,n.materialized_issue_id,COALESCE(i.revision,0) FROM autonomous_project_plan_node n LEFT JOIN issue i ON i.id=n.materialized_issue_id AND i.workspace_id=n.workspace_id WHERE n.workspace_id=$1 AND n.project_id=$2 AND n.plan_id=$3::uuid ORDER BY n.created_at,n.node_key`, workspaceID, projectID, planID)
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +419,7 @@ func (s *Store) LoadLogicalPlanNodes(ctx context.Context, workspaceID, projectID
 		var logicalID, issueID pgtype.UUID
 		var kind, risk string
 		var capabilities, criteria, requirementIDs []byte
-		if err := rows.Scan(&logicalID, &item.Spec.Key, &kind, &item.Spec.Title, &item.Spec.Description, &item.Spec.Priority, &item.Spec.RequiredRoleFamily, &capabilities, &criteria, &requirementIDs, &risk, &item.Spec.MaxAttempts, &item.Status, &issueID); err != nil {
+		if err := rows.Scan(&logicalID, &item.Spec.Key, &kind, &item.Spec.Title, &item.Spec.Description, &item.Spec.Priority, &item.Spec.RequiredRoleFamily, &capabilities, &criteria, &requirementIDs, &risk, &item.Spec.MaxAttempts, &item.Status, &issueID, &item.IssueRevision); err != nil {
 			return nil, err
 		}
 		item.LogicalNodeID = util.UUIDToString(logicalID)
@@ -454,6 +454,14 @@ func (s *Store) ApplyChangePlanMutation(ctx context.Context, workspaceID, projec
 	cr, err := s.LoadChangeRequest(ctx, changeRequestID)
 	if err != nil {
 		return StoredPlan{}, err
+	}
+	var proposalSnapshot struct {
+		BaseIssueRevisions map[string]int64 `json:"base_issue_revisions"`
+	}
+	if len(cr.Proposal) > 0 {
+		if err := json.Unmarshal(cr.Proposal, &proposalSnapshot); err != nil {
+			return StoredPlan{}, err
+		}
 	}
 	if cr.WorkspaceID != util.UUIDToString(workspaceID) || cr.ProjectID != util.UUIDToString(projectID) {
 		return StoredPlan{}, errors.New("change request does not belong to workspace/project")
@@ -511,6 +519,15 @@ func (s *Store) ApplyChangePlanMutation(ctx context.Context, workspaceID, projec
 	})
 	if err != nil {
 		return StoredPlan{}, err
+	}
+	brainMemories, err := preparePlanBrainMemories(ctx, result.Plan)
+	if err != nil {
+		return StoredPlan{}, fmt.Errorf("prepare changed project plan brain embeddings: %w", err)
+	}
+	decisionSubject := "Project Leader decision: " + cr.RequestText
+	decisionEmbedding, err := PrepareBrainMemoryEmbedding(ctx, decisionSubject, decisionContent)
+	if err != nil {
+		return StoredPlan{}, fmt.Errorf("prepare applied project decision brain embedding: %w", err)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -575,7 +592,7 @@ func (s *Store) ApplyChangePlanMutation(ctx context.Context, workspaceID, projec
 			return StoredPlan{}, err
 		}
 	}
-	persisted, err := s.persistPlanTx(ctx, tx, workspaceID, projectID, "change-request:"+cr.ID, plannerName, plannerModel, result.Plan)
+	persisted, err := s.persistPlanTx(ctx, tx, workspaceID, projectID, "change-request:"+cr.ID, plannerName, plannerModel, result.Plan, brainMemories)
 	if err != nil {
 		return StoredPlan{}, err
 	}
@@ -619,18 +636,28 @@ func (s *Store) ApplyChangePlanMutation(ctx context.Context, workspaceID, projec
 			if err != nil {
 				return StoredPlan{}, err
 			}
+			expectedRevision, ok := proposalSnapshot.BaseIssueRevisions[prior.MaterializedIssueID]
+			if !ok || expectedRevision <= 0 {
+				return StoredPlan{}, fmt.Errorf("%w: proposal has no base revision for issue %s", ErrStaleIssueMutationConflict, prior.MaterializedIssueID)
+			}
 			criteria, err := json.Marshal(node.Spec.AcceptanceCriteria)
 			if err != nil {
 				return StoredPlan{}, err
 			}
-			tag, err := tx.Exec(ctx, `UPDATE issue SET title=$2,description=$3,priority=$4,acceptance_criteria=$5,updated_at=now() WHERE id=$1 AND workspace_id=$6 AND issue_effective_status(workspace_id,status) IN ('backlog','todo')`, issueID, node.Spec.Title, node.Spec.Description, projectLeaderIssuePriority(node.Spec.Priority), criteria, workspaceID)
+			tag, err := tx.Exec(ctx, `UPDATE issue SET title=$2,description=$3,priority=$4,acceptance_criteria=$5,revision=revision+1,updated_at=now() WHERE id=$1 AND workspace_id=$6 AND revision=$7 AND issue_effective_status(workspace_id,status) IN ('backlog','todo')`, issueID, node.Spec.Title, node.Spec.Description, projectLeaderIssuePriority(node.Spec.Priority), criteria, workspaceID, expectedRevision)
 			if err != nil {
 				return StoredPlan{}, err
 			}
 			if tag.RowsAffected() == 0 {
 				var issueStatus string
-				if err := tx.QueryRow(ctx, `SELECT issue_effective_status(workspace_id,status) FROM issue WHERE id=$1 AND workspace_id=$2`, issueID, workspaceID).Scan(&issueStatus); err == nil && issueStatus != "backlog" && issueStatus != "todo" {
-					return StoredPlan{}, fmt.Errorf("materialized issue %s became immutable before apply", prior.MaterializedIssueID)
+				var currentRevision int64
+				if err := tx.QueryRow(ctx, `SELECT issue_effective_status(workspace_id,status),revision FROM issue WHERE id=$1 AND workspace_id=$2`, issueID, workspaceID).Scan(&issueStatus, &currentRevision); err == nil {
+					if issueStatus != "backlog" && issueStatus != "todo" {
+						return StoredPlan{}, fmt.Errorf("materialized issue %s became immutable before apply", prior.MaterializedIssueID)
+					}
+					if currentRevision != expectedRevision {
+						return StoredPlan{}, fmt.Errorf("%w: issue %s changed from revision %d to %d", ErrStaleIssueMutationConflict, prior.MaterializedIssueID, expectedRevision, currentRevision)
+					}
 				}
 			}
 		}
@@ -658,15 +685,15 @@ func (s *Store) ApplyChangePlanMutation(ctx context.Context, workspaceID, projec
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO autonomous_project_brain_entry (
 			workspace_id, project_id, plan_id, entry_type, subject, content,
-			source_type, source_id, confidence, created_by_type
+			source_type, source_id, confidence, created_by_type, embedding
 		)
-		SELECT $1,$2,$3,'product_decision',$4,$5,'project_leader',$6,1.0,'system'
+		SELECT $1,$2,$3,'product_decision',$4,$5,'project_leader',$6,1.0,'system',NULLIF($7,'')::vector
 		WHERE NOT EXISTS (
 			SELECT 1 FROM autonomous_project_brain_entry
 			WHERE workspace_id=$1 AND project_id=$2
 			  AND source_type='project_leader' AND source_id=$6
 		)
-	`, workspaceID, projectID, persisted.ID, "Project Leader decision: "+cr.RequestText, decisionContent, cr.ID); err != nil {
+	`, workspaceID, projectID, persisted.ID, decisionSubject, decisionContent, cr.ID, decisionEmbedding); err != nil {
 		return StoredPlan{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

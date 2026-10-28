@@ -116,7 +116,12 @@ func (r *DaemonQualityGateRunner) Run(ctx context.Context, request QualityGateRe
 	if err != nil {
 		return daemonQualityFailure(result, err.Error(), nil)
 	}
-	command, err := detectDaemonQualityCommand(worktree, request.GateType, request.CommitSHA)
+	var command daemonQualityCommand
+	if request.ReleaseContract != nil {
+		command, err = releaseBuilderCommand(*request.ReleaseContract)
+	} else {
+		command, err = detectDaemonQualityCommand(worktree, request.GateType, request.CommitSHA)
+	}
 	if err != nil {
 		return daemonQualityFailure(result, err.Error(), map[string]any{
 			"repo_path":  repo,
@@ -175,6 +180,10 @@ func (r *DaemonQualityGateRunner) Run(ctx context.Context, request QualityGateRe
 			"tmpfs":  qualityOCITmpLimit,
 		},
 	}
+	if request.ReleaseContract != nil {
+		result.Evidence["release_builder"] = request.ReleaseContract.Builder
+		result.Evidence["release_outputs"] = append([]string(nil), request.ReleaseContract.Outputs...)
+	}
 	if command.project == "node" {
 		version, preflightErr := preflightQualityPNPM(runtimePath, runtimeName, tempDir, imageID)
 		if preflightErr != nil {
@@ -226,6 +235,9 @@ func (r *DaemonQualityGateRunner) Run(ctx context.Context, request QualityGateRe
 	if containerID == "" {
 		return daemonQualityFailure(result, "OCI runtime started a quality container without a valid container ID", result.Evidence)
 	}
+	defer func() {
+		_ = removeQualityContainer(runtimePath, runtimeName, tempDir, containerID)
+	}()
 
 	waitOutput, waitErr := runQualityRuntimeCommand(runCtx, runtimePath, runtimeName, tempDir, []string{"wait", containerID}, 1024)
 	timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded)
@@ -245,7 +257,6 @@ func (r *DaemonQualityGateRunner) Run(ctx context.Context, request QualityGateRe
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), qualityOCICleanupTimeout)
 	logs, logsErr := runQualityRuntimeCommand(cleanupCtx, runtimePath, runtimeName, tempDir, []string{"logs", containerID}, qualityRuntimeLogLimit)
 	cleanupCancel()
-	_ = removeQualityContainer(runtimePath, runtimeName, tempDir, containerID)
 	var logEvidenceErr error
 	if logsErr == nil {
 		stdout, stderr, commandExit, stdoutSize, stderrSize, parseErr := parseDaemonQualityLogs(logs)
@@ -291,6 +302,18 @@ func (r *DaemonQualityGateRunner) Run(ctx context.Context, request QualityGateRe
 	result.Passed = result.ExitCode != nil && *result.ExitCode == 0
 	if !result.Passed {
 		result.Error = "quality command did not exit successfully"
+	}
+	if result.Passed && request.ReleaseContract != nil {
+		artifact, artifactErr := packageReleaseOutputs(filepath.Join(tempDir, "release-output"), *request.ReleaseContract)
+		if artifactErr != nil {
+			return daemonQualityFailure(result, fmt.Sprintf("package declared release outputs: %v", artifactErr), result.Evidence)
+		}
+		result.BuildArtifact = artifact.Bytes
+		result.BuildArtifactDigest = artifact.Digest
+		result.BuildArtifactFileCount = artifact.FileCount
+		result.Evidence["build_artifact_digest"] = artifact.Digest
+		result.Evidence["build_artifact_size"] = artifact.Size
+		result.Evidence["build_artifact_file_count"] = artifact.FileCount
 	}
 	result.Evidence = qualityResultEvidence(result, result.Evidence)
 	result.ArtifactDigest = daemonQualityDigest(result)
@@ -422,8 +445,22 @@ func startQualityContainer(ctx context.Context, runtimePath, runtimeName, tempDi
 		"--env=COREPACK_HOME=/opt/corepack", "--env=COREPACK_ENABLE_NETWORK=0",
 		"--env=COREPACK_DEFAULT_TO_LATEST=0",
 		"--env=npm_config_offline=true", "--env=npm_config_userconfig=/dev/null",
-		"--entrypoint=/bin/sh", imageID, "-c", qualityContainerScript, "quality-gate",
 	}
+	if request.ReleaseContract != nil {
+		releaseOutputPath := filepath.Join(tempDir, "release-output")
+		if err := os.Mkdir(releaseOutputPath, 0o733); err != nil {
+			return fmt.Errorf("create release output staging directory: %w", err)
+		}
+		if err := os.Chmod(releaseOutputPath, 0o733); err != nil {
+			return fmt.Errorf("prepare release output staging directory: %w", err)
+		}
+		if strings.Contains(releaseOutputPath, ",") {
+			return errors.New("release output path contains an unsupported OCI mount separator")
+		}
+		args = append(args, "--mount=type=bind,source="+releaseOutputPath+",target=/tmp/release-output")
+		args = append(args, "--env=MULTICA_RELEASE_OUTPUTS="+strings.Join(request.ReleaseContract.Outputs, " "))
+	}
+	args = append(args, "--entrypoint=/bin/sh", imageID, "-c", qualityContainerScript, "quality-gate")
 	args = append(args, command.name)
 	args = append(args, command.args...)
 	output, err := runQualityRuntimeCommand(ctx, runtimePath, runtimeName, tempDir, args, 16*1024)
@@ -440,8 +477,20 @@ const qualityContainerScript = `set -u
 mkdir -p /tmp/home /tmp/go-cache /tmp/go-mod-cache /tmp/task
 tar -xf /input/task.tar -C /tmp/task || exit 125
 cd /tmp/task || exit 125
+for output in ${MULTICA_RELEASE_OUTPUTS:-}; do
+  output_dir=${output%/*}
+  if [ "$output_dir" != "$output" ]; then mkdir -p "$output_dir" || exit 125; fi
+done
 "$@" >/tmp/quality.stdout 2>/tmp/quality.stderr
 status=$?
+if [ "$status" -eq 0 ] && [ -n "${MULTICA_RELEASE_OUTPUTS:-}" ]; then
+  for output in ${MULTICA_RELEASE_OUTPUTS}; do
+    target="/tmp/release-output/$output"
+    target_dir=${target%/*}
+    mkdir -p "$target_dir" 2>>/tmp/quality.stderr || status=125
+    cp -R "$output" "$target" 2>>/tmp/quality.stderr || status=125
+  done
+fi
 stdout_size=$(wc -c </tmp/quality.stdout | tr -d '[:space:]')
 stderr_size=$(wc -c </tmp/quality.stderr | tr -d '[:space:]')
 printf '__MC_RESULT__%s:%s:%s\n' "$status" "$stdout_size" "$stderr_size"

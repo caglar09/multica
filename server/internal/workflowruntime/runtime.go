@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,10 +20,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	genericdeployment "github.com/multica-ai/multica/server/internal/deployment"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/teamprovision"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/workflow"
@@ -123,30 +127,38 @@ func ConfigFromEnv() Config {
 }
 
 type Runtime struct {
-	ctx                context.Context
-	pool               *pgxpool.Pool
-	taskSvc            *service.TaskService
-	issueSvc           *service.IssueService
-	store              *workflow.PostgresStore
-	engine             *workflow.Engine
-	team               *teamprovision.Provisioner
-	projectStore       *projectorchestration.Store
-	projectPlanner     *projectorchestration.Planner
-	projectLeader      *MikaProjectLeaderExecutor
-	brainExecutor      *BrainRuntimeExecutor
-	repositoryAnalyzer projectorchestration.RepositoryAnalyzer
-	qualityGateRunner  projectorchestration.QualityGateRunner
-	deploymentAdapter  projectorchestration.DeploymentAdapter
-	observationAdapter projectorchestration.ObservationAdapter
-	planningSem        chan struct{}
-	config             Config
+	ctx                  context.Context
+	pool                 *pgxpool.Pool
+	taskSvc              *service.TaskService
+	issueSvc             *service.IssueService
+	store                *workflow.PostgresStore
+	engine               *workflow.Engine
+	team                 *teamprovision.Provisioner
+	projectStore         *projectorchestration.Store
+	projectPlanner       *projectorchestration.Planner
+	projectLeader        *MikaProjectLeaderExecutor
+	brainExecutor        *BrainRuntimeExecutor
+	repositoryAnalyzer   projectorchestration.RepositoryAnalyzer
+	qualityGateRunner    projectorchestration.QualityGateRunner
+	releaseArtifactStore projectorchestration.ReleaseArtifactStore
+	deploymentAdapter    projectorchestration.DeploymentAdapter
+	deploymentBridge     *AutonomousDeploymentBridge
+	observationAdapter   projectorchestration.ObservationAdapter
+	planningSem          chan struct{}
+	config               Config
 }
 
 func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config) (*Runtime, error) {
 	return RegisterWithPlanner(ctx, bus, pool, taskSvc, cfg, nil)
 }
 
-func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config, planner teamprovision.Planner) (*Runtime, error) {
+type releaseCapableQualityRunner struct {
+	projectorchestration.QualityGateRunner
+	projectorchestration.ReleaseArtifactBuilder
+	projectorchestration.ReleaseArtifactStore
+}
+
+func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config, planner teamprovision.Planner, releaseStores ...storage.Storage) (*Runtime, error) {
 	if !cfg.Enabled {
 		slog.Info("autonomous workflow disabled")
 		return nil, nil
@@ -169,6 +181,23 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 	if qualityGateRunner == nil {
 		qualityGateRunner = projectorchestration.NewDaemonQualityGateRunner()
 	}
+	var releaseArtifactStore projectorchestration.ReleaseArtifactStore
+	if len(releaseStores) > 0 {
+		releaseArtifactStore = projectorchestration.NewReleaseArtifactStore(releaseStores[0])
+	}
+	if releaseArtifactStore != nil {
+		builder, _ := projectorchestration.NewDaemonQualityGateRunner().(projectorchestration.ReleaseArtifactBuilder)
+		qualityGateRunner = releaseCapableQualityRunner{
+			QualityGateRunner:      qualityGateRunner,
+			ReleaseArtifactBuilder: builder,
+			ReleaseArtifactStore:   releaseArtifactStore,
+		}
+	}
+	projectDeploymentAdapter := projectorchestration.NewWebhookDeploymentAdapter(cfg.AdapterConfig)
+	var deploymentBridge *AutonomousDeploymentBridge
+	if projectDeploymentAdapter != nil && releaseArtifactStore != nil {
+		deploymentBridge = NewAutonomousDeploymentBridge(pool, projectDeploymentAdapter, releaseArtifactStore)
+	}
 	r := &Runtime{
 		ctx:     ctx,
 		pool:    pool,
@@ -179,19 +208,21 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 			svc.Metrics = taskSvc.Metrics
 			return svc
 		}(),
-		store:              store,
-		engine:             engine,
-		team:               teamprovision.New(pool, taskSvc.Queries, planner),
-		projectStore:       projectorchestration.NewStore(pool),
-		projectPlanner:     projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
-		projectLeader:      NewMikaProjectLeaderExecutor(pool, taskSvc),
-		brainExecutor:      NewBrainRuntimeExecutor(pool, taskSvc),
-		repositoryAnalyzer: projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
-		qualityGateRunner:  qualityGateRunner,
-		deploymentAdapter:  projectorchestration.NewWebhookDeploymentAdapter(cfg.AdapterConfig),
-		observationAdapter: projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
-		planningSem:        make(chan struct{}, 4),
-		config:             cfg,
+		store:                store,
+		engine:               engine,
+		team:                 teamprovision.New(pool, taskSvc.Queries, planner),
+		projectStore:         projectorchestration.NewStore(pool),
+		projectPlanner:       projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
+		projectLeader:        NewMikaProjectLeaderExecutor(pool, taskSvc),
+		brainExecutor:        NewBrainRuntimeExecutor(pool, taskSvc),
+		repositoryAnalyzer:   projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
+		qualityGateRunner:    qualityGateRunner,
+		releaseArtifactStore: releaseArtifactStore,
+		deploymentAdapter:    deploymentBridge,
+		deploymentBridge:     deploymentBridge,
+		observationAdapter:   projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
+		planningSem:          make(chan struct{}, 4),
+		config:               cfg,
 	}
 
 	for _, eventType := range []string{protocol.EventIssueCreated, protocol.EventIssueUpdated} {
@@ -367,6 +398,14 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 		if err := r.reconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous workflow reconciliation failed", "error", err)
 		}
+		if r.deploymentBridge != nil {
+			if _, err := r.deploymentBridge.ReconcileOperations(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Warn("autonomous deployment operation reconciliation failed", "error", err)
+			}
+			if err := r.reconcileAutonomousDeploymentResults(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Warn("autonomous deployment result projection failed", "error", err)
+			}
+		}
 		if err := r.processProjectBootstrap(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("autonomous project bootstrap reconciliation failed", "error", err)
 		}
@@ -403,6 +442,532 @@ func (r *Runtime) runReconciler(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+type autonomousDeploymentTerminal struct {
+	deploymentID            pgtype.UUID
+	workspaceID             pgtype.UUID
+	projectID               pgtype.UUID
+	planID                  pgtype.UUID
+	nodeID                  pgtype.UUID
+	manifestID              pgtype.UUID
+	manifestDigest          string
+	environment             string
+	operationID             pgtype.UUID
+	operationWorkspaceID    pgtype.UUID
+	operationTargetID       pgtype.UUID
+	operationAction         string
+	operationKind           string
+	operationIdempotencyKey string
+	operationStatus         string
+	operationEnvironment    string
+	operationSourceRevision string
+	operationRequest        []byte
+	providerOperation       pgtype.Text
+	evidence                []byte
+	lastError               pgtype.Text
+}
+
+type autonomousDeploymentOperationReferences struct {
+	Version            int    `json:"version"`
+	DeploymentID       string `json:"deployment_id"`
+	NodeID             string `json:"node_id"`
+	PlanID             string `json:"plan_id"`
+	ManifestID         string `json:"manifest_id"`
+	ManifestDigest     string `json:"manifest_digest"`
+	ArtifactStorageKey string `json:"artifact_storage_key"`
+}
+
+// reconcileAutonomousDeploymentResults projects terminal generic-operation
+// state into the durable autonomous deployment and plan-node records. The
+// generic operation UUID is an application-validated correlation, not an FK.
+func (r *Runtime) reconcileAutonomousDeploymentResults(ctx context.Context) error {
+	if r == nil || r.projectStore == nil {
+		return nil
+	}
+	if err := r.recoverUnlinkedAutonomousDeploymentOperations(ctx); err != nil {
+		return err
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT d.id, d.workspace_id, d.project_id, d.plan_id, d.node_id,
+		       d.release_manifest_id, d.release_manifest_digest, d.environment,
+		       o.id, o.workspace_id, o.target_id, o.action, o.operation_kind, o.idempotency_key,
+		       o.status, o.environment, o.source_revision, o.request,
+		       o.provider_operation_id, o.evidence, o.last_error
+		FROM autonomous_project_deployment d
+		JOIN deployment_operation o
+		  ON o.id = d.generic_operation_id
+		 AND o.workspace_id = d.workspace_id
+		WHERE d.status = 'running'
+		  AND d.generic_operation_id IS NOT NULL
+		  AND d.node_id IS NOT NULL
+		  AND o.status IN ('succeeded', 'failed', 'canceled')
+		ORDER BY d.started_at ASC NULLS FIRST
+		LIMIT 50
+	`)
+	if err != nil {
+		return fmt.Errorf("query terminal autonomous deployment operations: %w", err)
+	}
+	items := make([]autonomousDeploymentTerminal, 0, 50)
+	for rows.Next() {
+		var item autonomousDeploymentTerminal
+		if err := rows.Scan(
+			&item.deploymentID, &item.workspaceID, &item.projectID, &item.planID, &item.nodeID,
+			&item.manifestID, &item.manifestDigest, &item.environment,
+			&item.operationID, &item.operationWorkspaceID, &item.operationTargetID,
+			&item.operationAction, &item.operationKind, &item.operationIdempotencyKey, &item.operationStatus,
+			&item.operationEnvironment, &item.operationSourceRevision, &item.operationRequest,
+			&item.providerOperation, &item.evidence, &item.lastError,
+		); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan terminal autonomous deployment operation: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read terminal autonomous deployment operations: %w", err)
+	}
+	rows.Close()
+
+	for _, item := range items {
+		if err := r.projectTerminalDeployment(ctx, item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recoverUnlinkedAutonomousDeploymentOperations closes the crash window
+// between persisting a generic operation and writing its UUID on the project
+// deployment row. The operation request carries exact app-validated IDs.
+func (r *Runtime) recoverUnlinkedAutonomousDeploymentOperations(ctx context.Context) error {
+	rows, err := r.pool.Query(ctx, `
+		SELECT d.id, d.workspace_id, d.project_id, d.plan_id, d.node_id,
+		       d.release_manifest_id, d.release_manifest_digest, d.environment,
+		       o.id, o.workspace_id, o.target_id, o.action, o.operation_kind, o.idempotency_key,
+		       o.status, o.environment, o.source_revision, o.request
+		FROM autonomous_project_deployment d
+		JOIN deployment_operation o
+		  ON o.workspace_id = d.workspace_id
+		 AND o.request -> 'config' ->> 'deployment_id' = d.id::text
+		WHERE d.status = 'running' AND d.generic_operation_id IS NULL AND d.node_id IS NOT NULL
+		ORDER BY d.started_at ASC NULLS FIRST, o.created_at ASC
+		LIMIT 100
+	`)
+	if err != nil {
+		return fmt.Errorf("query autonomous deployments missing operation correlation: %w", err)
+	}
+	items := make([]autonomousDeploymentTerminal, 0, 100)
+	for rows.Next() {
+		var item autonomousDeploymentTerminal
+		if err := rows.Scan(
+			&item.deploymentID, &item.workspaceID, &item.projectID, &item.planID, &item.nodeID,
+			&item.manifestID, &item.manifestDigest, &item.environment,
+			&item.operationID, &item.operationWorkspaceID, &item.operationTargetID,
+			&item.operationAction, &item.operationKind, &item.operationIdempotencyKey,
+			&item.operationStatus, &item.operationEnvironment, &item.operationSourceRevision, &item.operationRequest,
+		); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan autonomous deployment missing operation correlation: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read autonomous deployments missing operation correlation: %w", err)
+	}
+	rows.Close()
+
+	linked := make(map[string]string, len(items))
+	for _, item := range items {
+		deploymentID := util.UUIDToString(item.deploymentID)
+		operationID := util.UUIDToString(item.operationID)
+		if existing, ok := linked[deploymentID]; ok && existing != operationID {
+			return fmt.Errorf("autonomous deployment %s has multiple generic operation candidates", deploymentID)
+		}
+		linked[deploymentID] = operationID
+		var encodedManifest []byte
+		if err := r.pool.QueryRow(ctx, `
+			SELECT manifest_json
+			FROM autonomous_project_release_manifest
+			WHERE manifest_id=$1 AND manifest_digest=$2
+			  AND workspace_id=$3 AND project_id=$4 AND plan_id=$5
+		`, item.manifestID, item.manifestDigest, item.workspaceID, item.projectID, item.planID).Scan(&encodedManifest); err != nil {
+			return fmt.Errorf("load immutable manifest while restoring operation correlation: %w", err)
+		}
+		var manifest projectorchestration.ReleaseManifest
+		if err := json.Unmarshal(encodedManifest, &manifest); err != nil {
+			return fmt.Errorf("decode immutable manifest while restoring operation correlation: %w", err)
+		}
+		if err := manifest.Validate(); err != nil {
+			return fmt.Errorf("validate immutable manifest while restoring operation correlation: %w", err)
+		}
+		if manifest.ManifestID != util.UUIDToString(item.manifestID) || manifest.ManifestDigest != item.manifestDigest ||
+			manifest.WorkspaceID != util.UUIDToString(item.workspaceID) || manifest.ProjectID != util.UUIDToString(item.projectID) ||
+			manifest.PlanID != util.UUIDToString(item.planID) || manifest.Environment != item.environment {
+			return errors.New("autonomous deployment record does not match its immutable manifest during operation recovery")
+		}
+		if err := validateTerminalDeploymentCorrelation(item, manifest); err != nil {
+			return fmt.Errorf("reject mismatched unlinked autonomous deployment operation: %w", err)
+		}
+		tag, err := r.pool.Exec(ctx, `
+			UPDATE autonomous_project_deployment
+			SET generic_operation_id=$2::uuid,
+			    evidence=COALESCE(evidence, '{}'::jsonb) || jsonb_build_object('generic_operation_id',$2::uuid)
+			WHERE id=$1 AND workspace_id=$3 AND status='running' AND generic_operation_id IS NULL
+		`, item.deploymentID, item.operationID, item.workspaceID)
+		if err != nil {
+			return fmt.Errorf("restore autonomous deployment generic operation correlation: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			continue
+		}
+	}
+	return nil
+}
+
+func validateTerminalDeploymentCorrelation(item autonomousDeploymentTerminal, manifest projectorchestration.ReleaseManifest) error {
+	if item.operationAction != "deploy" || item.operationKind != "autonomous_project_deployment" ||
+		!item.operationWorkspaceID.Valid || !item.operationTargetID.Valid ||
+		util.UUIDToString(item.operationWorkspaceID) != util.UUIDToString(item.workspaceID) ||
+		util.UUIDToString(item.operationTargetID) != util.UUIDToString(item.projectID) ||
+		item.operationEnvironment != item.environment || item.operationSourceRevision != item.manifestDigest {
+		return errors.New("generic operation kind, action, scope, environment, or source revision does not match autonomous deployment")
+	}
+	var request genericdeployment.DeploymentRequest
+	decoder := json.NewDecoder(strings.NewReader(string(item.operationRequest)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return fmt.Errorf("decode correlated generic deployment request: %w", err)
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return errors.New("correlated generic deployment request contains trailing data")
+	}
+	if request.OperationID.String() != util.UUIDToString(item.operationID) ||
+		request.WorkspaceID.String() != util.UUIDToString(item.workspaceID) || request.TargetID.String() != util.UUIDToString(item.projectID) ||
+		request.IdempotencyKey != item.operationIdempotencyKey ||
+		request.Environment != item.environment || request.CommitSHA != manifest.CommitSHA {
+		return errors.New("generic deployment request identity does not match autonomous deployment")
+	}
+	var refs autonomousDeploymentOperationReferences
+	configDecoder := json.NewDecoder(strings.NewReader(string(request.Config)))
+	configDecoder.DisallowUnknownFields()
+	if err := configDecoder.Decode(&refs); err != nil {
+		return fmt.Errorf("decode correlated autonomous deployment references: %w", err)
+	}
+	if err := configDecoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return errors.New("correlated autonomous deployment references contain trailing data")
+	}
+	if refs.Version != 1 || refs.DeploymentID != util.UUIDToString(item.deploymentID) ||
+		refs.NodeID != util.UUIDToString(item.nodeID) || refs.PlanID != util.UUIDToString(item.planID) ||
+		refs.ManifestID != util.UUIDToString(item.manifestID) || refs.ManifestDigest != item.manifestDigest ||
+		refs.ArtifactStorageKey != manifest.ArtifactStorageKey {
+		return errors.New("generic deployment request references a different autonomous deployment, node, plan, or manifest")
+	}
+	return nil
+}
+
+func sameReleaseManifestCandidateForRuntime(left, right projectorchestration.ReleaseManifest) bool {
+	if left.WorkspaceID != right.WorkspaceID || left.ProjectID != right.ProjectID || left.PlanID != right.PlanID ||
+		left.ChangeSetID != right.ChangeSetID || left.PlanRevision != right.PlanRevision || left.PlanDigest != right.PlanDigest ||
+		!strings.EqualFold(left.CommitSHA, right.CommitSHA) || !strings.EqualFold(left.TreeSHA, right.TreeSHA) ||
+		left.Builder != right.Builder || left.ArtifactDigest != right.ArtifactDigest || left.ArtifactStorageKey != right.ArtifactStorageKey ||
+		len(left.Outputs) != len(right.Outputs) || len(left.QualityGateRunIDs) != len(right.QualityGateRunIDs) {
+		return false
+	}
+	for i := range left.Outputs {
+		if left.Outputs[i] != right.Outputs[i] {
+			return false
+		}
+	}
+	leftRuns := append([]string(nil), left.QualityGateRunIDs...)
+	rightRuns := append([]string(nil), right.QualityGateRunIDs...)
+	sort.Strings(leftRuns)
+	sort.Strings(rightRuns)
+	for i := range leftRuns {
+		if leftRuns[i] != rightRuns[i] {
+			return false
+		}
+	}
+	return true
+}
+
+type deploymentStatusRowQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func autonomousDeploymentStillRunning(ctx context.Context, queryer deploymentStatusRowQuerier, item autonomousDeploymentTerminal) (bool, error) {
+	var status string
+	err := queryer.QueryRow(ctx, `
+		SELECT status
+		FROM autonomous_project_deployment
+		WHERE id = $1 AND workspace_id = $2 AND generic_operation_id = $3
+		FOR UPDATE
+	`, item.deploymentID, item.workspaceID, item.operationID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return status == "running", nil
+}
+
+func (r *Runtime) projectTerminalDeployment(ctx context.Context, item autonomousDeploymentTerminal) error {
+	if !item.deploymentID.Valid || !item.workspaceID.Valid || !item.projectID.Valid || !item.planID.Valid ||
+		!item.nodeID.Valid || !item.manifestID.Valid || !item.operationID.Valid {
+		return fmt.Errorf("terminal autonomous deployment %s has incomplete correlation identity", util.UUIDToString(item.deploymentID))
+	}
+	var manifest projectorchestration.ReleaseManifest
+	var encodedManifest []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT manifest_json
+		FROM autonomous_project_release_manifest
+		WHERE manifest_id = $1 AND manifest_digest = $2
+		  AND workspace_id = $3 AND project_id = $4 AND plan_id = $5
+	`, item.manifestID, item.manifestDigest, item.workspaceID, item.projectID, item.planID).Scan(&encodedManifest)
+	if err != nil {
+		return fmt.Errorf("load immutable deployment manifest: %w", err)
+	} else if err := json.Unmarshal(encodedManifest, &manifest); err != nil {
+		return fmt.Errorf("decode immutable deployment manifest: %w", err)
+	} else if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("validate immutable deployment manifest: %w", err)
+	} else if manifest.ManifestID != util.UUIDToString(item.manifestID) || manifest.ManifestDigest != item.manifestDigest ||
+		manifest.WorkspaceID != util.UUIDToString(item.workspaceID) || manifest.ProjectID != util.UUIDToString(item.projectID) ||
+		manifest.PlanID != util.UUIDToString(item.planID) || manifest.Environment != item.environment {
+		return errors.New("deployment record does not match its immutable release manifest")
+	}
+	if err := validateTerminalDeploymentCorrelation(item, manifest); err != nil {
+		return fmt.Errorf("reject mismatched autonomous deployment operation correlation: %w", err)
+	}
+
+	var projectionErr error
+	evidence := make(map[string]any)
+	if len(item.evidence) > 0 {
+		if err := json.Unmarshal(item.evidence, &evidence); err != nil {
+			projectionErr = fmt.Errorf("decode generic deployment evidence: %w", err)
+			evidence = make(map[string]any)
+		}
+	}
+	status := "failed"
+	if projectionErr == nil && item.operationStatus == "succeeded" {
+		if err := projectorchestration.ValidateReleaseAcknowledgement(evidence, manifest); err != nil {
+			projectionErr = fmt.Errorf("generic deployment acknowledgement is invalid: %w", err)
+		} else {
+			status = "succeeded"
+		}
+	}
+	if projectionErr == nil && status == "succeeded" && manifest.Environment == "staging" {
+		stageSmoke := projectorchestration.StagingSmokeResult{}
+		var stageSmokeErr error
+		if smokeAdapter, ok := r.deploymentAdapter.(projectorchestration.StagingSmokeAdapter); ok {
+			externalRef, _ := evidence["external_ref"].(string)
+			if externalRef == "" && item.providerOperation.Valid {
+				externalRef = item.providerOperation.String
+			}
+			stageSmoke, stageSmokeErr = smokeAdapter.SmokeTest(ctx, projectorchestration.StagingSmokeRequest{
+				WorkspaceID: item.workspaceID, ProjectID: item.projectID, DeploymentID: item.deploymentID,
+				Environment: "staging", ExternalRef: externalRef,
+				ManifestID: manifest.ManifestID, ManifestDigest: manifest.ManifestDigest,
+				ArtifactDigest: manifest.ArtifactDigest, CommitSHA: manifest.CommitSHA,
+			})
+		} else {
+			stageSmokeErr = errors.New("deployment adapter does not expose the staging smoke gate")
+		}
+		evidence["stage_smoke"] = map[string]any{
+			"passed": stageSmoke.Passed, "manifest_digest": stageSmoke.ManifestDigest,
+			"evidence": stageSmoke.Evidence, "error": stageSmoke.Error,
+		}
+		if stageSmokeErr != nil {
+			status = "failed"
+			evidence["error"] = "staging smoke gate failed: " + stageSmokeErr.Error()
+		} else if !stageSmoke.Passed || stageSmoke.ManifestDigest != manifest.ManifestDigest {
+			status = "failed"
+			evidence["error"] = "staging smoke gate did not pass for the exact manifest"
+		} else {
+			stageHealth := projectorchestration.ObservationResult{}
+			var stageHealthErr error
+			if r.observationAdapter == nil {
+				stageHealthErr = projectorchestration.ErrAdapterNotConfigured
+			} else {
+				stageHealth, stageHealthErr = r.observationAdapter.Observe(ctx, projectorchestration.ObservationRequest{
+					WorkspaceID: item.workspaceID, ProjectID: item.projectID,
+					DeploymentID: item.deploymentID, WindowSeconds: 300,
+				})
+			}
+			evidence["stage_health"] = map[string]any{
+				"healthy": stageHealth.Healthy, "error_rate": stageHealth.ErrorRate,
+				"latency_p95": stageHealth.LatencyP95, "signals": stageHealth.Signals,
+				"evidence": stageHealth.Evidence,
+			}
+			if stageHealthErr != nil {
+				status = "failed"
+				evidence["error"] = "staging health check failed: " + stageHealthErr.Error()
+			} else if !stageHealth.Healthy {
+				status = "failed"
+				evidence["error"] = "staging health check reported an unhealthy release"
+			} else {
+				productionManifest, err := projectorchestration.PinPlanReleaseManifestEnvironment(
+					ctx, r.pool, item.workspaceID, item.projectID, item.planID, "production",
+				)
+				if err != nil {
+					return fmt.Errorf("pin production manifest after staging smoke and health checks: %w", err)
+				}
+				if !sameReleaseManifestCandidateForRuntime(manifest, productionManifest) || productionManifest.Environment != "production" {
+					return errors.New("staging smoke and health results do not match the pinned production candidate")
+				}
+			}
+		}
+	}
+	if projectionErr != nil {
+		evidence = map[string]any{"error": projectionErr.Error(), "generic_operation_id": util.UUIDToString(item.operationID)}
+	} else {
+		evidence["generic_operation_id"] = util.UUIDToString(item.operationID)
+	}
+	if status != "succeeded" && item.lastError.Valid && strings.TrimSpace(item.lastError.String) != "" {
+		evidence["error"] = item.lastError.String
+	}
+	if status != "succeeded" && evidence["error"] == nil {
+		evidence["error"] = "generic deployment operation ended as " + item.operationStatus
+	}
+	encodedEvidence, err := json.Marshal(evidence)
+	if err != nil {
+		return fmt.Errorf("encode autonomous deployment result evidence: %w", err)
+	}
+	provider, _ := evidence["provider"].(string)
+	externalRef, _ := evidence["external_ref"].(string)
+	if externalRef == "" && item.providerOperation.Valid {
+		externalRef = item.providerOperation.String
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin terminal autonomous deployment projection: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	stillRunning, err := autonomousDeploymentStillRunning(ctx, tx, item)
+	if err != nil {
+		return fmt.Errorf("read autonomous deployment projection status: %w", err)
+	}
+	if !stillRunning {
+		return nil
+	}
+	var nodeKey, nodeTitle, nodeStatus string
+	var attempt, maxAttempts int
+	var specRevision int64
+	if err := tx.QueryRow(ctx, `
+		SELECT node_key, title, status, attempt, max_attempts, spec_revision
+		FROM autonomous_project_plan_node
+		WHERE id = $1 AND plan_id = $2 AND workspace_id = $3 AND project_id = $4
+		FOR UPDATE
+	`, item.nodeID, item.planID, item.workspaceID, item.projectID).Scan(&nodeKey, &nodeTitle, &nodeStatus, &attempt, &maxAttempts, &specRevision); err != nil {
+		return fmt.Errorf("load autonomous deployment plan node: %w", err)
+	}
+	if nodeStatus != "running" {
+		return fmt.Errorf("autonomous deployment node %q is %s, expected running", nodeKey, nodeStatus)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_deployment
+		SET provider = COALESCE(NULLIF($2, ''), provider),
+		    external_ref = NULLIF($3, ''),
+		    status = $4,
+		    evidence = $5,
+		    completed_at = COALESCE(completed_at, now())
+		WHERE id = $1 AND status = 'running'
+	`, item.deploymentID, provider, externalRef, status, encodedEvidence); err != nil {
+		return fmt.Errorf("persist terminal autonomous deployment state: %w", err)
+	}
+	if status == "succeeded" {
+		artifactContent, err := json.Marshal(map[string]any{
+			"deployment_id": util.UUIDToString(item.deploymentID), "generic_operation_id": util.UUIDToString(item.operationID),
+			"provider": provider, "external_ref": externalRef, "environment": manifest.Environment,
+			"release_ref": "sha256:" + manifest.ManifestDigest, "manifest_digest": manifest.ManifestDigest,
+			"artifact_digest": manifest.ArtifactDigest, "artifact_storage_key": manifest.ArtifactStorageKey,
+			"commit_sha": manifest.CommitSHA, "tree_sha": manifest.TreeSHA,
+			"quality_gate_run_ids": manifest.QualityGateRunIDs,
+			"stage_smoke":          evidence["stage_smoke"],
+			"stage_health":         evidence["stage_health"],
+			"evidence":             projectorchestration.ReleaseAcknowledgementEvidence(evidence),
+			"contract":             map[string]any{"status": "valid", "valid": true, "spec_revision": specRevision},
+		})
+		if err != nil {
+			return fmt.Errorf("encode autonomous deployment artifact: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO autonomous_project_artifact (
+				workspace_id, project_id, plan_id, node_id, artifact_type, name, content
+			) VALUES ($1, $2, $3, $4, 'deployment_record', $5, $6)
+		`, item.workspaceID, item.projectID, item.planID, item.nodeID, "Deployment: "+nodeTitle, artifactContent); err != nil {
+			return fmt.Errorf("persist autonomous deployment artifact: %w", err)
+		}
+		nodeStatusTarget := "completed"
+		if manifest.Environment == "staging" {
+			nodeStatusTarget = "ready"
+		}
+		command, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_plan_node n
+			SET status = $2, completed_at = CASE WHEN $2='completed' THEN COALESCE(completed_at, now()) ELSE NULL END,
+			    ready_at = CASE WHEN $2='ready' THEN now() ELSE ready_at END,
+			    blocked_category = NULL, blocked_reason = NULL, updated_at = now()
+			WHERE n.id = $1 AND n.status = 'running'
+			  AND NOT EXISTS (
+				SELECT 1 FROM autonomous_project_quality_gate_run q
+				WHERE q.workspace_id = n.workspace_id AND q.project_id = n.project_id AND q.node_id = n.id
+				  AND q.required = TRUE AND q.evidence ->> 'policy_requirement' = 'true' AND q.status <> 'passed'
+			  )
+		`, item.nodeID, nodeStatusTarget)
+		if err != nil {
+			return fmt.Errorf("complete autonomous deployment node: %w", err)
+		}
+		if command.RowsAffected() == 0 {
+			return fmt.Errorf("autonomous deployment node %q still has a required failed quality gate", nodeKey)
+		}
+		if manifest.Environment == "production" {
+			if _, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_escalation
+			SET status = 'resolved', resolution = jsonb_build_object('decision','auto_resolved','reason','node_completed'),
+			    resolved_at = now()
+			WHERE workspace_id = $1 AND project_id = $2 AND node_id = $3 AND status IN ('open','acknowledged')
+			`, item.workspaceID, item.projectID, item.nodeID); err != nil {
+				return fmt.Errorf("resolve deployment node escalation: %w", err)
+			}
+		}
+	} else {
+		nodeTarget := "ready"
+		if attempt >= maxAttempts {
+			nodeTarget = "blocked"
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_plan_node
+			SET status = $2,
+			    blocked_category = CASE WHEN $2 = 'blocked' THEN 'external_dependency' ELSE NULL END,
+			    blocked_reason = $3,
+			    ready_at = CASE WHEN $2 = 'ready' THEN now() ELSE ready_at END,
+			    updated_at = now()
+			WHERE id = $1 AND status = 'running'
+		`, item.nodeID, nodeTarget, evidence["error"]); err != nil {
+			return fmt.Errorf("persist failed autonomous deployment node: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit terminal autonomous deployment projection: %w", err)
+	}
+	if err := r.projectStore.RefreshReady(ctx, item.workspaceID, item.projectID); err != nil {
+		return fmt.Errorf("refresh autonomous deployment successors: %w", err)
+	}
+	if status == "succeeded" && manifest.Environment == "production" {
+		_, err := r.pool.Exec(ctx, `
+			UPDATE autonomous_project_plan p
+			SET status = 'completed', updated_at = now()
+			WHERE p.id = $1 AND p.status IN ('active', 'blocked')
+			  AND NOT EXISTS (SELECT 1 FROM autonomous_project_plan_node n WHERE n.plan_id = p.id AND n.status NOT IN ('completed','cancelled'))
+		`, item.planID)
+		if err != nil {
+			return fmt.Errorf("complete autonomous project plan after deployment: %w", err)
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) isProjectPaused(ctx context.Context, workspaceID, projectID pgtype.UUID) (bool, error) {

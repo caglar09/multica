@@ -1,0 +1,2 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS autonomous_project_brain_entry_embedding_hnsw_idx
+ON autonomous_project_brain_entry USING hnsw (embedding vector_cosine_ops);

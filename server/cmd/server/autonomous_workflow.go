@@ -11,6 +11,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/teamprovision"
 	"github.com/multica-ai/multica/server/internal/workflowruntime"
 )
@@ -24,6 +25,7 @@ func startAutonomousWorkflow(
 	bus *events.Bus,
 	pool *pgxpool.Pool,
 	taskSvc *service.TaskService,
+	store storage.Storage,
 ) *workflowruntime.Runtime {
 	required := true
 	requiredRaw := strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_TEAM_RUNTIME_REQUIRED"))
@@ -71,6 +73,7 @@ func startAutonomousWorkflow(
 		taskSvc,
 		workflowruntime.ConfigFromEnv(),
 		planner,
+		store,
 	)
 	if err != nil {
 		slog.Error("autonomous workflow failed to start", "error", err)

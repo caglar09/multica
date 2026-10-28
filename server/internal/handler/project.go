@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -610,6 +611,57 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, resp)
 		return
 	}
+	type preparedBootstrapBrainEntry struct {
+		entryType string
+		subject   string
+		content   []byte
+		sourceID  string
+		embedding string
+	}
+	var bootstrapBrainEntries []preparedBootstrapBrainEntry
+	if req.Bootstrap != nil && bootstrapMode == "autonomous" {
+		prepareEntry := func(entryType, subject string, content any, sourceID string) error {
+			raw, err := json.Marshal(content)
+			if err != nil {
+				return err
+			}
+			embedding, err := projectorchestration.PrepareBrainMemoryEmbedding(r.Context(), subject, raw)
+			if err != nil {
+				return err
+			}
+			bootstrapBrainEntries = append(bootstrapBrainEntries, preparedBootstrapBrainEntry{
+				entryType: entryType, subject: subject, content: raw, sourceID: sourceID, embedding: embedding,
+			})
+			return nil
+		}
+		if brief := strings.TrimSpace(req.Bootstrap.Brief); brief != "" {
+			if err := prepareEntry("requirement", "Bootstrap brief", map[string]any{"text": brief, "kind": "brief"}, "brief"); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to prepare project brain brief")
+				return
+			}
+		}
+		for index, item := range bootstrapKnowledgeItems {
+			kind := strings.ToLower(strings.TrimSpace(item.Kind))
+			entryType := "fact"
+			switch kind {
+			case "requirements":
+				entryType = "requirement"
+			case "architecture", "api_spec":
+				entryType = "architecture_decision"
+			case "design", "prd":
+				entryType = "product_decision"
+			}
+			content := map[string]any{
+				"kind":  kind,
+				"title": strings.TrimSpace(item.Title),
+				"text":  strings.TrimSpace(item.Content),
+			}
+			if err := prepareEntry(entryType, strings.TrimSpace(item.Title), content, fmt.Sprintf("knowledge:%d", index)); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to prepare project brain knowledge")
+				return
+			}
+		}
+	}
 
 	// Transactional path: project + resources + bootstrap metadata are atomic.
 	tx, err := h.TxStarter.Begin(r.Context())
@@ -648,55 +700,16 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to persist project bootstrap")
 			return
 		}
-		if bootstrapMode == "autonomous" {
-			if brief := strings.TrimSpace(req.Bootstrap.Brief); brief != "" {
-				content, _ := json.Marshal(map[string]any{"text": brief, "kind": "brief"})
-				if _, err := tx.Exec(r.Context(), `
-					INSERT INTO autonomous_project_brain_entry (
-						workspace_id, project_id, entry_type, subject, content,
-						source_type, source_id, confidence, created_by_type, created_by_id
-					)
-					VALUES ($1, $2, 'requirement', 'Bootstrap brief', $3,
-					        'bootstrap', 'brief', 1.0, 'member', $4)
-				`, project.WorkspaceID, project.ID, content, creator); err != nil {
-					writeError(w, http.StatusInternalServerError, "failed to seed project brain brief")
-					return
-				}
-			}
-			for index, item := range bootstrapKnowledgeItems {
-				kind := strings.ToLower(strings.TrimSpace(item.Kind))
-				entryType := "fact"
-				switch kind {
-				case "requirements":
-					entryType = "requirement"
-				case "architecture", "api_spec":
-					entryType = "architecture_decision"
-				case "design", "prd":
-					entryType = "product_decision"
-				}
-				content, _ := json.Marshal(map[string]any{
-					"kind":  kind,
-					"title": strings.TrimSpace(item.Title),
-					"text":  strings.TrimSpace(item.Content),
-				})
-				if _, err := tx.Exec(r.Context(), `
-					INSERT INTO autonomous_project_brain_entry (
-						workspace_id, project_id, entry_type, subject, content,
-						source_type, source_id, confidence, created_by_type, created_by_id
-					)
-					VALUES ($1, $2, $3, $4, $5, 'bootstrap', $6, 1.0, 'member', $7)
-				`,
-					project.WorkspaceID,
-					project.ID,
-					entryType,
-					strings.TrimSpace(item.Title),
-					content,
-					fmt.Sprintf("knowledge:%d", index),
-					creator,
-				); err != nil {
-					writeError(w, http.StatusInternalServerError, "failed to seed project brain knowledge")
-					return
-				}
+		for _, entry := range bootstrapBrainEntries {
+			if _, err := tx.Exec(r.Context(), `
+				INSERT INTO autonomous_project_brain_entry (
+					workspace_id, project_id, entry_type, subject, content,
+					source_type, source_id, confidence, created_by_type, created_by_id, embedding
+				)
+				VALUES ($1, $2, $3, $4, $5, 'bootstrap', $6, 1.0, 'member', $7, NULLIF($8, '')::vector)
+			`, project.WorkspaceID, project.ID, entry.entryType, entry.subject, entry.content, entry.sourceID, creator, entry.embedding); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to seed project brain")
+				return
 			}
 		}
 	}

@@ -1,9 +1,12 @@
 package projectorchestration
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -292,6 +295,89 @@ func TestDaemonQualityGateRunnerMissingPNPMIsUnavailable(t *testing.T) {
 	if !strings.Contains(string(args), "--pull=never") || !strings.Contains(string(args), "--network=none") ||
 		!strings.Contains(string(args), "corepack pnpm --version") || strings.Contains(string(args), "corepack pnpm test") {
 		t.Fatalf("missing-package-manager preflight did not fail before the test command: %s", args)
+	}
+}
+
+func TestDaemonQualityGateRunnerBuildReleaseArtifactOCIIntegration(t *testing.T) {
+	if os.Getenv("MULTICA_RUN_OCI_QUALITY_SMOKE") != "1" {
+		t.Skip("set MULTICA_RUN_OCI_QUALITY_SMOKE=1 to run pinned-image OCI smoke checks")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required to create committed release worktrees")
+	}
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	worktree := filepath.Join(root, "candidate")
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "release-fixture"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, contents := range map[string]string{
+		"go.mod":                      "module release.fixture\n\ngo 1.27.3\n",
+		"multica.release.json":        `{"version":1,"builder":"go_binary","package":"./cmd/release-fixture","outputs":["dist/release-fixture"]}`,
+		"cmd/release-fixture/main.go": "package main\n\nfunc main() {}\n",
+	} {
+		fullPath := filepath.Join(repo, filepath.FromSlash(path))
+		if err := os.WriteFile(fullPath, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitTestCommand(t, repo, "init")
+	gitTestCommand(t, repo, "config", "user.name", "Release Artifact Smoke")
+	gitTestCommand(t, repo, "config", "user.email", "release-artifact@example.invalid")
+	gitTestCommand(t, repo, "add", "-A")
+	gitTestCommand(t, repo, "commit", "-m", "release artifact smoke")
+	gitTestCommand(t, repo, "worktree", "add", "--detach", worktree, "HEAD")
+	commitSHA := gitTestCommand(t, worktree, "rev-parse", "HEAD")
+	contract, err := ReadReleaseContract(context.Background(), worktree, commitSHA)
+	if err != nil {
+		t.Fatalf("read candidate release contract: %v", err)
+	}
+	request := QualityGateRequest{
+		WorkspaceID:  pgtype.UUID{Bytes: [16]byte{1}, Valid: true},
+		ProjectID:    pgtype.UUID{Bytes: [16]byte{2}, Valid: true},
+		PlanID:       pgtype.UUID{Bytes: [16]byte{3}, Valid: true},
+		NodeID:       pgtype.UUID{Bytes: [16]byte{4}, Valid: true},
+		IssueID:      pgtype.UUID{Bytes: [16]byte{5}, Valid: true},
+		TaskID:       pgtype.UUID{Bytes: [16]byte{6}, Valid: true},
+		GateType:     "build",
+		WorktreePath: worktree,
+		RepoPath:     repo,
+		CommitSHA:    commitSHA,
+	}
+	artifact, result, err := (&DaemonQualityGateRunner{}).BuildReleaseArtifact(context.Background(), request, contract)
+	if err != nil || !result.Passed || len(artifact.Bytes) == 0 {
+		t.Fatalf("real OCI release build failed: artifact=%+v result=%+v error=%v", artifact, result, err)
+	}
+	if result.ExecutedCommand != "go build -trimpath -buildvcs=false -o dist/release-fixture ./cmd/release-fixture" {
+		t.Fatalf("release build command = %q", result.ExecutedCommand)
+	}
+	if artifact.Digest != result.BuildArtifactDigest || artifact.FileCount != 1 {
+		t.Fatalf("build artifact metadata = %+v; runner result = %+v", artifact, result)
+	}
+	archive := tar.NewReader(bytes.NewReader(artifact.Bytes))
+	header, err := archive.Next()
+	if err != nil || header.Name != "dist/release-fixture" {
+		t.Fatalf("release package entry = %+v, error = %v", header, err)
+	}
+	binary, err := io.ReadAll(archive)
+	if err != nil || len(binary) < 4 || !bytes.Equal(binary[:4], []byte{0x7f, 'E', 'L', 'F'}) {
+		t.Fatalf("release package does not contain the built Linux executable: bytes=%d error=%v", len(binary), err)
+	}
+	if _, err := archive.Next(); err != io.EOF {
+		t.Fatalf("release package contains extra entries: %v", err)
+	}
+
+	store := &memoryReleaseArtifactStore{objects: make(map[string][]byte)}
+	key, err := uploadReleaseArtifact(context.Background(), store, artifact)
+	if err != nil {
+		t.Fatalf("store built release package: %v", err)
+	}
+	if key != "autonomous-project/releases/sha256/"+artifact.Digest+".tar" {
+		t.Fatalf("content-addressed storage key = %q", key)
+	}
+	if err := VerifyStoredReleaseArtifact(context.Background(), store, key, artifact.Digest); err != nil {
+		t.Fatalf("verify stored release package: %v", err)
 	}
 }
 

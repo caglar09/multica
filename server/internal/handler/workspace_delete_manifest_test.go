@@ -63,6 +63,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"autonomous_project_plan_mutation":          workspaceDelete,
 	"autonomous_project_plan_node":              workspaceDelete,
 	"autonomous_project_quality_gate_run":       workspaceDelete,
+	"autonomous_project_release_manifest":       workspaceDelete,
 	"autonomous_project_review_finding":         workspaceDelete,
 	"autonomous_project_review_verdict":         workspaceDelete,
 	"autonomous_project_specification_head":     workspaceDelete,

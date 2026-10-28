@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -269,6 +270,139 @@ func TestApproveProjectAutonomousPlanRequiresExactDigest(t *testing.T) {
 	if nextStatus != "awaiting_approval" || nextApprovedAt.Valid || nextApprovedBy != "" {
 		t.Fatalf("old digest changed replan approval: status=%q approved_at=%v approved_by=%q", nextStatus, nextApprovedAt.Valid, nextApprovedBy)
 	}
+}
+
+func TestResolveProductionDeploymentApprovalRequiresCurrentManifestScope(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	project := createProjectPermissionTestProject(t, "production deployment approval scope project")
+	ctx := context.Background()
+	planID := uuid.New()
+	nodeID := uuid.New()
+	manifestID := uuid.New()
+	manifestDigest := newHandlerTestDigest()
+	artifactDigest := newHandlerTestDigest()
+	planDigest := strings.Repeat("c", 64)
+	changeSetID := uuid.New()
+	firstRunID, secondRunID := uuid.New(), uuid.New()
+	workspaceUUID, err := uuid.Parse(testWorkspaceID)
+	if err != nil {
+		t.Fatalf("parse test workspace UUID: %v", err)
+	}
+	projectUUID, err := uuid.Parse(project.ID)
+	if err != nil {
+		t.Fatalf("parse test project UUID: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO autonomous_project_plan (
+			id,workspace_id,project_id,revision,source_revision,planner_name,goal,
+			policy,plan_digest,status,release_manifest_id,release_manifest_digest
+		) VALUES ($1,$2,$3,1,'test','test','production approval test','{}'::jsonb,$4,'active',$5,$6)
+	`, planID, testWorkspaceID, project.ID, planDigest, manifestID, manifestDigest); err != nil {
+		t.Fatalf("insert production approval plan: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := projectorchestration.NewStore(testPool).CleanupProject(context.Background(),
+			pgtype.UUID{Bytes: [16]byte(workspaceUUID), Valid: true},
+			pgtype.UUID{Bytes: [16]byte(projectUUID), Valid: true},
+		); err != nil {
+			t.Errorf("clean production approval test project: %v", err)
+		}
+	})
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO autonomous_project_plan_node (
+			id,plan_id,workspace_id,project_id,node_key,kind,title,status
+		) VALUES ($1,$2,$3,$4,'deploy','deploy','Production deployment','blocked')
+	`, nodeID, planID, testWorkspaceID, project.ID); err != nil {
+		t.Fatalf("insert blocked production deployment node: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO autonomous_project_release_manifest (
+			manifest_id,manifest_digest,workspace_id,project_id,plan_id,change_set_id,
+			plan_revision,plan_digest,environment,commit_sha,tree_sha,builder,outputs,
+			artifact_digest,artifact_storage_key,quality_gate_run_ids,manifest_json
+		) VALUES ($1,$2,$3,$4,$5,$6,1,$7,'production',$8,$9,'go_binary',ARRAY['bin/server']::text[],$10,$11,$12,'{}'::jsonb)
+	`, manifestID, manifestDigest, testWorkspaceID, project.ID, planID, changeSetID, planDigest,
+		strings.Repeat("d", 40), strings.Repeat("e", 40), artifactDigest,
+		"autonomous-project/releases/sha256/"+artifactDigest+".tar", []uuid.UUID{firstRunID, secondRunID}); err != nil {
+		t.Fatalf("insert immutable production manifest: %v", err)
+	}
+	approvalContext, err := json.Marshal(map[string]any{
+		"approval_scope": "production_release", "node_key": "deploy",
+		"workspace_id": testWorkspaceID, "project_id": project.ID,
+		"plan_id": planID.String(), "plan_revision": 1, "node_id": nodeID.String(),
+		"target_environment": "production", "manifest_id": manifestID.String(),
+		"manifest_digest": manifestDigest,
+	})
+	if err != nil {
+		t.Fatalf("encode production approval context: %v", err)
+	}
+	var escalationID uuid.UUID
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO autonomous_project_escalation (
+			workspace_id,project_id,plan_id,node_id,category,status,summary,context
+		) VALUES ($1,$2,$3,$4,'approval_required','open','Approve exact production release',$5)
+		RETURNING id
+	`, testWorkspaceID, project.ID, planID, nodeID, approvalContext).Scan(&escalationID); err != nil {
+		t.Fatalf("insert exact production approval escalation: %v", err)
+	}
+	resolve := func() *httptest.ResponseRecorder {
+		req := withURLParams(newRequest("POST", "/api/projects/"+project.ID+"/autonomous/escalations/"+escalationID.String()+"/resolve", map[string]string{"decision": "approved"}),
+			"id", project.ID, "escalationId", escalationID.String())
+		w := httptest.NewRecorder()
+		testHandler.ResolveProjectAutonomousEscalation(w, req)
+		return w
+	}
+	assertOpen := func(label string) {
+		t.Helper()
+		var status string
+		if err := testPool.QueryRow(ctx, "SELECT status FROM autonomous_project_escalation WHERE id=$1", escalationID).Scan(&status); err != nil {
+			t.Fatalf("read escalation after %s: %v", label, err)
+		}
+		if status != "open" {
+			t.Fatalf("stale %s approval request changed escalation to %s", label, status)
+		}
+	}
+
+	if _, err := testPool.Exec(ctx, "UPDATE autonomous_project_plan SET revision=2 WHERE id=$1", planID); err != nil {
+		t.Fatalf("stale production approval plan revision: %v", err)
+	}
+	if w := resolve(); w.Code != http.StatusConflict {
+		t.Fatalf("stale plan revision resolution status = %d, want 409: %s", w.Code, w.Body.String())
+	}
+	assertOpen("plan revision")
+	if _, err := testPool.Exec(ctx, "UPDATE autonomous_project_plan SET revision=1 WHERE id=$1", planID); err != nil {
+		t.Fatalf("restore production approval plan revision: %v", err)
+	}
+	changedDigest := strings.Repeat("f", 64)
+	if _, err := testPool.Exec(ctx, "UPDATE autonomous_project_plan SET release_manifest_digest=$2 WHERE id=$1", planID, changedDigest); err != nil {
+		t.Fatalf("change pinned production manifest digest: %v", err)
+	}
+	if w := resolve(); w.Code != http.StatusConflict {
+		t.Fatalf("changed manifest resolution status = %d, want 409: %s", w.Code, w.Body.String())
+	}
+	assertOpen("manifest digest")
+	if _, err := testPool.Exec(ctx, "UPDATE autonomous_project_plan SET release_manifest_digest=$2 WHERE id=$1", planID, manifestDigest); err != nil {
+		t.Fatalf("restore exact production manifest digest: %v", err)
+	}
+	if w := resolve(); w.Code != http.StatusOK {
+		t.Fatalf("exact production approval resolution status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var status string
+	var resolution map[string]any
+	if err := testPool.QueryRow(ctx, `SELECT status,resolution FROM autonomous_project_escalation WHERE id=$1`, escalationID).Scan(&status, &resolution); err != nil {
+		t.Fatalf("read accepted production approval: %v", err)
+	}
+	if status != "resolved" || resolution["decision"] != "approved" || resolution["approval_scope"] != "production_release" ||
+		resolution["plan_id"] != planID.String() || resolution["manifest_id"] != manifestID.String() || resolution["manifest_digest"] != manifestDigest ||
+		resolution["resolved_by"] != testUserID {
+		t.Fatalf("accepted approval did not persist exact human scope: status=%s resolution=%#v", status, resolution)
+	}
+}
+
+func newHandlerTestDigest() string {
+	return strings.ReplaceAll(uuid.NewString(), "-", "") + strings.ReplaceAll(uuid.NewString(), "-", "")
 }
 
 func TestAutonomousRestartHandlerInvokesProjectScopedRecovery(t *testing.T) {

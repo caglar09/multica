@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
@@ -2519,6 +2520,19 @@ func (h *Handler) RetryProjectAutonomousAction(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]any{"retried": true})
 }
 
+type productionReleaseApprovalContext struct {
+	ApprovalScope     string `json:"approval_scope"`
+	WorkspaceID       string `json:"workspace_id"`
+	ProjectID         string `json:"project_id"`
+	PlanID            string `json:"plan_id"`
+	PlanRevision      int64  `json:"plan_revision"`
+	NodeID            string `json:"node_id"`
+	NodeKey           string `json:"node_key"`
+	TargetEnvironment string `json:"target_environment"`
+	ManifestID        string `json:"manifest_id"`
+	ManifestDigest    string `json:"manifest_digest"`
+}
+
 func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
 	if !ok {
@@ -2550,12 +2564,116 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, "decision must be approved or rejected")
 		return
 	}
-	resolution, _ := json.Marshal(map[string]any{
+	var contextJSON []byte
+	var escalationPlanID, escalationNodeID pgtype.UUID
+	if err := h.DB.QueryRow(r.Context(), `
+		SELECT context, plan_id, node_id
+		FROM autonomous_project_escalation
+		WHERE id=$1 AND workspace_id=$2 AND project_id=$3
+		  AND category='approval_required' AND status IN ('open','acknowledged')
+	`, escalationID, workspaceID, projectID).Scan(&contextJSON, &escalationPlanID, &escalationNodeID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "open approval escalation not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to load approval scope")
+		}
+		return
+	}
+	var scope productionReleaseApprovalContext
+	if err := json.Unmarshal(contextJSON, &scope); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to decode approval scope")
+		return
+	}
+	productionScoped := scope.ApprovalScope == "production_release"
+	resolutionFields := map[string]any{
 		"decision":    req.Decision,
 		"note":        strings.TrimSpace(req.Note),
 		"resolved_by": uuidToString(userID),
-	})
-	tag, err := h.DB.Exec(r.Context(), `
+	}
+	var tag pgconn.CommandTag
+	var err error
+	if productionScoped {
+		planID, planErr := util.ParseUUID(scope.PlanID)
+		nodeID, nodeErr := util.ParseUUID(scope.NodeID)
+		manifestID, manifestErr := util.ParseUUID(scope.ManifestID)
+		if scope.WorkspaceID != uuidToString(workspaceID) || scope.ProjectID != uuidToString(projectID) ||
+			planErr != nil || nodeErr != nil || manifestErr != nil ||
+			!escalationPlanID.Valid || !escalationNodeID.Valid ||
+			util.UUIDToString(escalationPlanID) != scope.PlanID || util.UUIDToString(escalationNodeID) != scope.NodeID ||
+			scope.PlanRevision <= 0 || scope.NodeKey == "" || scope.TargetEnvironment != "production" ||
+			len(scope.ManifestDigest) != 64 || strings.ToLower(scope.ManifestDigest) != scope.ManifestDigest {
+			writeError(w, http.StatusConflict, "production approval scope is incomplete or stale")
+			return
+		}
+		if _, err := hex.DecodeString(scope.ManifestDigest); err != nil {
+			writeError(w, http.StatusConflict, "production approval manifest digest is invalid")
+			return
+		}
+		var current bool
+		if err := h.DB.QueryRow(r.Context(), `
+			SELECT EXISTS (
+				SELECT 1
+				FROM autonomous_project_plan p
+				JOIN autonomous_project_plan_node n
+				  ON n.plan_id=p.id AND n.workspace_id=p.workspace_id AND n.project_id=p.project_id
+				JOIN autonomous_project_release_manifest m
+				  ON m.manifest_id=p.release_manifest_id AND m.manifest_digest=p.release_manifest_digest
+				 AND m.workspace_id=p.workspace_id AND m.project_id=p.project_id AND m.plan_id=p.id
+				WHERE p.id=$1 AND p.workspace_id=$2 AND p.project_id=$3
+				  AND p.revision=$4 AND p.status IN ('active','blocked')
+				  AND n.id=$5 AND n.node_key=$6 AND n.status='blocked'
+				  AND p.release_manifest_id=$7 AND p.release_manifest_digest=$8
+				  AND m.environment='production' AND m.manifest_id=$7 AND m.manifest_digest=$8
+			)
+		`, planID, workspaceID, projectID, scope.PlanRevision, nodeID, scope.NodeKey, manifestID, scope.ManifestDigest).Scan(&current); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to verify current production release scope")
+			return
+		}
+		if !current {
+			writeError(w, http.StatusConflict, "production approval no longer matches the active manifest")
+			return
+		}
+		resolutionFields["approval_scope"] = scope.ApprovalScope
+		resolutionFields["workspace_id"] = scope.WorkspaceID
+		resolutionFields["project_id"] = scope.ProjectID
+		resolutionFields["plan_id"] = scope.PlanID
+		resolutionFields["plan_revision"] = scope.PlanRevision
+		resolutionFields["node_id"] = scope.NodeID
+		resolutionFields["target_environment"] = scope.TargetEnvironment
+		resolutionFields["manifest_id"] = scope.ManifestID
+		resolutionFields["manifest_digest"] = scope.ManifestDigest
+		resolution, marshalErr := json.Marshal(resolutionFields)
+		if marshalErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to encode production approval")
+			return
+		}
+		tag, err = h.DB.Exec(r.Context(), `
+			UPDATE autonomous_project_escalation
+			SET status='resolved', resolution=$4, resolved_at=now()
+			WHERE id=$1 AND workspace_id=$2 AND project_id=$3
+			  AND category='approval_required' AND status IN ('open','acknowledged')
+			  AND plan_id=$5 AND node_id=$6 AND context=$7::jsonb
+			  AND EXISTS (
+				SELECT 1
+				FROM autonomous_project_plan p
+				JOIN autonomous_project_plan_node n
+				  ON n.plan_id=p.id AND n.workspace_id=p.workspace_id AND n.project_id=p.project_id
+				JOIN autonomous_project_release_manifest m
+				  ON m.manifest_id=p.release_manifest_id AND m.manifest_digest=p.release_manifest_digest
+				WHERE p.id=$5 AND p.workspace_id=$2 AND p.project_id=$3 AND p.revision=$8
+				  AND p.status IN ('active','blocked') AND p.release_manifest_id=$9 AND p.release_manifest_digest=$10
+				  AND n.id=$6 AND n.node_key=$11 AND n.status='blocked'
+				  AND m.environment='production' AND m.manifest_id=$9 AND m.manifest_digest=$10
+			)
+		`, escalationID, workspaceID, projectID, resolution, planID, nodeID, contextJSON,
+			scope.PlanRevision, manifestID, scope.ManifestDigest, scope.NodeKey)
+	} else {
+		resolution, marshalErr := json.Marshal(resolutionFields)
+		if marshalErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to encode escalation resolution")
+			return
+		}
+		tag, err = h.DB.Exec(r.Context(), `
 		UPDATE autonomous_project_escalation
 		SET status = 'resolved',
 		    resolution = $4,
@@ -2566,15 +2684,20 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 		  AND category = 'approval_required'
 		  AND status IN ('open', 'acknowledged')
 	`, escalationID, workspaceID, projectID, resolution)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to resolve autonomous escalation")
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "open approval escalation not found")
+		if productionScoped {
+			writeError(w, http.StatusConflict, "production approval scope changed before it could be recorded")
+		} else {
+			writeError(w, http.StatusNotFound, "open approval escalation not found")
+		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "decision": req.Decision})
+	writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "decision": req.Decision, "approval_scope": scope.ApprovalScope})
 }
 
 func (h *Handler) ApproveProjectAutonomousPlan(w http.ResponseWriter, r *http.Request) {

@@ -27,7 +27,13 @@ func ValidateQualityGatePass(request QualityGateRequest, result QualityGateResul
 		!strings.EqualFold(result.CommitSHA, request.CommitSHA) || result.Error != "" {
 		return errors.New("quality gate result does not match the exact task, worktree, repository, and commit")
 	}
-	command, err := detectDaemonQualityCommand(request.WorktreePath, request.GateType, request.CommitSHA)
+	var command daemonQualityCommand
+	var err error
+	if request.ReleaseContract != nil {
+		command, err = releaseBuilderCommand(*request.ReleaseContract)
+	} else {
+		command, err = detectDaemonQualityCommand(request.WorktreePath, request.GateType, request.CommitSHA)
+	}
 	if err != nil {
 		return fmt.Errorf("detect required quality command: %w", err)
 	}

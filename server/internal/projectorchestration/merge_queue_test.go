@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestMergeQueue_SequentialIntegration(t *testing.T) {
@@ -94,6 +97,7 @@ func TestMergeQueue_IntegrationTestFailure_DoesNotAdvanceRef(t *testing.T) {
 		t.Fatalf("prepare candidate before failing integration gate: %v", err)
 	}
 	candidateSHA := mergeTestGit(t, worktree, "rev-parse", "HEAD")
+	candidateTreeSHA := mergeTestGit(t, worktree, "rev-parse", candidateSHA+"^{tree}")
 
 	var gotRequest QualityGateRequest
 	queue := NewMergeQueue(nil, mergeQueueRunnerFunc(func(_ context.Context, request QualityGateRequest) (QualityGateResult, error) {
@@ -110,7 +114,7 @@ func TestMergeQueue_IntegrationTestFailure_DoesNotAdvanceRef(t *testing.T) {
 			SourceTaskID: pgtype.UUID{Valid: true, Bytes: [16]byte{6}},
 		},
 	}
-	if _, err := queue.verifyCandidate(context.Background(), claim, repo, worktree, candidateSHA, "integration_test"); err == nil {
+	if _, err := queue.verifyCandidate(context.Background(), claim, repo, worktree, candidateSHA, candidateTreeSHA, "integration_test"); err == nil {
 		t.Fatal("expected the failing Q2 integration gate to reject the candidate")
 	}
 	if gotRequest.CommitSHA != candidateSHA || gotRequest.GateType != "integration_test" || gotRequest.WorktreePath != worktree {
@@ -220,6 +224,93 @@ func TestMergeQueue_VerifiedGateEvidenceRequiresBothExactCommits(t *testing.T) {
 	wrongCommit["gates"].([]any)[1].(map[string]any)["commit_sha"] = "old-source-commit"
 	if verifiedGateEvidenceMatches(wrongCommit, "candidate") {
 		t.Fatal("accepted integration evidence for a different commit")
+	}
+}
+
+func TestMergeQueue_PersistsCandidateQualityGateIDsAndTree(t *testing.T) {
+	ctx := context.Background()
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
+	}
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Skipf("database unavailable: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		t.Skipf("database unavailable: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	base := testutil.New(pool, "", "")
+	userID := base.User(t, "Wave 3 merged candidate quality test", "wave3-"+uuid.NewString()+"@example.com")
+	workspaceID := base.Workspace(t, "Wave 3 merged candidate quality test", "wave3-"+uuid.NewString())
+	base.Member(t, workspaceID, userID, "owner")
+	registerWave3WorkspaceCleanup(t, pool, workspaceID)
+	fixtureData := testutil.New(pool, workspaceID, userID)
+	projectID := fixtureData.Project(t, "Wave 3 merged candidate quality test")
+	issueID := fixtureData.Issue(t, "Merged candidate quality issue", testutil.Cols{"status": "todo"})
+	workspaceUUID := wave3UUID(t, workspaceID)
+	projectUUID := wave3UUID(t, projectID)
+	issueUUID := wave3UUID(t, issueID)
+	var planID, nodeID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO autonomous_project_plan (
+			workspace_id, project_id, revision, source_revision, planner_name, goal,
+			plan_digest, status
+		) VALUES ($1,$2,1,$3,'test','Merged candidate quality evidence', $4, 'awaiting_approval')
+		RETURNING id
+	`, workspaceUUID, projectUUID, "candidate-quality-"+uuid.NewString(), strings.Repeat("a", 64)).Scan(&planID); err != nil {
+		t.Fatalf("insert candidate quality plan fixture: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO autonomous_project_plan_node (
+			plan_id, workspace_id, project_id, node_key, kind, title, materialized_issue_id, status
+		) VALUES ($1,$2,$3,'implementation','implementation','Implementation',$4,'ready')
+		RETURNING id
+	`, planID, workspaceUUID, projectUUID, issueUUID).Scan(&nodeID); err != nil {
+		t.Fatalf("insert candidate quality plan node fixture: %v", err)
+	}
+	store := NewStore(pool)
+	repo, candidateSHA := newMergeQueueTestRepo(t)
+	treeSHA := mergeTestGit(t, repo, "rev-parse", candidateSHA+"^{tree}")
+	claim := MergeQueueClaim{MergeReviewCandidate: MergeReviewCandidate{
+		ChangeSetID: pgtype.UUID{Bytes: [16]byte{8}, Valid: true},
+		WorkspaceID: workspaceUUID, ProjectID: projectUUID,
+		PlanID: planID, NodeID: nodeID,
+		IssueID: issueUUID, SourceTaskID: pgtype.UUID{Bytes: [16]byte{9}, Valid: true},
+	}}
+	qualityRunIDs := make([]string, 0, 2)
+	for _, gateType := range []string{"build", "integration_test"} {
+		gateEvidence := map[string]any{
+			"gate_type": gateType, "passed": true, "executed_command": "go test ./...",
+			"runner_type": "daemon_oci", "exit_code": 0,
+			"worktree_path": repo, "artifact_digest": strings.Repeat("a", 64),
+			"attestation": "test-attestation", "runner_evidence": map[string]any{"commit_sha": candidateSHA},
+		}
+		runID, err := store.persistMergedCandidateQualityRun(ctx, claim, candidateSHA, treeSHA, "merged_candidate", gateEvidence)
+		if err != nil {
+			t.Fatalf("persist %s merged-candidate quality run: %v", gateType, err)
+		}
+		qualityRunIDs = append(qualityRunIDs, runID)
+		var storedCommit, storedTree, storedScope string
+		if err := pool.QueryRow(ctx, `
+			SELECT commit_sha, evidence->>'candidate_tree_sha', evidence->>'scope'
+			FROM autonomous_project_quality_gate_run WHERE id=$1::uuid
+		`, runID).Scan(&storedCommit, &storedTree, &storedScope); err != nil {
+			t.Fatalf("reload persisted %s quality run: %v", gateType, err)
+		}
+		if storedCommit != candidateSHA || storedTree != treeSHA || storedScope != "merged_candidate" {
+			t.Fatalf("persisted %s candidate = (%s, %s, %s), want (%s, %s, merged_candidate)", gateType, storedCommit, storedTree, storedScope, candidateSHA, treeSHA)
+		}
+	}
+	mergeEvidence := map[string]any{
+		"candidate_sha": candidateSHA, "candidate_tree_sha": treeSHA,
+		"quality_gate_run_ids": qualityRunIDs,
+	}
+	if got := mergeEvidenceStrings(mergeEvidence, "quality_gate_run_ids"); len(got) != 2 || got[0] != qualityRunIDs[0] || got[1] != qualityRunIDs[1] {
+		t.Fatalf("merge evidence quality gate IDs = %#v, want %#v", got, qualityRunIDs)
 	}
 }
 

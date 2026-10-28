@@ -30,22 +30,24 @@ type ProjectLeaderResponse struct {
 }
 
 type ProjectChangeProposal struct {
-	ProposalID       string                   `json:"proposal_id"`
-	Summary          string                   `json:"summary"`
-	Rationale        string                   `json:"rationale"`
-	BasePlanRevision int64                    `json:"base_plan_revision"`
-	Operations       []ProjectChangeOperation `json:"operations"`
+	ProposalID            string                   `json:"proposal_id"`
+	Summary               string                   `json:"summary"`
+	Rationale             string                   `json:"rationale"`
+	BasePlanRevision      int64                    `json:"base_plan_revision"`
+	Operations            []ProjectChangeOperation `json:"operations"`
+	ProposedSpecification *ProjectSpecification    `json:"proposed_specification,omitempty"`
+	BaseIssueRevisions    map[string]int64         `json:"base_issue_revisions,omitempty"`
 }
 
 type ProjectChangeOperation struct {
-	Type       string                 `json:"type"`
-	NodeID     *uuid.UUID             `json:"node_id,omitempty"`
-	NodeRef    string                 `json:"node_ref,omitempty"`
-	Node       *NodeSpec              `json:"node,omitempty"`
-	Dependency *EdgeSpec              `json:"dependency,omitempty"`
+	Type        string                 `json:"type"`
+	NodeID      *uuid.UUID             `json:"node_id,omitempty"`
+	NodeRef     string                 `json:"node_ref,omitempty"`
+	Node        *NodeSpec              `json:"node,omitempty"`
+	Dependency  *EdgeSpec              `json:"dependency,omitempty"`
 	Replacement *DependencyReplacement `json:"replacement,omitempty"`
-	Patch      map[string]any         `json:"patch,omitempty"`
-	Reason     string                 `json:"reason"`
+	Patch       map[string]any         `json:"patch,omitempty"`
+	Reason      string                 `json:"reason"`
 }
 
 type ProjectLeaderApplyResult struct {
@@ -62,7 +64,10 @@ func ValidateProjectLeaderResponse(response ProjectLeaderResponse) error {
 	if response.Proposal == nil {
 		return nil
 	}
-	return ValidateProjectChangeProposal(*response.Proposal)
+	if err := ValidateProjectChangeProposal(*response.Proposal); err != nil {
+		return err
+	}
+	return validateProjectLeaderProposalSpecification(*response.Proposal)
 }
 
 func ValidateProjectChangeProposal(proposal ProjectChangeProposal) error {
@@ -80,6 +85,11 @@ func ValidateProjectChangeProposal(proposal ProjectChangeProposal) error {
 	}
 	if len(proposal.Operations) > DefaultMaxNodes*3 {
 		return errors.New("project change proposal contains too many operations")
+	}
+	if proposal.ProposedSpecification != nil {
+		if err := ValidateProjectSpecification(*proposal.ProposedSpecification); err != nil {
+			return fmt.Errorf("project change proposal has invalid proposed specification: %w", err)
+		}
 	}
 	for i, op := range proposal.Operations {
 		if strings.TrimSpace(op.Reason) == "" {
@@ -114,6 +124,23 @@ func ValidateProjectChangeProposal(proposal ProjectChangeProposal) error {
 		}
 	}
 	return nil
+}
+
+func validateProjectLeaderProposalSpecification(proposal ProjectChangeProposal) error {
+	if projectLeaderProposalChangesScope(proposal) && proposal.ProposedSpecification == nil {
+		return errors.New("scope-changing project leader proposal requires proposed_specification")
+	}
+	return nil
+}
+
+func projectLeaderProposalChangesScope(proposal ProjectChangeProposal) bool {
+	for _, operation := range proposal.Operations {
+		switch operation.Type {
+		case ProjectLeaderOpAddNode, ProjectLeaderOpUpdateNotStartedNode, ProjectLeaderOpCancelNotStartedNode:
+			return true
+		}
+	}
+	return false
 }
 
 var projectLeaderPatchFields = map[string]struct{}{
@@ -243,7 +270,9 @@ func patchProjectLeaderNode(node NodeSpec, patch map[string]any) (NodeSpec, erro
 func (s *Store) ApplyProjectLeaderProposal(ctx context.Context, workspaceID, projectID pgtype.UUID, proposal ProjectChangeProposal, plannerName, plannerModel string) (ProjectLeaderApplyResult, error) {
 	if s == nil || s.pool == nil { return ProjectLeaderApplyResult{}, errors.New("project orchestration store is not configured") }
 	if !workspaceID.Valid || !projectID.Valid { return ProjectLeaderApplyResult{}, errors.New("workspace_id and project_id are required") }
-	if err := ValidateProjectChangeProposal(proposal); err != nil { return ProjectLeaderApplyResult{}, err }
+	if err := ValidateProjectChangeProposal(proposal); err != nil {
+		return ProjectLeaderApplyResult{}, err
+	}
 
 	current, ok, err := s.LoadLatestPlan(ctx, workspaceID, projectID)
 	if err != nil { return ProjectLeaderApplyResult{}, err }
@@ -253,8 +282,22 @@ func (s *Store) ApplyProjectLeaderProposal(ctx context.Context, workspaceID, pro
 	}
 	nodes, err := s.LoadLogicalPlanNodes(ctx, workspaceID, projectID, current.ID)
 	if err != nil { return ProjectLeaderApplyResult{}, err }
+	proposal.BaseIssueRevisions = make(map[string]int64, len(nodes))
+	for _, node := range nodes {
+		issueID := strings.TrimSpace(node.MaterializedIssueID)
+		if issueID == "" {
+			continue
+		}
+		if node.IssueRevision <= 0 {
+			return ProjectLeaderApplyResult{}, fmt.Errorf("materialized issue %s has no valid revision", issueID)
+		}
+		proposal.BaseIssueRevisions[issueID] = node.IssueRevision
+	}
 	operations, err := CompileProjectLeaderProposal(proposal, nodes)
 	if err != nil { return ProjectLeaderApplyResult{}, err }
+	if err := validateProjectLeaderProposalSpecification(proposal); err != nil {
+		return ProjectLeaderApplyResult{}, err
+	}
 
 	proposalID := strings.TrimSpace(proposal.ProposalID)
 	requestKey := "project-leader:" + proposalID
@@ -268,7 +311,7 @@ func (s *Store) ApplyProjectLeaderProposal(ctx context.Context, workspaceID, pro
 	}
 
 	impact := AnalyzeChangeImpact(cr.Type, operations, nodes, current.Plan.Policy)
-	cr, err = s.RecordChangeProposal(ctx, mustProjectUUID(cr.ID), proposal, impact, nil)
+	cr, err = s.RecordChangeProposal(ctx, mustProjectUUID(cr.ID), proposal, impact, proposal.ProposedSpecification)
 	if err != nil { return ProjectLeaderApplyResult{}, err }
 	if cr.State == ChangeProposalReady {
 		if err := s.AdvanceChangeRequest(ctx, mustProjectUUID(cr.ID), ChangeApprovalRequired, ""); err != nil {

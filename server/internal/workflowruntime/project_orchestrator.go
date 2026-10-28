@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -495,13 +496,18 @@ func (r *Runtime) refreshRepositoryIntelligence(
 	if sourceID == "" {
 		sourceID = "latest"
 	}
+	const subject = "Repository snapshot"
+	embedding, err := projectorchestration.PrepareBrainMemoryEmbedding(ctx, subject, content)
+	if err != nil {
+		return fmt.Errorf("prepare repository snapshot embedding: %w", err)
+	}
 	_, err = r.pool.Exec(ctx, `
 		INSERT INTO autonomous_project_brain_entry (
 			workspace_id, project_id, entry_type, subject, content,
-			source_type, source_id, confidence, created_by_type
+			source_type, source_id, confidence, created_by_type, embedding
 		)
-		SELECT $1, $2, 'repository_fact', 'Repository snapshot', $3,
-		       'repository_analyzer', $4, 1.0, 'system'
+		SELECT $1, $2, 'repository_fact', $3, $4,
+		       'repository_analyzer', $5, 1.0, 'system', NULLIF($6,'')::vector
 		WHERE NOT EXISTS (
 			SELECT 1
 			FROM autonomous_project_brain_entry
@@ -509,10 +515,10 @@ func (r *Runtime) refreshRepositoryIntelligence(
 			  AND project_id = $2
 			  AND entry_type = 'repository_fact'
 			  AND source_type = 'repository_analyzer'
-			  AND source_id = $4
+			  AND source_id = $5
 			  AND superseded_by IS NULL
 		)
-	`, workspaceID, projectID, content, sourceID)
+	`, workspaceID, projectID, subject, content, sourceID, embedding)
 	return err
 }
 
@@ -1817,6 +1823,9 @@ func (r *Runtime) startReadyProjectNode(
 	workspaceID, projectID pgtype.UUID,
 	node projectorchestration.ReadyNode,
 ) error {
+	if err := r.ensurePredecessorBrainDecisionsCurrent(ctx, workspaceID, projectID, node.Key); err != nil {
+		return err
+	}
 	if err := r.enforceProjectNodePolicy(ctx, workspaceID, projectID, node); err != nil {
 		return err
 	}
@@ -1897,6 +1906,99 @@ func (r *Runtime) startReadyProjectNode(
 		return err
 	}
 	_ = assignedRole // retained for durable assignment/debug projection.
+	return nil
+}
+
+func (r *Runtime) ensurePredecessorBrainDecisionsCurrent(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeKey string,
+) error {
+	if r == nil || r.pool == nil {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT predecessor.id, predecessor.node_key, predecessor.status,
+		       artifact.content ->> 'task_id', artifact.content -> 'result'
+		FROM autonomous_project_plan_edge edge
+		JOIN autonomous_project_plan plan ON plan.id=edge.plan_id
+		JOIN autonomous_project_plan_node predecessor
+		  ON predecessor.plan_id=edge.plan_id AND predecessor.node_key=edge.from_node_key
+		LEFT JOIN autonomous_project_artifact artifact
+		  ON artifact.plan_id=edge.plan_id AND artifact.node_id=predecessor.id
+		 AND artifact.status='active'
+		 AND artifact.valid=TRUE AND artifact.artifact_revision=predecessor.spec_revision
+		WHERE edge.workspace_id=$1 AND edge.project_id=$2 AND edge.to_node_key=$3
+		  AND edge.dependency_type IN ('hard','artifact')
+		  AND plan.status='active'
+		  AND predecessor.kind IN ('architecture','implementation','migration','integration')
+		ORDER BY plan.revision DESC, artifact.created_at DESC
+	`, workspaceID, projectID, nodeKey)
+	if err != nil {
+		return fmt.Errorf("load predecessor decision artifacts: %w", err)
+	}
+	type predecessorArtifact struct {
+		nodeID  pgtype.UUID
+		nodeKey string
+		status  string
+		taskID  string
+		result  []byte
+	}
+	artifacts := make([]predecessorArtifact, 0)
+	for rows.Next() {
+		var artifact predecessorArtifact
+		if err := rows.Scan(&artifact.nodeID, &artifact.nodeKey, &artifact.status, &artifact.taskID, &artifact.result); err != nil {
+			rows.Close()
+			return err
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, artifact := range artifacts {
+		if artifact.status != "completed" {
+			return fmt.Errorf("dependent project node %q is blocked until predecessor %q is completed", nodeKey, artifact.nodeKey)
+		}
+		if strings.TrimSpace(artifact.taskID) == "" {
+			continue
+		}
+		handoff, err := parseImplementationHandoff(artifact.result)
+		if err != nil || len(handoff.Decisions)+len(handoff.ArchitectureChoices) == 0 {
+			continue
+		}
+		var brainRevision int64
+		err = r.pool.QueryRow(ctx, `
+			SELECT brain_revision
+			FROM autonomous_project_brain_entry
+			WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
+			  AND source_type='task_completion_decision'
+			  AND source_id=$4
+			  AND entry_type='architecture_decision'
+			  AND status='active' AND governance_state='current'
+			ORDER BY brain_revision DESC LIMIT 1
+		`, workspaceID, projectID, artifact.nodeID,
+			"task:"+artifact.taskID+":architecture-decisions").Scan(&brainRevision)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("dependent project node %q is blocked until predecessor %q decisions reach the project brain", nodeKey, artifact.nodeKey)
+		}
+		if err != nil {
+			return fmt.Errorf("verify predecessor project brain revision: %w", err)
+		}
+		var currentRevision int64
+		err = r.pool.QueryRow(ctx, `
+			SELECT revision FROM autonomous_project_brain_state
+			WHERE workspace_id=$1 AND project_id=$2
+		`, workspaceID, projectID).Scan(&currentRevision)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (brainRevision <= 0 || currentRevision < brainRevision)) {
+			return fmt.Errorf("dependent project node %q is blocked by a stale predecessor brain revision", nodeKey)
+		}
+		if err != nil {
+			return fmt.Errorf("load current project brain revision: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -2016,20 +2118,55 @@ blockedNodeLoop:
 		case "dependency":
 			resolved = true // ResumeBlockedNode performs the authoritative dependency check.
 		case "approval":
-			err := r.pool.QueryRow(ctx, `
-				SELECT EXISTS (
-					SELECT 1
-					FROM autonomous_project_escalation
-					WHERE workspace_id = $1
-					  AND project_id = $2
-					  AND category = 'approval_required'
-					  AND status = 'resolved'
-					  AND context ->> 'node_key' = $3
-					  AND resolution ->> 'decision' = 'approved'
-				)
-			`, workspaceID, projectID, node.Key).Scan(&resolved)
-			if err != nil {
-				return err
+			if node.Kind == projectorchestration.NodeDeploy {
+				nodeID, parseErr := util.ParseUUID(node.ID)
+				if parseErr != nil {
+					return fmt.Errorf("load blocked production deployment node identity: %w", parseErr)
+				}
+				var planID pgtype.UUID
+				var planRevision int64
+				if err := r.pool.QueryRow(ctx, `
+					SELECT p.id, p.revision
+					FROM autonomous_project_plan p
+					JOIN autonomous_project_plan_node n
+					  ON n.plan_id=p.id AND n.workspace_id=p.workspace_id AND n.project_id=p.project_id
+					WHERE p.workspace_id=$1 AND p.project_id=$2
+					  AND p.status IN ('active','blocked') AND n.id=$3 AND n.node_key=$4
+				`, workspaceID, projectID, nodeID, node.Key).Scan(&planID, &planRevision); err != nil {
+					return fmt.Errorf("load blocked production deployment plan: %w", err)
+				}
+				manifest, err := projectorchestration.LoadPlanReleaseManifest(ctx, r.pool, workspaceID, projectID, planID)
+				if err != nil {
+					return err
+				}
+				if manifest.Environment == "production" {
+					staged, err := r.hasHealthyStageDeployment(ctx, workspaceID, projectID, planID, nodeID, manifest)
+					if err != nil {
+						return err
+					}
+					if staged {
+						resolved, err = r.hasExactProductionApproval(ctx, workspaceID, projectID, planID, planRevision, nodeID, manifest)
+						if err != nil {
+							return err
+						}
+					}
+				}
+			} else {
+				err := r.pool.QueryRow(ctx, `
+					SELECT EXISTS (
+						SELECT 1
+						FROM autonomous_project_escalation
+						WHERE workspace_id = $1
+						  AND project_id = $2
+						  AND category = 'approval_required'
+						  AND status = 'resolved'
+						  AND context ->> 'node_key' = $3
+						  AND resolution ->> 'decision' = 'approved'
+					)
+				`, workspaceID, projectID, node.Key).Scan(&resolved)
+				if err != nil {
+					return err
+				}
 			}
 		case "external_dependency":
 			// A provider that was simply absent can auto-resume once configured.
@@ -2310,40 +2447,85 @@ func (r *Runtime) executeDeploymentNode(
 		return cause
 	}
 
-	var sourceRevision string
 	var policyJSON []byte
 	if err := r.pool.QueryRow(ctx, `
-		SELECT source_revision, policy
+		SELECT policy
 		FROM autonomous_project_plan
 		WHERE id = $1 AND workspace_id = $2 AND project_id = $3
-	`, planID, workspaceID, projectID).Scan(&sourceRevision, &policyJSON); err != nil {
+	`, planID, workspaceID, projectID).Scan(&policyJSON); err != nil {
 		return fail(err)
 	}
 	var policy projectorchestration.Policy
 	if err := json.Unmarshal(policyJSON, &policy); err != nil {
 		return fail(fmt.Errorf("decode deployment policy: %w", err))
 	}
+	if r.releaseArtifactStore == nil {
+		return fail(errors.New("private release artifact storage is not configured"))
+	}
+	manifest, err := projectorchestration.LoadPlanReleaseManifest(ctx, r.pool, workspaceID, projectID, planID)
+	if err != nil {
+		return fail(err)
+	}
+	staged, err := r.hasHealthyStageDeployment(ctx, workspaceID, projectID, planID, nodeID, manifest)
+	if err != nil {
+		return fail(err)
+	}
+	if manifest.Environment == "production" && !staged {
+		manifest, err = projectorchestration.PinPlanReleaseManifestEnvironment(ctx, r.pool, workspaceID, projectID, planID, "staging")
+		if err != nil {
+			return fail(err)
+		}
+	}
+	if manifest.Environment == "staging" && staged {
+		manifest, err = projectorchestration.PinPlanReleaseManifestEnvironment(ctx, r.pool, workspaceID, projectID, planID, "production")
+		if err != nil {
+			return fail(err)
+		}
+	}
+	if manifest.Environment == "production" && !staged {
+		return fail(errors.New("production release is blocked until the matching staging deployment passes health checks"))
+	}
+	if err := manifest.Validate(); err != nil {
+		return fail(fmt.Errorf("validate deployment release manifest: %w", err))
+	}
+	releaseRef := "sha256:" + manifest.ManifestDigest
+	if _, err := projectorchestration.ParseReleaseReference(releaseRef); err != nil {
+		return fail(err)
+	}
+	manifestID, err := util.ParseUUID(manifest.ManifestID)
+	if err != nil {
+		return fail(errors.New("persisted release manifest has an invalid UUID identity"))
+	}
 
 	var deploymentID pgtype.UUID
 	if err := r.pool.QueryRow(ctx, `
 		INSERT INTO autonomous_project_deployment (
-			workspace_id, project_id, plan_id, environment, provider,
-			status, policy_snapshot, started_at
+			workspace_id, project_id, plan_id, node_id, environment, provider,
+			status, policy_snapshot, release_manifest_id, release_manifest_digest, started_at
 		)
-		VALUES ($1, $2, $3, 'production', 'webhook', 'running', $4, now())
+		VALUES ($1, $2, $3, $4, $5, 'generic', 'running', $6, $7, $8, now())
 		RETURNING id
-	`, workspaceID, projectID, planID, policyJSON).Scan(&deploymentID); err != nil {
+	`, workspaceID, projectID, planID, nodeID, manifest.Environment, policyJSON, manifestID, manifest.ManifestDigest).Scan(&deploymentID); err != nil {
 		return fail(fmt.Errorf("create deployment record: %w", err))
 	}
 
-	result, err := r.deploymentAdapter.Deploy(ctx, projectorchestration.DeploymentRequest{
-		WorkspaceID: workspaceID,
-		ProjectID:   projectID,
-		PlanID:      planID,
-		Environment: "production",
-		ReleaseRef:  sourceRevision,
-		Policy:      policy,
+	deploymentRequest := projectorchestration.DeploymentRequest{
+		WorkspaceID:    workspaceID,
+		ProjectID:      projectID,
+		PlanID:         planID,
+		Environment:    manifest.Environment,
+		ReleaseRef:     releaseRef,
+		Manifest:       manifest.ProviderView(),
+		ArtifactDigest: manifest.ArtifactDigest,
+		CommitSHA:      manifest.CommitSHA,
+	}
+	bridge, ok := r.deploymentAdapter.(interface {
+		DeployForRecord(context.Context, projectorchestration.DeploymentRequest, uuid.UUID, uuid.UUID) (projectorchestration.DeploymentResult, error)
 	})
+	if !ok {
+		return fail(errors.New("deployment adapter cannot bind a generic operation to its autonomous deployment record"))
+	}
+	result, err := bridge.DeployForRecord(ctx, deploymentRequest, uuid.UUID(deploymentID.Bytes), uuid.UUID(nodeID.Bytes))
 	if err != nil {
 		_, _ = r.pool.Exec(ctx, `
 			UPDATE autonomous_project_deployment
@@ -2354,44 +2536,73 @@ func (r *Runtime) executeDeploymentNode(
 		`, deploymentID, err.Error())
 		return fail(err)
 	}
-
-	evidence, _ := json.Marshal(result.Evidence)
-	status := result.Status
-	if status != "succeeded" {
-		status = "failed"
+	operationID, err := uuid.Parse(fmt.Sprint(result.Evidence["generic_operation_id"]))
+	if err != nil || operationID == uuid.Nil {
+		return fail(errors.New("deployment bridge did not return a valid generic operation identity"))
 	}
-	if _, err := r.pool.Exec(ctx, `
+	updated, err := r.pool.Exec(ctx, `
 		UPDATE autonomous_project_deployment
-		SET provider = $2,
-		    external_ref = NULLIF($3, ''),
-		    status = $4,
-		    evidence = $5,
-		    completed_at = now()
-		WHERE id = $1
-	`, deploymentID, result.Provider, result.ExternalRef, status, evidence); err != nil {
-		return fail(fmt.Errorf("update deployment record: %w", err))
+		SET generic_operation_id = $2,
+		    evidence = jsonb_build_object('generic_operation_id', $3::text)
+		WHERE id = $1 AND status = 'running' AND generic_operation_id IS NULL
+	`, deploymentID, operationID, operationID.String())
+	if err != nil {
+		return fail(fmt.Errorf("correlate autonomous deployment with generic operation: %w", err))
 	}
-	if status != "succeeded" {
-		return fail(errors.New("deployment provider reported failure"))
+	if updated.RowsAffected() != 1 {
+		return fail(errors.New("autonomous deployment operation correlation was not persisted"))
 	}
+	return nil
+}
 
-	artifactContent, _ := json.Marshal(map[string]any{
-		"deployment_id": util.UUIDToString(deploymentID),
-		"provider":      result.Provider,
-		"external_ref":  result.ExternalRef,
-		"environment":   "production",
-		"release_ref":   sourceRevision,
-		"evidence":      result.Evidence,
-	})
-	if _, err := r.pool.Exec(ctx, `
-		INSERT INTO autonomous_project_artifact (
-			workspace_id, project_id, plan_id, node_id, artifact_type, name, content
+func (r *Runtime) hasHealthyStageDeployment(
+	ctx context.Context,
+	workspaceID, projectID, planID, nodeID pgtype.UUID,
+	productionManifest projectorchestration.ReleaseManifest,
+) (bool, error) {
+	var staged bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_deployment d
+			JOIN autonomous_project_release_manifest m
+			  ON m.manifest_id=d.release_manifest_id
+			 AND m.manifest_digest=d.release_manifest_digest
+			 AND m.workspace_id=d.workspace_id
+			 AND m.project_id=d.project_id
+			 AND m.plan_id=d.plan_id
+			WHERE d.workspace_id=$1 AND d.project_id=$2 AND d.plan_id=$3 AND d.node_id=$4
+			  AND d.environment='staging' AND d.status='succeeded'
+			  AND d.evidence->'stage_smoke'->>'passed'='true'
+			  AND d.evidence->'stage_health'->>'healthy'='true'
+			  AND m.environment='staging'
+			  AND m.plan_revision=$5 AND m.plan_digest=$6
+			  AND m.change_set_id=$7 AND m.commit_sha=$8 AND m.tree_sha=$9
+			  AND m.builder=$10 AND m.outputs=$11
+			  AND m.artifact_digest=$12 AND m.artifact_storage_key=$13
+			  AND m.quality_gate_run_ids=$14::uuid[]
 		)
-		VALUES ($1, $2, $3, $4, 'deployment_record', $5, $6)
-	`, workspaceID, projectID, planID, nodeID, "Deployment: "+node.Title, artifactContent); err != nil {
-		return fail(fmt.Errorf("record deployment artifact: %w", err))
+	`, workspaceID, projectID, planID, nodeID, productionManifest.PlanRevision,
+		productionManifest.PlanDigest, productionManifest.ChangeSetID, productionManifest.CommitSHA,
+		productionManifest.TreeSHA, productionManifest.Builder, productionManifest.Outputs,
+		productionManifest.ArtifactDigest, productionManifest.ArtifactStorageKey,
+		releaseRunIDsAsUUIDs(productionManifest.QualityGateRunIDs)).Scan(&staged)
+	if err != nil {
+		return false, fmt.Errorf("check matching healthy staging deployment: %w", err)
 	}
-	return r.projectStore.CompleteExternalNode(ctx, workspaceID, projectID, node.Key)
+	return staged, nil
+}
+
+func releaseRunIDsAsUUIDs(runIDs []string) []pgtype.UUID {
+	ids := make([]pgtype.UUID, 0, len(runIDs))
+	for _, runID := range runIDs {
+		id, err := util.ParseUUID(runID)
+		if err != nil {
+			return nil
+		}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (r *Runtime) executeObservationNode(
@@ -2410,6 +2621,9 @@ func (r *Runtime) executeObservationNode(
 		}
 		return cause
 	}
+	if r.observationAdapter == nil {
+		return fail(projectorchestration.ErrAdapterNotConfigured)
+	}
 
 	var deploymentID pgtype.UUID
 	if err := r.pool.QueryRow(ctx, `
@@ -2417,6 +2631,7 @@ func (r *Runtime) executeObservationNode(
 		FROM autonomous_project_deployment
 		WHERE workspace_id = $1
 		  AND project_id = $2
+		  AND environment = 'production'
 		  AND status = 'succeeded'
 		ORDER BY completed_at DESC NULLS LAST, created_at DESC
 		LIMIT 1
@@ -2437,14 +2652,25 @@ func (r *Runtime) executeObservationNode(
 		return fail(err)
 	}
 
-	content, _ := json.Marshal(map[string]any{
+	contentFields := map[string]any{
 		"deployment_id": util.UUIDToString(deploymentID),
 		"healthy":       result.Healthy,
 		"error_rate":    result.ErrorRate,
 		"latency_p95":   result.LatencyP95,
 		"signals":       result.Signals,
 		"evidence":      result.Evidence,
-	})
+	}
+	var rollbackErr error
+	if !result.Healthy {
+		rollbackOutcome, err := r.rollbackUnhealthyDeployment(ctx, workspaceID, projectID, deploymentID,
+			"production", "production health check failed: "+node.Title)
+		contentFields["rollback"] = rollbackOutcome
+		rollbackErr = err
+	}
+	content, err := json.Marshal(contentFields)
+	if err != nil {
+		return fail(fmt.Errorf("encode deployment observation evidence: %w", err))
+	}
 	if _, err := r.pool.Exec(ctx, `
 		INSERT INTO autonomous_project_artifact (
 			workspace_id, project_id, plan_id, node_id, artifact_type, name, content
@@ -2469,8 +2695,171 @@ func (r *Runtime) executeObservationNode(
 			return fail(fmt.Errorf("record autonomous incident: %w", err))
 		}
 	}
+	if rollbackErr != nil {
+		return fail(fmt.Errorf("roll back unhealthy production release: %w", rollbackErr))
+	}
 
 	return r.projectStore.CompleteExternalNode(ctx, workspaceID, projectID, node.Key)
+}
+
+func (r *Runtime) rollbackUnhealthyDeployment(
+	ctx context.Context,
+	workspaceID, projectID, currentDeploymentID pgtype.UUID,
+	environment, reason string,
+) (map[string]any, error) {
+	if environment != "staging" && environment != "production" {
+		return nil, errors.New("health rollback has an unsupported target environment")
+	}
+	var currentEnvironment string
+	if err := r.pool.QueryRow(ctx, `
+		SELECT environment
+		FROM autonomous_project_deployment
+		WHERE id=$1 AND workspace_id=$2 AND project_id=$3
+	`, currentDeploymentID, workspaceID, projectID).Scan(&currentEnvironment); err != nil {
+		return nil, fmt.Errorf("load unhealthy deployment identity: %w", err)
+	}
+	if currentEnvironment != environment {
+		return nil, errors.New("health rollback environment does not match the unhealthy deployment")
+	}
+
+	var targetDeploymentID, targetManifestID pgtype.UUID
+	var targetManifestDigest string
+	var encodedManifest []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT d.id, m.manifest_id, m.manifest_digest, m.manifest_json
+		FROM autonomous_project_deployment d
+		JOIN autonomous_project_release_manifest m
+		  ON m.manifest_id=d.release_manifest_id AND m.manifest_digest=d.release_manifest_digest
+		 AND m.workspace_id=d.workspace_id AND m.project_id=d.project_id AND m.plan_id=d.plan_id
+		WHERE d.workspace_id=$1 AND d.project_id=$2 AND d.environment=$3 AND d.id<>$4
+		  AND d.status IN ('succeeded','rolled_back')
+		  AND m.environment=$3
+		  AND (
+			 d.evidence->'stage_health'->>'healthy'='true'
+			 OR EXISTS (
+				SELECT 1 FROM autonomous_project_artifact a
+				WHERE a.workspace_id=d.workspace_id AND a.project_id=d.project_id
+				  AND a.content->>'deployment_id'=d.id::text AND a.content->>'healthy'='true'
+			 )
+		  )
+		ORDER BY d.completed_at DESC NULLS LAST, d.created_at DESC
+		LIMIT 1
+	`, workspaceID, projectID, environment, currentDeploymentID).Scan(
+		&targetDeploymentID, &targetManifestID, &targetManifestDigest, &encodedManifest,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			outcome := map[string]any{"status": "unavailable", "reason": "no previous healthy manifest exists"}
+			rollbackErr := errors.New("no previous healthy manifest is available for rollback")
+			if persistErr := r.persistHealthRollbackOutcome(ctx, workspaceID, projectID, currentDeploymentID, outcome, ""); persistErr != nil {
+				return outcome, errors.Join(rollbackErr, fmt.Errorf("persist unavailable rollback outcome: %w", persistErr))
+			}
+			return outcome, rollbackErr
+		}
+		return nil, fmt.Errorf("load most recent healthy release for rollback: %w", err)
+	}
+	var targetManifest projectorchestration.ReleaseManifest
+	if err := json.Unmarshal(encodedManifest, &targetManifest); err != nil {
+		return nil, fmt.Errorf("decode known-good rollback manifest: %w", err)
+	}
+	if err := targetManifest.Validate(); err != nil {
+		return nil, fmt.Errorf("validate known-good rollback manifest: %w", err)
+	}
+	if targetManifest.ManifestID != util.UUIDToString(targetManifestID) || targetManifest.ManifestDigest != targetManifestDigest ||
+		targetManifest.WorkspaceID != util.UUIDToString(workspaceID) || targetManifest.ProjectID != util.UUIDToString(projectID) ||
+		targetManifest.Environment != environment {
+		return nil, errors.New("known-good rollback manifest does not match its deployment record")
+	}
+
+	outcome := map[string]any{
+		"status": "pending", "reason": reason,
+		"target_deployment_id":   util.UUIDToString(targetDeploymentID),
+		"target_manifest_id":     util.UUIDToString(targetManifestID),
+		"target_manifest_digest": targetManifestDigest,
+		"target_environment":     environment,
+	}
+	if err := r.persistHealthRollbackOutcome(ctx, workspaceID, projectID, currentDeploymentID, outcome, ""); err != nil {
+		return nil, err
+	}
+	if r.deploymentAdapter == nil {
+		outcome["status"] = "failed"
+		outcome["error"] = projectorchestration.ErrAdapterNotConfigured.Error()
+		if persistErr := r.persistHealthRollbackOutcome(ctx, workspaceID, projectID, currentDeploymentID, outcome, "failed"); persistErr != nil {
+			return outcome, errors.Join(projectorchestration.ErrAdapterNotConfigured, fmt.Errorf("persist failed rollback outcome: %w", persistErr))
+		}
+		return outcome, projectorchestration.ErrAdapterNotConfigured
+	}
+	result, err := r.deploymentAdapter.Rollback(ctx, projectorchestration.RollbackRequest{
+		WorkspaceID: workspaceID, ProjectID: projectID, DeploymentID: targetDeploymentID,
+		TargetManifestID: targetManifest.ManifestID, TargetManifestDigest: targetManifest.ManifestDigest,
+		TargetEnvironment: environment, Reason: reason,
+	})
+	if err != nil {
+		outcome["status"] = "failed"
+		outcome["error"] = err.Error()
+		callErr := fmt.Errorf("call rollback adapter: %w", err)
+		if persistErr := r.persistHealthRollbackOutcome(ctx, workspaceID, projectID, currentDeploymentID, outcome, "failed"); persistErr != nil {
+			return outcome, errors.Join(callErr, fmt.Errorf("persist failed rollback outcome: %w", persistErr))
+		}
+		return outcome, callErr
+	}
+	if result.Status != "succeeded" && result.Status != "rolled_back" {
+		outcome["status"] = "failed"
+		outcome["error"] = "rollback provider did not confirm a terminal rollback"
+		outcome["provider_status"] = result.Status
+		rollbackErr := errors.New("rollback provider did not confirm a terminal rollback")
+		if persistErr := r.persistHealthRollbackOutcome(ctx, workspaceID, projectID, currentDeploymentID, outcome, "failed"); persistErr != nil {
+			return outcome, errors.Join(rollbackErr, fmt.Errorf("persist failed rollback outcome: %w", persistErr))
+		}
+		return outcome, rollbackErr
+	}
+	if result.Evidence == nil || result.Evidence["target_manifest_id"] != targetManifest.ManifestID ||
+		result.Evidence["target_manifest_digest"] != targetManifest.ManifestDigest {
+		outcome["status"] = "failed"
+		outcome["error"] = "rollback provider acknowledged a different target manifest"
+		rollbackErr := errors.New("rollback provider acknowledged a different target manifest")
+		if persistErr := r.persistHealthRollbackOutcome(ctx, workspaceID, projectID, currentDeploymentID, outcome, "failed"); persistErr != nil {
+			return outcome, errors.Join(rollbackErr, fmt.Errorf("persist failed rollback outcome: %w", persistErr))
+		}
+		return outcome, rollbackErr
+	}
+	outcome["status"] = result.Status
+	outcome["provider"] = result.Provider
+	outcome["external_ref"] = result.ExternalRef
+	outcome["provider_evidence"] = result.Evidence
+	if err := r.persistHealthRollbackOutcome(ctx, workspaceID, projectID, currentDeploymentID, outcome, "rolled_back"); err != nil {
+		return outcome, err
+	}
+	return outcome, nil
+}
+
+func (r *Runtime) persistHealthRollbackOutcome(
+	ctx context.Context,
+	workspaceID, projectID, deploymentID pgtype.UUID,
+	outcome map[string]any,
+	deploymentStatus string,
+) error {
+	encoded, err := json.Marshal(outcome)
+	if err != nil {
+		return fmt.Errorf("encode health rollback outcome: %w", err)
+	}
+	var statusValue any
+	if deploymentStatus != "" {
+		statusValue = deploymentStatus
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_project_deployment
+		SET status=COALESCE($4, status),
+		    evidence=COALESCE(evidence,'{}'::jsonb) || jsonb_build_object('health_rollback',$5::jsonb)
+		WHERE id=$1 AND workspace_id=$2 AND project_id=$3
+	`, deploymentID, workspaceID, projectID, statusValue, encoded)
+	if err != nil {
+		return fmt.Errorf("persist health rollback outcome: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("unhealthy deployment disappeared before rollback outcome was persisted")
+	}
+	return nil
 }
 
 func (r *Runtime) startMaterializedNode(
@@ -2708,19 +3097,57 @@ func (r *Runtime) enforceProjectNodePolicy(
 	node projectorchestration.ReadyNode,
 ) error {
 	var raw []byte
+	var planID, nodeID pgtype.UUID
+	var planRevision int64
 	err := r.pool.QueryRow(ctx, `
-		SELECT policy
-		FROM autonomous_project_plan
-		WHERE workspace_id = $1 AND project_id = $2 AND status IN ('active', 'blocked')
-		ORDER BY revision DESC
+		SELECT p.id, p.revision, p.policy, n.id
+		FROM autonomous_project_plan p
+		JOIN autonomous_project_plan_node n
+		  ON n.plan_id=p.id AND n.workspace_id=p.workspace_id AND n.project_id=p.project_id
+		WHERE p.workspace_id = $1 AND p.project_id = $2 AND p.status IN ('active', 'blocked')
+		  AND n.node_key=$3
+		ORDER BY p.revision DESC
 		LIMIT 1
-	`, workspaceID, projectID).Scan(&raw)
+	`, workspaceID, projectID, node.Key).Scan(&planID, &planRevision, &raw, &nodeID)
 	if err != nil {
 		return err
 	}
 	var policy projectorchestration.Policy
 	if err := json.Unmarshal(raw, &policy); err != nil {
 		return fmt.Errorf("decode autonomous project policy: %w", err)
+	}
+	if node.Kind == projectorchestration.NodeDeploy {
+		manifest, err := projectorchestration.LoadPlanReleaseManifest(ctx, r.pool, workspaceID, projectID, planID)
+		if err != nil {
+			return err
+		}
+		staged, err := r.hasHealthyStageDeployment(ctx, workspaceID, projectID, planID, nodeID, manifest)
+		if err != nil {
+			return err
+		}
+		if manifest.Environment == "staging" && staged {
+			manifest, err = projectorchestration.PinPlanReleaseManifestEnvironment(ctx, r.pool, workspaceID, projectID, planID, "production")
+			if err != nil {
+				return err
+			}
+		}
+		if manifest.Environment == "staging" {
+			return nil
+		}
+		if manifest.Environment != "production" {
+			return errors.New("deployment target environment must be staging or production")
+		}
+		if !staged {
+			return nil
+		}
+		approved, err := r.hasExactProductionApproval(ctx, workspaceID, projectID, planID, planRevision, nodeID, manifest)
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return errProjectApprovalRequired
+		}
+		return nil
 	}
 	requiresApproval := false
 	switch {
@@ -2756,6 +3183,48 @@ func (r *Runtime) enforceProjectNodePolicy(
 	return nil
 }
 
+func (r *Runtime) hasExactProductionApproval(
+	ctx context.Context,
+	workspaceID, projectID, planID pgtype.UUID,
+	planRevision int64,
+	nodeID pgtype.UUID,
+	manifest projectorchestration.ReleaseManifest,
+) (bool, error) {
+	var approved bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_escalation e
+			WHERE e.workspace_id=$1 AND e.project_id=$2
+			  AND e.plan_id=$3 AND e.node_id=$4
+			  AND e.category='approval_required' AND e.status='resolved'
+			  AND e.context->>'approval_scope'='production_release'
+			  AND e.context->>'workspace_id'=$1::text
+			  AND e.context->>'project_id'=$2::text
+			  AND e.context->>'plan_id'=$3::text
+			  AND e.context->>'plan_revision'=$5::bigint::text
+			  AND e.context->>'node_id'=$4::text
+			  AND e.context->>'target_environment'='production'
+			  AND e.context->>'manifest_id'=$6
+			  AND e.context->>'manifest_digest'=$7
+			  AND e.resolution->>'decision'='approved'
+			  AND e.resolution->>'approval_scope'='production_release'
+			  AND e.resolution->>'workspace_id'=e.context->>'workspace_id'
+			  AND e.resolution->>'project_id'=e.context->>'project_id'
+			  AND e.resolution->>'plan_id'=e.context->>'plan_id'
+			  AND e.resolution->>'plan_revision'=e.context->>'plan_revision'
+			  AND e.resolution->>'node_id'=e.context->>'node_id'
+			  AND e.resolution->>'target_environment'=e.context->>'target_environment'
+			  AND e.resolution->>'manifest_id'=e.context->>'manifest_id'
+			  AND e.resolution->>'manifest_digest'=e.context->>'manifest_digest'
+		)
+	`, workspaceID, projectID, planID, nodeID, planRevision, manifest.ManifestID, manifest.ManifestDigest).Scan(&approved)
+	if err != nil {
+		return false, fmt.Errorf("verify exact production manifest approval: %w", err)
+	}
+	return approved, nil
+}
+
 func (r *Runtime) openProjectEscalation(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
@@ -2777,7 +3246,7 @@ func (r *Runtime) openProjectEscalation(
 		category = "no_eligible_agent"
 		summary = "No eligible online agent can execute: " + node.Title
 	}
-	contextJSON, _ := json.Marshal(map[string]any{
+	contextFields := map[string]any{
 		"node_key":              node.Key,
 		"kind":                  node.Kind,
 		"required_role_family":  node.RequiredRoleFamily,
@@ -2788,23 +3257,63 @@ func (r *Runtime) openProjectEscalation(
 			"required_role_family":  node.RequiredRoleFamily,
 			"required_capabilities": node.RequiredCapabilities,
 		},
-	})
-	_, err := r.pool.Exec(ctx, `
+	}
+	var planID, planNodeID pgtype.UUID
+	if category == "approval_required" && node.Kind == projectorchestration.NodeDeploy {
+		var revision int64
+		if err := r.pool.QueryRow(ctx, `
+			SELECT p.id, p.revision, n.id
+			FROM autonomous_project_plan p
+			JOIN autonomous_project_plan_node n ON n.plan_id=p.id AND n.workspace_id=p.workspace_id AND n.project_id=p.project_id
+			WHERE p.workspace_id=$1 AND p.project_id=$2 AND p.status IN ('active','blocked') AND n.node_key=$3
+			ORDER BY p.revision DESC LIMIT 1
+		`, workspaceID, projectID, node.Key).Scan(&planID, &revision, &planNodeID); err != nil {
+			return fmt.Errorf("load production approval plan scope: %w", err)
+		}
+		manifest, err := projectorchestration.LoadPlanReleaseManifest(ctx, r.pool, workspaceID, projectID, planID)
+		if err != nil {
+			return fmt.Errorf("load production approval manifest: %w", err)
+		}
+		if manifest.Environment != "production" {
+			return errors.New("production approval escalation requires a production manifest")
+		}
+		contextFields["approval_scope"] = "production_release"
+		contextFields["workspace_id"] = util.UUIDToString(workspaceID)
+		contextFields["project_id"] = util.UUIDToString(projectID)
+		contextFields["plan_id"] = util.UUIDToString(planID)
+		contextFields["plan_revision"] = revision
+		contextFields["node_id"] = util.UUIDToString(planNodeID)
+		contextFields["target_environment"] = "production"
+		contextFields["manifest_id"] = manifest.ManifestID
+		contextFields["manifest_digest"] = manifest.ManifestDigest
+	}
+	contextJSON, err := json.Marshal(contextFields)
+	if err != nil {
+		return fmt.Errorf("encode project escalation context: %w", err)
+	}
+	_, err = r.pool.Exec(ctx, `
 		INSERT INTO autonomous_project_escalation (
-			workspace_id, project_id, category, severity, summary, context
+			workspace_id, project_id, plan_id, node_id, category, severity, summary, context
 		)
-		SELECT $1, $2, $7,
-		       CASE WHEN $3 IN ('high', 'critical') THEN $3 ELSE 'medium' END,
-		       $4, $5
+		SELECT $1, $2, $3, $4, $9,
+		       CASE WHEN $5 IN ('high', 'critical') THEN $5 ELSE 'medium' END,
+		       $6, $7
 		WHERE NOT EXISTS (
 			SELECT 1
 			FROM autonomous_project_escalation
 			WHERE workspace_id = $1
 			  AND project_id = $2
 			  AND status IN ('open', 'acknowledged')
-			  AND context ->> 'node_key' = $6
+			  AND (
+				($9='approval_required' AND $7::jsonb ? 'approval_scope'
+				 AND context->>'approval_scope'=$7::jsonb->>'approval_scope'
+				 AND context->>'plan_revision'=$7::jsonb->>'plan_revision'
+				 AND context->>'node_id'=$7::jsonb->>'node_id'
+				 AND context->>'manifest_digest'=$7::jsonb->>'manifest_digest')
+				OR (NOT ($7::jsonb ? 'approval_scope') AND context->>'node_key'=$8)
+			  )
 		)
-	`, workspaceID, projectID, string(node.Risk),
+	`, workspaceID, projectID, planID, planNodeID, string(node.Risk),
 		summary, contextJSON, node.Key, category)
 	return err
 }
@@ -3085,6 +3594,35 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 		"result":        taskResult,
 	}
 	content, _ := json.Marshal(artifactPayload)
+	var synchronousDecisions []projectorchestration.SynchronousBrainDecision
+	if valid && !reviewerTask {
+		synchronousDecisions, err = prepareSynchronousCompletionDecisions(
+			ctx, task, issue, projectorchestration.NodeKind(kind), nodeKey,
+		)
+		if err != nil {
+			return false, err
+		}
+	}
+	brainType := ""
+	brainEmbedding := ""
+	if valid {
+		brainType = projectBrainEntryType(projectorchestration.NodeKind(kind))
+		if brainType != "" && brainType != "architecture_decision" {
+			// The generated artifact UUID is metadata, not semantic memory input.
+			// Prepare this before the artifact transaction so provider calls never
+			// hold a database transaction open.
+			brainEmbeddingContent, _ := json.Marshal(map[string]any{
+				"artifact_type": artifactType,
+				"task_id":       util.UUIDToString(task.ID),
+				"issue_id":      util.UUIDToString(issue.ID),
+				"result":        taskResult,
+			})
+			brainEmbedding, err = projectorchestration.PrepareBrainMemoryEmbedding(ctx, issue.Title, brainEmbeddingContent)
+			if err != nil {
+				return false, fmt.Errorf("prepare project task artifact embedding: %w", err)
+			}
+		}
+	}
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -3114,6 +3652,14 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 		"Task result: "+issue.Title, content, task.AgentID, status, valid,
 		validationError, specRevision, util.UUIDToString(task.ID)).Scan(&artifactID)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if len(synchronousDecisions) > 0 {
+			if _, err := projectorchestration.PersistSynchronousBrainDecisions(
+				ctx, tx, issue.WorkspaceID, issue.ProjectID, planID, nodeID, task.ID, task.AgentID,
+				synchronousDecisions,
+			); err != nil {
+				return false, err
+			}
+		}
 		if changeSet != nil {
 			if err := projectorchestration.RecordTaskCommit(ctx, tx, *changeSet); err != nil {
 				return false, err
@@ -3164,6 +3710,14 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			return false, err
 		}
 	}
+	if len(synchronousDecisions) > 0 {
+		if _, err := projectorchestration.PersistSynchronousBrainDecisions(
+			ctx, tx, issue.WorkspaceID, issue.ProjectID, planID, nodeID, task.ID, task.AgentID,
+			synchronousDecisions,
+		); err != nil {
+			return false, err
+		}
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_artifact
 		SET status='superseded', superseded_by=$5
@@ -3202,7 +3756,7 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 		return false, nil
 	}
 
-	if brainType := projectBrainEntryType(projectorchestration.NodeKind(kind)); brainType != "" {
+	if brainType != "" && brainType != "architecture_decision" {
 		brainContent, _ := json.Marshal(map[string]any{
 			"artifact_type": artifactType, "artifact_id": util.UUIDToString(artifactID),
 			"task_id": util.UUIDToString(task.ID), "issue_id": util.UUIDToString(issue.ID),
@@ -3212,16 +3766,16 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			INSERT INTO autonomous_project_brain_entry (
 				workspace_id, project_id, plan_id, node_id, entry_type,
 				subject, content, source_type, source_id, confidence,
-				created_by_type, created_by_id
+				created_by_type, created_by_id, embedding
 			)
-			SELECT $1,$2,$3,$4,$5,$6,$7,'artifact',$8,0.9,'agent',$9
+			SELECT $1,$2,$3,$4,$5,$6,$7,'artifact',$8,0.9,'agent',$9,NULLIF($10,'')::vector
 			WHERE NOT EXISTS (
 				SELECT 1 FROM autonomous_project_brain_entry
 				WHERE workspace_id=$1 AND project_id=$2
 				  AND source_type='artifact' AND source_id=$8 AND entry_type=$5
 			)
 		`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, brainType,
-			issue.Title, brainContent, util.UUIDToString(artifactID), task.AgentID); err != nil {
+			issue.Title, brainContent, util.UUIDToString(artifactID), task.AgentID, brainEmbedding); err != nil {
 			return false, fmt.Errorf("record project brain artifact knowledge: %w", err)
 		}
 	}

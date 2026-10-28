@@ -43,7 +43,7 @@ func findLogicalNode(nodes []LogicalPlanNode, id string) (LogicalPlanNode, bool)
 // application. PersistPlan remains the public planner entry point; this core
 // prevents a visible new revision from escaping before node carry-forward and
 // change-request state are committed.
-func (s *Store) persistPlanTx(ctx context.Context, tx pgx.Tx, workspaceID, projectID pgtype.UUID, sourceRevision, plannerName, plannerModel string, plan Plan) (StoredPlan, error) {
+func (s *Store) persistPlanTx(ctx context.Context, tx pgx.Tx, workspaceID, projectID pgtype.UUID, sourceRevision, plannerName, plannerModel string, plan Plan, brainMemories []preparedBrainMemory) (StoredPlan, error) {
 	if s == nil || tx == nil {
 		return StoredPlan{}, errors.New("project plan transaction is not configured")
 	}
@@ -147,7 +147,7 @@ func (s *Store) persistPlanTx(ctx context.Context, tx pgx.Tx, workspaceID, proje
 			return StoredPlan{}, err
 		}
 	}
-	if err := seedBrain(ctx, tx, workspaceID, projectID, planID, plan); err != nil {
+	if err := seedBrain(ctx, tx, workspaceID, projectID, planID, brainMemories); err != nil {
 		return StoredPlan{}, err
 	}
 	if err := upsertBudget(ctx, tx, workspaceID, projectID, plan.Policy.Budget); err != nil {

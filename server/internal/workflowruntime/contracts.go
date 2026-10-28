@@ -57,16 +57,17 @@ type handoffSource struct {
 }
 
 type implementationHandoffOutput struct {
-	Summary      string            `json:"summary"`
-	Decisions    []string          `json:"decisions"`
-	Artifacts    []handoffArtifact `json:"artifacts"`
-	ChangedFiles []string          `json:"changed_files"`
-	CommitSHA    string            `json:"commit_sha"`
-	Diff         string            `json:"diff"`
-	Tests        []handoffTest     `json:"tests"`
-	Findings     []handoffFinding  `json:"findings"`
-	Risks        []string          `json:"risks"`
-	Blockers     []string          `json:"blockers"`
+	Summary             string            `json:"summary"`
+	Decisions           []string          `json:"decisions"`
+	ArchitectureChoices []string          `json:"architecture_choices,omitempty"`
+	Artifacts           []handoffArtifact `json:"artifacts"`
+	ChangedFiles        []string          `json:"changed_files"`
+	CommitSHA           string            `json:"commit_sha"`
+	Diff                string            `json:"diff"`
+	Tests               []handoffTest     `json:"tests"`
+	Findings            []handoffFinding  `json:"findings"`
+	Risks               []string          `json:"risks"`
+	Blockers            []string          `json:"blockers"`
 }
 
 type reviewVerdictOutput struct {
@@ -76,21 +77,22 @@ type reviewVerdictOutput struct {
 }
 
 type durableHandoffEnvelope struct {
-	SchemaVersion   int                     `json:"schema_version"`
-	Kind            string                  `json:"kind"`
-	Source          handoffSource           `json:"source"`
-	Summary         string                  `json:"summary"`
-	Instructions    string                  `json:"instructions,omitempty"`
-	Decisions       []string                `json:"decisions"`
-	Artifacts       []handoffArtifact       `json:"artifacts"`
-	ChangedFiles    []string                `json:"changed_files"`
-	CommitSHA       string                  `json:"commit_sha"`
-	Diff            string                  `json:"diff"`
-	Tests           []handoffTest           `json:"tests"`
-	Findings        []handoffFinding        `json:"findings"`
-	Risks           []string                `json:"risks"`
-	Blockers        []string                `json:"blockers"`
-	BrainReferences []handoffBrainReference `json:"brain_references"`
+	SchemaVersion       int                     `json:"schema_version"`
+	Kind                string                  `json:"kind"`
+	Source              handoffSource           `json:"source"`
+	Summary             string                  `json:"summary"`
+	Instructions        string                  `json:"instructions,omitempty"`
+	Decisions           []string                `json:"decisions"`
+	ArchitectureChoices []string                `json:"architecture_choices,omitempty"`
+	Artifacts           []handoffArtifact       `json:"artifacts"`
+	ChangedFiles        []string                `json:"changed_files"`
+	CommitSHA           string                  `json:"commit_sha"`
+	Diff                string                  `json:"diff"`
+	Tests               []handoffTest           `json:"tests"`
+	Findings            []handoffFinding        `json:"findings"`
+	Risks               []string                `json:"risks"`
+	Blockers            []string                `json:"blockers"`
+	BrainReferences     []handoffBrainReference `json:"brain_references"`
 }
 
 func contractTaskOutput(raw json.RawMessage) (string, error) {
@@ -180,7 +182,7 @@ func parseImplementationHandoff(raw json.RawMessage) (implementationHandoffOutpu
 	if strings.TrimSpace(out.Summary) == "" {
 		return implementationHandoffOutput{}, errors.New("implementation handoff summary is required")
 	}
-	if len(out.Decisions) > 100 || len(out.Artifacts) > 100 || len(out.ChangedFiles) > 500 ||
+	if len(out.Decisions) > 100 || len(out.ArchitectureChoices) > 100 || len(out.Artifacts) > 100 || len(out.ChangedFiles) > 500 ||
 		len(out.Tests) > 200 || len(out.Findings) > 100 || len(out.Risks) > 100 || len(out.Blockers) > 100 {
 		return implementationHandoffOutput{}, errors.New("implementation handoff exceeds collection limits")
 	}
@@ -461,6 +463,7 @@ func (r *Runtime) prepareAssignmentHandoff(
 			envelope.Source = latest.Source
 			envelope.Summary = latest.Summary
 			envelope.Decisions = latest.Decisions
+			envelope.ArchitectureChoices = latest.ArchitectureChoices
 			envelope.Artifacts = latest.Artifacts
 			envelope.ChangedFiles = latest.ChangedFiles
 			envelope.CommitSHA = latest.CommitSHA
@@ -584,20 +587,21 @@ func (r *Runtime) persistImplementationHandoff(
 	}
 
 	envelope := durableHandoffEnvelope{
-		SchemaVersion:   handoffSchemaVersion,
-		Kind:            "implementation_result",
-		Source:          handoffSource{NodeID: nodeID, NodeKey: nodeKey, TaskID: util.UUIDToString(task.ID), AgentID: util.UUIDToString(task.AgentID)},
-		Summary:         output.Summary,
-		Decisions:       output.Decisions,
-		Artifacts:       output.Artifacts,
-		ChangedFiles:    output.ChangedFiles,
-		CommitSHA:       output.CommitSHA,
-		Diff:            output.Diff,
-		Tests:           output.Tests,
-		Findings:        output.Findings,
-		Risks:           output.Risks,
-		Blockers:        output.Blockers,
-		BrainReferences: brainRefs,
+		SchemaVersion:       handoffSchemaVersion,
+		Kind:                "implementation_result",
+		Source:              handoffSource{NodeID: nodeID, NodeKey: nodeKey, TaskID: util.UUIDToString(task.ID), AgentID: util.UUIDToString(task.AgentID)},
+		Summary:             output.Summary,
+		Decisions:           output.Decisions,
+		ArchitectureChoices: output.ArchitectureChoices,
+		Artifacts:           output.Artifacts,
+		ChangedFiles:        output.ChangedFiles,
+		CommitSHA:           output.CommitSHA,
+		Diff:                output.Diff,
+		Tests:               output.Tests,
+		Findings:            output.Findings,
+		Risks:               output.Risks,
+		Blockers:            output.Blockers,
+		BrainReferences:     brainRefs,
 	}
 	raw, err := json.Marshal(envelope)
 	if err != nil {

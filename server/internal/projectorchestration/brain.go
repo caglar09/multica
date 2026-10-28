@@ -251,6 +251,22 @@ func (s *Store) RecallMemoriesV2(
 	workspaceID, projectID pgtype.UUID,
 	opts RecallOptions,
 ) ([]RecalledMemory, error) {
+	if s == nil || s.pool == nil || !workspaceID.Valid || !projectID.Valid || strings.TrimSpace(opts.Query) == "" {
+		return nil, nil
+	}
+	embedder, err := memoryEmbedderFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	return s.recallMemoriesV2WithEmbedder(ctx, workspaceID, projectID, opts, embedder)
+}
+
+func (s *Store) recallMemoriesV2WithEmbedder(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	opts RecallOptions,
+	embedder MemoryEmbedder,
+) ([]RecalledMemory, error) {
 	if s == nil || s.pool == nil || !workspaceID.Valid || !projectID.Valid {
 		return nil, nil
 	}
@@ -261,6 +277,9 @@ func (s *Store) RecallMemoriesV2(
 		opts.MaxTokens = 700
 	}
 	query := strings.TrimSpace(opts.Query)
+	if query == "" {
+		return nil, nil
+	}
 	role := strings.ToLower(strings.TrimSpace(opts.RoleFamily))
 	if role == "" {
 		role = strings.ToLower(strings.TrimSpace(string(opts.NodeKind)))
@@ -275,77 +294,14 @@ func (s *Store) RecallMemoriesV2(
 		return nil, err
 	}
 
-	rows, err := s.pool.Query(ctx, `
-		WITH q AS (
-			SELECT CASE WHEN btrim($3) = '' THEN NULL
-			            ELSE websearch_to_tsquery('simple'::regconfig, $3) END AS tsq
-		)
-		SELECT b.id, COALESCE(b.canonical_key,''), b.entry_type, b.subject, b.content::text,
-		       COALESCE(b.confidence,0), b.importance, b.authority, b.evidence,
-		       b.observed_at, b.brain_revision,
-		       (
-		         CASE WHEN q.tsq IS NULL THEN 0
-		              ELSE ts_rank_cd(
-		                to_tsvector('simple'::regconfig,
-		                  COALESCE(b.subject,'') || ' ' || COALESCE(b.canonical_key,'') || ' ' || COALESCE(b.content::text,'')),
-		                q.tsq
-		              ) * 4.0 END
-		         + b.importance * 1.5
-		         + LEAST(b.confirmation_count, 5) * 0.10
-		         + COALESCE(b.confidence,0) * 0.50
-		         + CASE b.authority
-		             WHEN 'user_decision' THEN 2.0
-		             WHEN 'authoritative_spec' THEN 1.8
-		             WHEN 'deterministic_observation' THEN 1.6
-		             WHEN 'trusted_external' THEN 1.3
-		             WHEN 'system_derived' THEN 1.0
-		             ELSE 0.6
-		           END
-		         + CASE
-		             WHEN $4 IN ('qa','review') AND b.entry_type IN ('requirement','risk','lesson') THEN 0.8
-		             WHEN $4 IN ('security') AND b.entry_type IN ('risk','constraint','architecture_decision') THEN 0.8
-		             WHEN $4 IN ('frontend','design') AND b.entry_type IN ('product_decision','requirement','architecture_decision') THEN 0.8
-		             WHEN $4 IN ('backend','implementation','architecture') AND b.entry_type IN ('architecture_decision','repository_fact','constraint','dependency') THEN 0.8
-		             WHEN $4 IN ('product') AND b.entry_type IN ('requirement','product_decision','constraint') THEN 0.8
-		             ELSE 0 END
-		         + (1.0 / (1.0 + GREATEST(EXTRACT(EPOCH FROM (now()-b.observed_at)),0) / 2592000.0))
-		       ) AS score
-		FROM autonomous_project_brain_entry b
-		CROSS JOIN q
-		WHERE b.workspace_id=$1 AND b.project_id=$2
-		  AND b.status='active' AND b.superseded_by IS NULL
-		  AND b.governance_state='current'
-		  AND (b.expires_at IS NULL OR b.expires_at > now())
-		  AND ($5 = '' OR b.repository_revision IS NULL OR b.repository_revision = $5)
-		  AND (q.tsq IS NULL OR
-		       to_tsvector('simple'::regconfig,
-		         COALESCE(b.subject,'') || ' ' || COALESCE(b.canonical_key,'') || ' ' || COALESCE(b.content::text,'')) @@ q.tsq)
-		ORDER BY score DESC, b.brain_revision DESC, b.id
-		LIMIT $6
-	`, workspaceID, projectID, query, role, strings.TrimSpace(opts.CurrentRepositoryRevision), opts.Limit*3)
+	memories, err := queryHybridBrainMemories(ctx, s.pool, workspaceID, projectID, opts, embedder)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
 	out := make([]RecalledMemory, 0, opts.Limit)
 	seen := make(map[string]struct{}, opts.Limit)
 	usedTokens := 0
-	for rows.Next() {
-		var m RecalledMemory
-		var id pgtype.UUID
-		var authority string
-		var evidence []byte
-		if err := rows.Scan(
-			&id, &m.CanonicalKey, &m.Type, &m.Subject, &m.Content,
-			&m.Confidence, &m.Importance, &authority, &evidence,
-			&m.ObservedAt, &m.BrainRevision, &m.RelevanceScore,
-		); err != nil {
-			return nil, err
-		}
-		m.ID = util.UUIDToString(id)
-		m.Authority = MemoryAuthority(authority)
-		m.Evidence = append(json.RawMessage(nil), evidence...)
+	for _, m := range memories {
 		identity := m.Type + "\x00" + normalizeBrainKey(m.CanonicalKey)
 		if _, exists := seen[identity]; exists {
 			continue
@@ -364,18 +320,138 @@ func (s *Store) RecallMemoriesV2(
 			break
 		}
 	}
+	return out, nil
+}
+
+type brainMemoryQueryer interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func queryHybridBrainMemories(
+	ctx context.Context,
+	queryer brainMemoryQueryer,
+	workspaceID, projectID pgtype.UUID,
+	opts RecallOptions,
+	embedder MemoryEmbedder,
+) ([]RecalledMemory, error) {
+	query := strings.TrimSpace(opts.Query)
+	if query == "" || queryer == nil {
+		return nil, nil
+	}
+	if opts.Limit <= 0 || opts.Limit > 50 {
+		opts.Limit = 12
+	}
+	role := strings.ToLower(strings.TrimSpace(opts.RoleFamily))
+	if role == "" {
+		role = strings.ToLower(strings.TrimSpace(string(opts.NodeKind)))
+	}
+	// Embeddings add recall coverage when available; provider failure keeps FTS usable.
+	vectorLiteral, _ := embedMemoryText(ctx, embedder, query)
+	rows, err := queryer.Query(ctx, `
+		WITH q AS (
+			SELECT regexp_replace(
+				websearch_to_tsquery('simple'::regconfig, $3::text)::text,
+				' & ', ' | ', 'g'
+			)::tsquery AS tsq
+		),
+	eligible AS NOT MATERIALIZED (
+			SELECT b.*,
+			       to_tsvector('simple'::regconfig,
+			         COALESCE(b.subject,'') || ' ' || COALESCE(b.canonical_key,'') || ' ' || COALESCE(b.content::text,'')) AS document
+			FROM autonomous_project_brain_entry b
+			WHERE b.workspace_id=$1 AND b.project_id=$2
+			  AND b.status='active' AND b.superseded_by IS NULL
+			  AND b.governance_state='current'
+			  AND (b.expires_at IS NULL OR b.expires_at > now())
+			  AND ($5::text = '' OR b.repository_revision IS NULL OR b.repository_revision = $5::text)
+		),
+	fts AS (
+			SELECT e.id, row_number() OVER (
+				ORDER BY ts_rank_cd(e.document, q.tsq)
+				       + CASE
+				           WHEN $4::text IN ('qa','review') AND e.entry_type IN ('requirement','risk','lesson') THEN 0.8
+				           WHEN $4::text = 'security' AND e.entry_type IN ('risk','constraint','architecture_decision') THEN 0.8
+				           WHEN $4::text IN ('frontend','design') AND e.entry_type IN ('product_decision','requirement','architecture_decision') THEN 0.8
+				           WHEN $4::text IN ('backend','implementation','architecture') AND e.entry_type IN ('architecture_decision','repository_fact','constraint','dependency') THEN 0.8
+				           WHEN $4::text = 'product' AND e.entry_type IN ('requirement','product_decision','constraint') THEN 0.8
+				           ELSE 0 END DESC,
+				         e.importance DESC, e.brain_revision DESC, e.id
+			) AS rank
+			FROM eligible e CROSS JOIN q
+			WHERE e.document @@ q.tsq
+			ORDER BY ts_rank_cd(e.document, q.tsq)
+			       + CASE
+			           WHEN $4::text IN ('qa','review') AND e.entry_type IN ('requirement','risk','lesson') THEN 0.8
+			           WHEN $4::text = 'security' AND e.entry_type IN ('risk','constraint','architecture_decision') THEN 0.8
+			           WHEN $4::text IN ('frontend','design') AND e.entry_type IN ('product_decision','requirement','architecture_decision') THEN 0.8
+			           WHEN $4::text IN ('backend','implementation','architecture') AND e.entry_type IN ('architecture_decision','repository_fact','constraint','dependency') THEN 0.8
+			           WHEN $4::text = 'product' AND e.entry_type IN ('requirement','product_decision','constraint') THEN 0.8
+			           ELSE 0 END DESC,
+			         e.importance DESC, e.brain_revision DESC, e.id
+			LIMIT $6
+		),
+	semantic AS (
+			SELECT e.id, row_number() OVER (
+				ORDER BY e.embedding <=> $8::vector ASC,
+				         e.importance DESC, e.brain_revision DESC, e.id
+			) AS rank
+			FROM eligible e
+			WHERE $7::boolean AND e.embedding IS NOT NULL
+			ORDER BY e.embedding <=> $8::vector ASC,
+			         e.importance DESC, e.brain_revision DESC, e.id
+			LIMIT $6
+		),
+	fused AS (
+			SELECT id, sum(1.0 / (60.0 + rank::float8)) AS rrf_score
+			FROM (
+				SELECT id, rank FROM fts
+				UNION ALL
+				SELECT id, rank FROM semantic
+			) ranks
+			GROUP BY id
+		)
+		SELECT b.id, COALESCE(b.canonical_key,''), b.entry_type, b.subject, left(b.content::text,6000),
+		       COALESCE(b.confidence,0), b.importance, b.authority, b.evidence,
+		       b.observed_at, b.brain_revision, fused.rrf_score
+		FROM fused
+		JOIN autonomous_project_brain_entry b ON b.id=fused.id
+		ORDER BY fused.rrf_score DESC, b.importance DESC,
+		         b.brain_revision DESC, b.id
+		LIMIT $6
+	`, workspaceID, projectID, query, role, strings.TrimSpace(opts.CurrentRepositoryRevision), opts.Limit*3, vectorLiteral != "", nullableMemoryVector(vectorLiteral))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	memories := make([]RecalledMemory, 0, opts.Limit*3)
+	for rows.Next() {
+		var memory RecalledMemory
+		var id pgtype.UUID
+		var authority string
+		var evidence []byte
+		if err := rows.Scan(
+			&id, &memory.CanonicalKey, &memory.Type, &memory.Subject, &memory.Content,
+			&memory.Confidence, &memory.Importance, &authority, &evidence,
+			&memory.ObservedAt, &memory.BrainRevision, &memory.RelevanceScore,
+		); err != nil {
+			return nil, err
+		}
+		memory.ID = util.UUIDToString(id)
+		memory.Authority = MemoryAuthority(authority)
+		memory.Evidence = append(json.RawMessage(nil), evidence...)
+		memories = append(memories, memory)
+	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	return memories, nil
+}
 
-	// An exact FTS miss must not make high-authority project knowledge vanish.
-	// Empty-query fallback is still ranked by authority/importance/recency and
-	// remains bounded. It is deliberately not LIKE-based retrieval.
-	if len(out) == 0 && query != "" {
-		opts.Query = ""
-		return s.RecallMemoriesV2(ctx, workspaceID, projectID, opts)
+func nullableMemoryVector(vector string) any {
+	if strings.TrimSpace(vector) == "" {
+		return nil
 	}
-	return out, nil
+	return vector
 }
 
 func estimateBrainTokens(value string) int {
@@ -509,6 +585,144 @@ type MemoryRetention struct {
 	Conflict        bool
 }
 
+// SynchronousBrainDecision is a structured completion decision whose memory
+// row must commit atomically with the project artifact that produced it.
+type SynchronousBrainDecision struct {
+	Subject   string
+	Content   json.RawMessage
+	SourceID  string
+	Embedding string
+}
+
+// PersistSynchronousBrainDecisions stores critical completion decisions in
+// the caller's transaction. Embedding preparation happens before this call so
+// no network request is made while the transaction is open.
+func PersistSynchronousBrainDecisions(
+	ctx context.Context,
+	tx pgx.Tx,
+	workspaceID, projectID, planID, nodeID, taskID, agentID pgtype.UUID,
+	decisions []SynchronousBrainDecision,
+) (int64, error) {
+	if tx == nil || !workspaceID.Valid || !projectID.Valid || !taskID.Valid || !agentID.Valid {
+		return 0, errors.New("synchronous brain decisions require transaction and source identifiers")
+	}
+	clean := make([]SynchronousBrainDecision, 0, len(decisions))
+	seen := make(map[string]struct{}, len(decisions))
+	for _, decision := range decisions {
+		decision.Subject = strings.TrimSpace(decision.Subject)
+		decision.SourceID = strings.TrimSpace(decision.SourceID)
+		if decision.Subject == "" || decision.SourceID == "" || len(decision.Content) == 0 || !json.Valid(decision.Content) {
+			return 0, errors.New("synchronous brain decision requires subject, source id, and valid JSON content")
+		}
+		if _, ok := seen[decision.SourceID]; ok {
+			continue
+		}
+		seen[decision.SourceID] = struct{}{}
+		clean = append(clean, decision)
+	}
+	if len(clean) == 0 {
+		var revision int64
+		err := tx.QueryRow(ctx, `
+			SELECT COALESCE((SELECT revision FROM autonomous_project_brain_state
+			                 WHERE workspace_id=$1 AND project_id=$2),0)
+		`, workspaceID, projectID).Scan(&revision)
+		return revision, err
+	}
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "project-brain:"+util.UUIDToString(projectID)); err != nil {
+		return 0, err
+	}
+	newDecisions := make([]SynchronousBrainDecision, 0, len(clean))
+	for _, decision := range clean {
+		var exists bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM autonomous_project_brain_entry
+				WHERE workspace_id=$1 AND project_id=$2
+				  AND source_type='task_completion_decision' AND source_id=$3
+			)
+		`, workspaceID, projectID, decision.SourceID).Scan(&exists); err != nil {
+			return 0, err
+		}
+		if !exists {
+			newDecisions = append(newDecisions, decision)
+		}
+	}
+	if len(newDecisions) == 0 {
+		var revision int64
+		err := tx.QueryRow(ctx, `
+			SELECT COALESCE((SELECT revision FROM autonomous_project_brain_state
+			                 WHERE workspace_id=$1 AND project_id=$2),0)
+		`, workspaceID, projectID).Scan(&revision)
+		return revision, err
+	}
+	var brainRevision int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO autonomous_project_brain_state (project_id,workspace_id,revision,updated_at)
+		VALUES ($1,$2,1,now())
+		ON CONFLICT (project_id) DO UPDATE
+		SET revision=autonomous_project_brain_state.revision+1, updated_at=now()
+		WHERE autonomous_project_brain_state.workspace_id=EXCLUDED.workspace_id
+		RETURNING revision
+	`, projectID, workspaceID).Scan(&brainRevision); err != nil {
+		return 0, fmt.Errorf("allocate synchronous brain revision: %w", err)
+	}
+	firstEntryID := dbid.NewV7()
+	if nodeID.Valid {
+		if _, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_brain_entry
+			SET status='superseded',governance_state='superseded',
+			    superseded_by=$4,brain_revision=$5
+			WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
+			  AND source_type='task_completion_decision'
+			  AND status='active' AND superseded_by IS NULL
+		`, workspaceID, projectID, nodeID, firstEntryID, brainRevision); err != nil {
+			return 0, fmt.Errorf("supersede prior synchronous brain decisions: %w", err)
+		}
+	}
+	for i, decision := range newDecisions {
+		candidate := MemoryCandidate{
+			CanonicalKey: "completion-decision:" + util.UUIDToString(nodeID) + ":" + fmt.Sprint(i),
+			Type:         "architecture_decision",
+			Subject:      decision.Subject,
+			Content:      decision.Content,
+			Confidence:   0.9,
+			Importance:   0.9,
+		}
+		fingerprint := semanticMemoryFingerprint(candidate)
+		entryID := firstEntryID
+		if i > 0 {
+			entryID = dbid.NewV7()
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO autonomous_project_brain_entry (
+				id,workspace_id,project_id,plan_id,node_id,entry_type,subject,content,
+				source_type,source_id,confidence,revision,created_by_type,created_by_id,
+				canonical_key,status,importance,confirmation_count,last_confirmed_at,
+				authority,evidence,observed_at,semantic_fingerprint,governance_state,
+				brain_revision,embedding
+			) VALUES (
+				$1,$2,$3,$4,$5,'architecture_decision',$6,$7,
+				'task_completion_decision',$8,0.9,1,'agent',$9,$10,'active',0.9,1,
+				now(),'agent_inference',$11,now(),$12,'current',$13,NULLIF($14,'')::vector
+			)
+		`, entryID, workspaceID, projectID, nullableBrainUUID(planID), nullableBrainUUID(nodeID),
+			decision.Subject, decision.Content, decision.SourceID, agentID,
+			candidate.CanonicalKey, []byte(`{"kind":"structured_completion_decision"}`),
+			fingerprint, brainRevision, decision.Embedding)
+		if err != nil {
+			return 0, fmt.Errorf("persist synchronous brain decision: %w", err)
+		}
+	}
+	return brainRevision, nil
+}
+
+func nullableBrainUUID(value pgtype.UUID) any {
+	if value.Valid {
+		return value
+	}
+	return nil
+}
+
 func (s *Store) RetainMemoryGoverned(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
@@ -548,6 +762,11 @@ func (s *Store) RetainMemoryGoverned(
 	}
 	fingerprint := semanticMemoryFingerprint(candidate)
 	expiresAt := memoryExpiry(candidate.Type, source.ObservedAt)
+	// Do not persist a silent FTS-only row when the server opted into embeddings.
+	embedding, err := PrepareBrainMemoryEmbedding(ctx, candidate.Subject, candidate.Content)
+	if err != nil {
+		return MemoryRetention{}, fmt.Errorf("embed retained project memory: %w", err)
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -600,10 +819,11 @@ func (s *Store) RetainMemoryGoverned(
 			    evidence=evidence || $5::jsonb,
 			    observed_at=GREATEST(observed_at,$6),
 			    expires_at=$7, brain_revision=$8,
+			    embedding=COALESCE(embedding,NULLIF($9,'')::vector),
 			    last_confirmed_at=now()
 			WHERE id=$1
 		`, duplicateID, candidate.Confidence, candidate.Importance, string(authority),
-			source.Evidence, source.ObservedAt, expiresAt, brainRevision)
+			source.Evidence, source.ObservedAt, expiresAt, brainRevision, embedding)
 		if err != nil {
 			return MemoryRetention{}, err
 		}
@@ -680,10 +900,11 @@ func (s *Store) RetainMemoryGoverned(
 				    evidence=evidence || $5::jsonb,
 				    observed_at=GREATEST(observed_at,$6), expires_at=$7,
 				    semantic_fingerprint=$8, brain_revision=$9,
+				    embedding=COALESCE(embedding,NULLIF($10,'')::vector),
 				    last_confirmed_at=now()
 				WHERE id=$1
 			`, current.id, candidate.Confidence, candidate.Importance, string(authority),
-				source.Evidence, source.ObservedAt, expiresAt, fingerprint, brainRevision)
+				source.Evidence, source.ObservedAt, expiresAt, fingerprint, brainRevision, embedding)
 			if err != nil {
 				return MemoryRetention{}, err
 			}
@@ -701,14 +922,14 @@ func (s *Store) RetainMemoryGoverned(
 			 confidence,revision,created_by_type,created_by_id,canonical_key,status,importance,
 			 confirmation_count,last_confirmed_at,authority,evidence,observed_at,expires_at,
 			 repository_revision,semantic_fingerprint,governance_state,conflict_group_id,
-			 brain_revision,superseded_by)
+			 brain_revision,superseded_by,embedding)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,
-			        1,now(),$16,$17,$18,$19,NULLIF($20,''),$21,$22,$23,$24,$25)
+			        1,now(),$16,$17,$18,$19,NULLIF($20,''),$21,$22,$23,$24,$25,NULLIF($26,'')::vector)
 		`, newID, workspaceID, projectID, candidate.Type, candidate.Subject, candidate.Content,
 			source.SourceType, source.SourceID, candidate.Confidence, maxRevision+1,
 			source.CreatedByType, source.CreatedByID, key, status, candidate.Importance,
 			string(source.Authority), source.Evidence, source.ObservedAt, expiresAt,
-			source.RepositoryRevision, fingerprint, state, conflictID, brainRevision, supersededBy)
+			source.RepositoryRevision, fingerprint, state, conflictID, brainRevision, supersededBy, embedding)
 		return err
 	}
 

@@ -66,6 +66,7 @@ type ProjectSpecification struct {
 var (
 	ErrUncoveredRequirement       = errors.New("project plan has an uncovered specification requirement")
 	ErrInvalidRequirementCoverage = errors.New("invalid project plan requirement coverage")
+	ErrStaleIssueMutationConflict = errors.New("StaleIssueMutationConflict")
 )
 
 func ValidateProjectSpecification(spec ProjectSpecification) error {
@@ -252,6 +253,7 @@ type LogicalPlanNode struct {
 	Spec                NodeSpec `json:"spec"`
 	Status              string   `json:"status"`
 	MaterializedIssueID string   `json:"materialized_issue_id,omitempty"`
+	IssueRevision       int64    `json:"-"`
 }
 
 type PlanMutationResult struct {

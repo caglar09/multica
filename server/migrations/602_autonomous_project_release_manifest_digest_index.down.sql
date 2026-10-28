@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS autonomous_project_release_manifest_digest_idx;
