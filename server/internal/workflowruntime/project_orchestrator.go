@@ -230,7 +230,7 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 				FROM autonomous_project_plan p
 				WHERE p.workspace_id = d.workspace_id
 				  AND p.project_id = d.project_id
-				  AND p.status IN ('active', 'completed')
+				  AND p.status IN ('active', 'blocked', 'awaiting_approval', 'completed')
 			  )
 			  AND NOT EXISTS (
 				SELECT 1
@@ -330,7 +330,7 @@ func (r *Runtime) recoverExpiredProjectPlanningLeases(ctx context.Context) error
 			        WHEN EXISTS (
 				        SELECT 1 FROM autonomous_project_plan p
 				        WHERE p.workspace_id=d.workspace_id AND p.project_id=d.project_id
-				          AND p.status IN ('active','completed')
+				          AND p.status IN ('active','blocked','awaiting_approval','completed')
 			        ) THEN d.status
 			        WHEN d.planning_attempts >= 3 THEN 'planning_failed'
 			        ELSE d.status
@@ -339,7 +339,7 @@ func (r *Runtime) recoverExpiredProjectPlanningLeases(ctx context.Context) error
 			        WHEN EXISTS (
 				        SELECT 1 FROM autonomous_project_plan p
 				        WHERE p.workspace_id=d.workspace_id AND p.project_id=d.project_id
-				          AND p.status IN ('active','completed')
+				          AND p.status IN ('active','blocked','awaiting_approval','completed')
 			        ) THEN COALESCE(d.continuation_completed_at, now())
 			        ELSE d.continuation_completed_at
 			    END,
@@ -348,7 +348,7 @@ func (r *Runtime) recoverExpiredProjectPlanningLeases(ctx context.Context) error
 			        WHEN EXISTS (
 				        SELECT 1 FROM autonomous_project_plan p
 				        WHERE p.workspace_id=d.workspace_id AND p.project_id=d.project_id
-				          AND p.status IN ('active','completed')
+				          AND p.status IN ('active','blocked','awaiting_approval','completed')
 			        ) OR d.planning_attempts >= 3 THEN NULL
 			        ELSE now() + (
 				        30 * power(2, LEAST(d.planning_attempts,10)) + floor(random()*30)
@@ -1000,12 +1000,16 @@ func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issu
 		)
 	}
 
-	plan.Nodes = append(plan.Nodes, node)
 	blockSourceKey := ""
-	sourceKey, sourceNodeStatus, sourceIssueStatus, sourceFound, err := r.discoveredIssueSource(
+	sourceKey, sourceNodeStatus, sourceIssueStatus, sourceParentEpicKey, sourceIsEpic, sourceRequirementIDs, sourceFound, err := r.discoveredIssueSource(
 		ctx, planID, issue,
 	)
 	if err != nil {
+		return err
+	}
+	if err := inheritDiscoveredProjectNodeTraceability(
+		&node, plan, sourceKey, sourceParentEpicKey, sourceIsEpic, sourceFound, sourceRequirementIDs,
+	); err != nil {
 		return err
 	}
 	if sourceFound {
@@ -1028,6 +1032,7 @@ func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issu
 			})
 		}
 	}
+	plan.Nodes = append(plan.Nodes, node)
 
 	plan = projectorchestration.HardenPlan(plan)
 	plan = projectorchestration.EnsureLifecycle(plan)
@@ -1098,16 +1103,49 @@ func (r *Runtime) adoptDiscoveredProjectIssue(ctx context.Context, issue db.Issu
 	return nil
 }
 
+func inheritDiscoveredProjectNodeTraceability(
+	node *projectorchestration.NodeSpec,
+	plan projectorchestration.Plan,
+	sourceKey, parentEpicKey string,
+	sourceIsEpic, sourceFound bool,
+	requirementIDs []string,
+) error {
+	hasEpics := false
+	for _, existing := range plan.Nodes {
+		if existing.IsEpic {
+			hasEpics = true
+			break
+		}
+	}
+	if !sourceFound {
+		if hasEpics {
+			return errors.New("runtime-discovered work has no source node to inherit epic membership from")
+		}
+		return nil
+	}
+	node.ParentEpicKey = parentEpicKey
+	if sourceIsEpic {
+		node.ParentEpicKey = sourceKey
+	}
+	node.RequirementIDs = append([]string(nil), requirementIDs...)
+	if hasEpics && node.ParentEpicKey == "" {
+		return errors.New("runtime-discovered source node has no epic membership to inherit")
+	}
+	return nil
+}
+
 func (r *Runtime) discoveredIssueSource(
 	ctx context.Context,
 	planID pgtype.UUID,
 	issue db.Issue,
-) (nodeKey, nodeStatus, issueStatus string, found bool, err error) {
+) (nodeKey, nodeStatus, issueStatus, parentEpicKey string, isEpic bool, requirementIDs []string, found bool, err error) {
 	if !issue.OriginType.Valid || issue.OriginType.String != "agent_create" || !issue.OriginID.Valid {
-		return "", "", "", false, nil
+		return "", "", "", "", false, nil, false, nil
 	}
 	err = r.pool.QueryRow(ctx, `
-		SELECT n.node_key, n.status, source_issue.status
+		SELECT n.node_key, n.status, source_issue.status,
+		       COALESCE(n.parent_epic_key, ''), n.is_epic,
+		       COALESCE(n.requirement_ids, ARRAY[]::text[])
 		FROM agent_task_queue origin_task
 		JOIN issue source_issue ON source_issue.id = origin_task.issue_id
 		JOIN autonomous_project_plan_node n
@@ -1115,14 +1153,14 @@ func (r *Runtime) discoveredIssueSource(
 		 AND n.materialized_issue_id = source_issue.id
 		WHERE origin_task.id = $2
 		LIMIT 1
-	`, planID, issue.OriginID).Scan(&nodeKey, &nodeStatus, &issueStatus)
+	`, planID, issue.OriginID).Scan(&nodeKey, &nodeStatus, &issueStatus, &parentEpicKey, &isEpic, &requirementIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", "", false, nil
+		return "", "", "", "", false, nil, false, nil
 	}
 	if err != nil {
-		return "", "", "", false, err
+		return "", "", "", "", false, nil, false, err
 	}
-	return nodeKey, nodeStatus, issueStatus, true, nil
+	return nodeKey, nodeStatus, issueStatus, parentEpicKey, isEpic, requirementIDs, true, nil
 }
 
 func discoveredProjectNodeKind(family string) projectorchestration.NodeKind {
@@ -2313,18 +2351,23 @@ blockedNodeLoop:
 					}
 				}
 			} else {
-				err := r.pool.QueryRow(ctx, `
-					SELECT EXISTS (
-						SELECT 1
-						FROM autonomous_project_escalation
-						WHERE workspace_id = $1
-						  AND project_id = $2
-						  AND category = 'approval_required'
-						  AND status = 'resolved'
-						  AND context ->> 'node_key' = $3
-						  AND resolution ->> 'decision' = 'approved'
-					)
-				`, workspaceID, projectID, node.Key).Scan(&resolved)
+				nodeID, parseErr := util.ParseUUID(node.ID)
+				if parseErr != nil {
+					return fmt.Errorf("load blocked approval node identity: %w", parseErr)
+				}
+				var planID pgtype.UUID
+				var planRevision int64
+				if err := r.pool.QueryRow(ctx, `
+					SELECT p.id, p.revision
+					FROM autonomous_project_plan p
+					JOIN autonomous_project_plan_node n
+					  ON n.plan_id=p.id AND n.workspace_id=p.workspace_id AND n.project_id=p.project_id
+					WHERE p.workspace_id=$1 AND p.project_id=$2
+					  AND p.status IN ('active','blocked') AND n.id=$3 AND n.node_key=$4
+				`, workspaceID, projectID, nodeID, node.Key).Scan(&planID, &planRevision); err != nil {
+					return fmt.Errorf("load blocked approval plan: %w", err)
+				}
+				resolved, err = r.hasExactPlanApproval(ctx, workspaceID, projectID, planID, planRevision, nodeID)
 				if err != nil {
 					return err
 				}
@@ -3322,19 +3365,7 @@ func (r *Runtime) enforceProjectNodePolicy(
 	if !requiresApproval {
 		return nil
 	}
-	var approved bool
-	err = r.pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM autonomous_project_escalation
-			WHERE workspace_id = $1
-			  AND project_id = $2
-			  AND category = 'approval_required'
-			  AND status = 'resolved'
-			  AND context ->> 'node_key' = $3
-			  AND resolution ->> 'decision' = 'approved'
-		)
-	`, workspaceID, projectID, node.Key).Scan(&approved)
+	approved, err := r.hasExactPlanApproval(ctx, workspaceID, projectID, planID, planRevision, nodeID)
 	if err != nil {
 		return err
 	}
@@ -3342,6 +3373,33 @@ func (r *Runtime) enforceProjectNodePolicy(
 		return errProjectApprovalRequired
 	}
 	return nil
+}
+
+func (r *Runtime) hasExactPlanApproval(
+	ctx context.Context,
+	workspaceID, projectID, planID pgtype.UUID,
+	planRevision int64,
+	nodeID pgtype.UUID,
+) (bool, error) {
+	var approved bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_escalation
+			WHERE workspace_id = $1
+			  AND project_id = $2
+			  AND plan_id = $3
+			  AND node_id = $4
+			  AND category = 'approval_required'
+			  AND status = 'resolved'
+			  AND context ->> 'plan_revision' = $5::bigint::text
+			  AND resolution ->> 'decision' = 'approved'
+		)
+	`, workspaceID, projectID, planID, nodeID, planRevision).Scan(&approved)
+	if err != nil {
+		return false, err
+	}
+	return approved, nil
 }
 
 func (r *Runtime) hasExactProductionApproval(
@@ -3420,7 +3478,7 @@ func (r *Runtime) openProjectEscalation(
 		},
 	}
 	var planID, planNodeID pgtype.UUID
-	if category == "approval_required" && node.Kind == projectorchestration.NodeDeploy {
+	if category == "approval_required" {
 		var revision int64
 		if err := r.pool.QueryRow(ctx, `
 			SELECT p.id, p.revision, n.id
@@ -3429,24 +3487,26 @@ func (r *Runtime) openProjectEscalation(
 			WHERE p.workspace_id=$1 AND p.project_id=$2 AND p.status IN ('active','blocked') AND n.node_key=$3
 			ORDER BY p.revision DESC LIMIT 1
 		`, workspaceID, projectID, node.Key).Scan(&planID, &revision, &planNodeID); err != nil {
-			return fmt.Errorf("load production approval plan scope: %w", err)
+			return fmt.Errorf("load project approval plan scope: %w", err)
 		}
-		manifest, err := projectorchestration.LoadPlanReleaseManifest(ctx, r.pool, workspaceID, projectID, planID)
-		if err != nil {
-			return fmt.Errorf("load production approval manifest: %w", err)
-		}
-		if manifest.Environment != "production" {
-			return errors.New("production approval escalation requires a production manifest")
-		}
-		contextFields["approval_scope"] = "production_release"
-		contextFields["workspace_id"] = util.UUIDToString(workspaceID)
-		contextFields["project_id"] = util.UUIDToString(projectID)
-		contextFields["plan_id"] = util.UUIDToString(planID)
 		contextFields["plan_revision"] = revision
-		contextFields["node_id"] = util.UUIDToString(planNodeID)
-		contextFields["target_environment"] = "production"
-		contextFields["manifest_id"] = manifest.ManifestID
-		contextFields["manifest_digest"] = manifest.ManifestDigest
+		if node.Kind == projectorchestration.NodeDeploy {
+			manifest, err := projectorchestration.LoadPlanReleaseManifest(ctx, r.pool, workspaceID, projectID, planID)
+			if err != nil {
+				return fmt.Errorf("load production approval manifest: %w", err)
+			}
+			if manifest.Environment != "production" {
+				return errors.New("production approval escalation requires a production manifest")
+			}
+			contextFields["approval_scope"] = "production_release"
+			contextFields["workspace_id"] = util.UUIDToString(workspaceID)
+			contextFields["project_id"] = util.UUIDToString(projectID)
+			contextFields["plan_id"] = util.UUIDToString(planID)
+			contextFields["node_id"] = util.UUIDToString(planNodeID)
+			contextFields["target_environment"] = "production"
+			contextFields["manifest_id"] = manifest.ManifestID
+			contextFields["manifest_digest"] = manifest.ManifestDigest
+		}
 	}
 	contextJSON, err := json.Marshal(contextFields)
 	if err != nil {
@@ -3471,7 +3531,8 @@ func (r *Runtime) openProjectEscalation(
 				 AND context->>'plan_revision'=$7::jsonb->>'plan_revision'
 				 AND context->>'node_id'=$7::jsonb->>'node_id'
 				 AND context->>'manifest_digest'=$7::jsonb->>'manifest_digest')
-				OR (NOT ($7::jsonb ? 'approval_scope') AND context->>'node_key'=$8)
+				OR (NOT ($7::jsonb ? 'approval_scope') AND context->>'node_key'=$8
+				 AND context->>'plan_revision'=$7::jsonb->>'plan_revision')
 			  )
 		)
 	`, workspaceID, projectID, planID, planNodeID, string(node.Risk),

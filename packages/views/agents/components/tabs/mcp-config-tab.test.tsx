@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, AgentRuntime } from "@multica/core/types";
@@ -12,6 +13,8 @@ import enAgents from "../../../locales/en/agents.json";
 import { McpConfigTab } from "./mcp-config-tab";
 
 const TEST_RESOURCES = { en: { common: enCommon, agents: enAgents } };
+
+afterEach(cleanup);
 
 const mockRuntimeCapabilities = vi.hoisted(() => vi.fn());
 const mockAddServer = vi.hoisted(() => vi.fn());
@@ -435,9 +438,9 @@ describe("McpConfigTab", () => {
     const { onSave } = renderTab({ mcp_config: { version: 1 } });
 
     await user.click(screen.getByRole("button", { name: /add mcp/i }));
-    await user.type(screen.getByLabelText("Server name"), "fetch");
+    await user.type(screen.getByLabelText("Name"), "fetch");
     await user.type(screen.getByLabelText("Command"), "uvx");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
 
     expect(onSave).toHaveBeenCalledWith({
       mcp_config: {
@@ -453,7 +456,7 @@ describe("McpConfigTab", () => {
 
     await user.click(screen.getByRole("button", { name: /add mcp/i }));
 
-    expect(screen.getByLabelText("Server name")).not.toHaveAttribute("aria-invalid");
+    expect(screen.getByLabelText("Name")).not.toHaveAttribute("aria-invalid");
     expect(screen.getByLabelText("Command")).not.toHaveAttribute("aria-invalid");
     expect(screen.queryByText("Enter a server name.")).toBeNull();
     expect(screen.queryByText(/Enter the command used/)).toBeNull();
@@ -464,7 +467,7 @@ describe("McpConfigTab", () => {
     const { onSave } = renderTab();
 
     await user.click(screen.getByRole("button", { name: /add mcp/i }));
-    await user.type(screen.getByLabelText("Server name"), "weather");
+    await user.type(screen.getByLabelText("Name"), "weather");
     await user.click(screen.getByRole("tab", { name: "JSON" }));
     fireEvent.change(screen.getByLabelText(/MCP server JSON configuration/i), {
       target: {
@@ -474,7 +477,7 @@ describe("McpConfigTab", () => {
         }),
       },
     });
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
 
     expect(onSave).toHaveBeenCalledWith({
       mcp_config: {
@@ -506,11 +509,11 @@ describe("McpConfigTab", () => {
     await user.click(
       screen.getByRole("button", { name: /edit configuration fetch/i }),
     );
-    expect(screen.queryByLabelText("Server name")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
     const command = screen.getByLabelText("Command");
     await user.clear(command);
     await user.type(command, "npx");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
     expect(onSave).toHaveBeenCalledWith({
       mcp_config: {
@@ -544,11 +547,11 @@ describe("McpConfigTab", () => {
     await user.click(
       screen.getByRole("button", { name: /edit configuration fetch/i }),
     );
-    expect(screen.getByLabelText("Startup arguments 1")).toHaveValue("");
+    expect(screen.getByLabelText("Arguments 1")).toHaveValue("");
     expect(
       screen.getByLabelText("Environment variables: Value 1"),
     ).toHaveValue("");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
     expect(onSave).toHaveBeenCalledWith({
       mcp_config: {
@@ -578,11 +581,11 @@ describe("McpConfigTab", () => {
       screen.getByRole("button", { name: /edit configuration fetch/i }),
     );
     for (const [index, value] of args.entries()) {
-      expect(screen.getByLabelText(`Startup arguments ${index + 1}`)).toHaveValue(
+      expect(screen.getByLabelText(`Arguments ${index + 1}`)).toHaveValue(
         value,
       );
     }
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
     expect(onSave).toHaveBeenCalledWith({
       mcp_config: {
@@ -610,9 +613,9 @@ describe("McpConfigTab", () => {
     for (let index = 0; index < 5; index += 1) {
       await user.click(addArgument);
     }
-    await user.type(screen.getByLabelText("Startup arguments 2"), "2222");
-    await user.type(screen.getByLabelText("Startup arguments 4"), "333");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.type(screen.getByLabelText("Arguments 2"), "2222");
+    await user.type(screen.getByLabelText("Arguments 4"), "333");
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
     expect(onSave).toHaveBeenCalledWith({
       mcp_config: {
@@ -641,7 +644,7 @@ describe("McpConfigTab", () => {
       screen.getByRole("button", { name: /edit configuration docs/i }),
     );
     expect(screen.getByLabelText("HTTP headers: Value 1")).toHaveValue("");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
     expect(onSave).toHaveBeenCalledWith({
       mcp_config: {
@@ -676,14 +679,14 @@ describe("McpConfigTab", () => {
     const { onSave } = renderTab();
 
     await user.click(screen.getByRole("button", { name: /add mcp/i }));
-    await user.type(screen.getByLabelText("Server name"), "broken");
+    await user.type(screen.getByLabelText("Name"), "broken");
     await user.click(screen.getByRole("tab", { name: "JSON" }));
     fireEvent.change(screen.getByLabelText(/MCP server JSON configuration/i), {
       target: { value: "{not json" },
     });
 
     expect(screen.queryByText(/invalid json/i)).toBeNull();
-    const addButton = screen.getByRole("button", { name: "Add" });
+    const addButton = screen.getByRole("button", { name: "Add Server" });
     expect(addButton).toBeEnabled();
 
     await user.click(addButton);
@@ -930,7 +933,7 @@ describe("McpConfigTab effective set", () => {
       "aria-selected",
       "true",
     );
-    expect(screen.getByRole("tab", { name: "Visual editor" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Form" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -950,7 +953,7 @@ describe("McpConfigTab effective set", () => {
       screen.getByRole("button", { name: /edit configuration normal/i }),
     );
 
-    expect(screen.getByRole("tab", { name: "Visual editor" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Form" })).toHaveAttribute(
       "aria-selected",
       "true",
     );

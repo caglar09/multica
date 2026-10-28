@@ -669,9 +669,8 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 	if contextExists || cloneExists || intentCount != 3 {
 		t.Fatalf("target cleanup = context=%v clones=%v intents=%d, want false/false/3", contextExists, cloneExists, intentCount)
 	}
-	// Keep the due intents and the sweep behind a table lock. A developer
-	// server may be running against this worktree database and its background
-	// sweeper does not participate in the test-only advisory lock above.
+	// Keep due intents and the sweep behind a table lock. A developer server
+	// may run against this database and its sweeper does not use the test lock.
 	cleanupTx, err := testPool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin isolated target intent cleanup: %v", err)
@@ -681,11 +680,28 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 		t.Fatalf("lock target intent table: %v", err)
 	}
 	if _, err := cleanupTx.Exec(ctx, `
+		CREATE TEMP TABLE parked_source_context_intents ON COMMIT DROP AS
+		SELECT storage_key, next_attempt_at
+		FROM issue_source_context_object_intent
+		WHERE source_context_id <> $1 AND next_attempt_at <= now()
+	`, contextID); err != nil {
+		t.Fatalf("snapshot unrelated due delete intents: %v", err)
+	}
+	if _, err := cleanupTx.Exec(ctx, `
+		UPDATE issue_source_context_object_intent intent
+		SET next_attempt_at = now() + interval '1 hour'
+		FROM parked_source_context_intents parked
+		WHERE intent.storage_key = parked.storage_key
+	`); err != nil {
+		t.Fatalf("park unrelated due delete intents: %v", err)
+	}
+	if _, err := cleanupTx.Exec(ctx, `
 		UPDATE issue_source_context_object_intent
-		SET created_at = now() - interval '2 hours', next_attempt_at = '-infinity'::timestamptz
+		SET state = 'pending', lease_token = NULL, lease_expires_at = NULL,
+		    created_at = now() - interval '2 hours', next_attempt_at = '-infinity'::timestamptz
 		WHERE source_context_id = $1
 	`, contextID); err != nil {
-		t.Fatalf("age target delete intents: %v", err)
+		t.Fatalf("make target delete intents claimable: %v", err)
 	}
 	originalObjectStore := testHandler.TaskService.SourceContextStorage
 	originalQueries := testHandler.TaskService.Queries
@@ -696,6 +712,14 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 	testHandler.TaskService.Queries = originalQueries
 	if err != nil || cleaned < 3 {
 		t.Fatalf("cleanup target delete intents = %d, err=%v", cleaned, err)
+	}
+	if _, err := cleanupTx.Exec(ctx, `
+		UPDATE issue_source_context_object_intent intent
+		SET next_attempt_at = parked.next_attempt_at
+		FROM parked_source_context_intents parked
+		WHERE intent.storage_key = parked.storage_key
+	`); err != nil {
+		t.Fatalf("restore unrelated delete intent schedules: %v", err)
 	}
 	if err := cleanupTx.Commit(ctx); err != nil {
 		t.Fatalf("commit isolated target intent cleanup: %v", err)

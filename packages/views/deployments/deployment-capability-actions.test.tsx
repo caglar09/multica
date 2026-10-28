@@ -1,5 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+// @vitest-environment jsdom
+
+import "@testing-library/jest-dom/vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithI18n } from "../test/i18n";
 import { DeploymentDetailCard } from "./components/deployment-detail-card";
@@ -8,6 +11,8 @@ import type {
   DeploymentTarget,
   CapabilitySet,
 } from "@multica/core/types";
+
+afterEach(cleanup);
 
 describe("DeploymentDetailCard - Capability-Gated Actions", () => {
   const mockPreviewTarget: DeploymentTarget = {
@@ -18,6 +23,7 @@ describe("DeploymentDetailCard - Capability-Gated Actions", () => {
     environment: "preview",
     config: {
       project_name: "preview-target",
+      repository: "https://github.com/caglar09/multica",
     },
     capabilities: {
       promote: true,

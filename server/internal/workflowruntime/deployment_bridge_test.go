@@ -313,15 +313,18 @@ type d2TestOperationReferences struct {
 }
 
 type autonomousDeploymentBridgeFixture struct {
-	ctx            context.Context
-	pool           *pgxpool.Pool
-	workspaceID    pgtype.UUID
-	projectID      pgtype.UUID
-	planID         pgtype.UUID
-	nodeID         pgtype.UUID
-	manifest       projectorchestration.ReleaseManifest
-	artifactStore  *deploymentBridgeArtifactStore
-	artifactDigest string
+	ctx             context.Context
+	pool            *pgxpool.Pool
+	workspaceID     pgtype.UUID
+	workspaceIDText string
+	ownerID         string
+	projectID       pgtype.UUID
+	projectIDText   string
+	planID          pgtype.UUID
+	nodeID          pgtype.UUID
+	manifest        projectorchestration.ReleaseManifest
+	artifactStore   *deploymentBridgeArtifactStore
+	artifactDigest  string
 }
 
 func newAutonomousDeploymentBridgeFixture(t *testing.T) *autonomousDeploymentBridgeFixture {
@@ -349,8 +352,9 @@ func newAutonomousDeploymentBridgeFixture(t *testing.T) *autonomousDeploymentBri
 	projectFixture := testutil.New(pool, workspaceIDText, userID)
 	projectIDText := projectFixture.Project(t, "Autonomous deployment bridge test")
 	fixture := &autonomousDeploymentBridgeFixture{
-		ctx: ctx, pool: pool, workspaceID: d2ParseUUID(t, workspaceIDText),
-		projectID: d2ParseUUID(t, projectIDText), planID: pgtype.UUID{Bytes: [16]byte(uuid.New()), Valid: true},
+		ctx: ctx, pool: pool, workspaceID: d2ParseUUID(t, workspaceIDText), workspaceIDText: workspaceIDText,
+		ownerID: userID, projectID: d2ParseUUID(t, projectIDText), projectIDText: projectIDText,
+		planID: pgtype.UUID{Bytes: [16]byte(uuid.New()), Valid: true},
 		nodeID: pgtype.UUID{Bytes: [16]byte(uuid.New()), Valid: true},
 	}
 

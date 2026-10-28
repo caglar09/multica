@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 
+import "@testing-library/jest-dom/vitest";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enSettings from "../../locales/en/settings.json";
 import enAgents from "../../locales/en/agents.json";
+
+afterEach(cleanup);
 
 const mockCreate = vi.hoisted(() => vi.fn());
 const mockUpdate = vi.hoisted(() => vi.fn());
@@ -122,14 +125,14 @@ describe("McpTab", () => {
     const user = userEvent.setup();
     render(<McpTab />, { wrapper: Wrapper });
 
-    await user.click(screen.getByRole("button", { name: /Add server/ }));
-    await user.type(screen.getByLabelText("Server name"), "github");
+    await user.click(screen.getByRole("button", { name: /Add server/i }));
+    await user.type(screen.getByLabelText("Name"), "github");
     // The shared dialog defaults to the STDIO transport.
     await user.type(screen.getByLabelText("Command"), "github-mcp");
     await user.click(screen.getByRole("button", { name: "Add argument" }));
-    await user.type(screen.getByLabelText("Startup arguments 1"), "   ");
+    await user.type(screen.getByLabelText("Arguments 1"), "   ");
     await user.click(screen.getByRole("button", { name: "Add argument" }));
-    await user.type(screen.getByLabelText("Startup arguments 2"), "--stdio");
+    await user.type(screen.getByLabelText("Arguments 2"), "--stdio");
     await user.click(
       screen.getByRole("button", { name: "Add environment variable" }),
     );
@@ -141,7 +144,7 @@ describe("McpTab", () => {
       screen.getByLabelText("Environment variables: Value 1"),
       "   ",
     );
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
 
     await waitFor(() =>
       expect(mockCreate).toHaveBeenCalledWith(
@@ -162,9 +165,9 @@ describe("McpTab", () => {
     const user = userEvent.setup();
     render(<McpTab />, { wrapper: Wrapper });
 
-    await user.click(screen.getByRole("button", { name: /Add server/ }));
+    await user.click(screen.getByRole("button", { name: /Add server/i }));
 
-    expect(screen.getByLabelText("Server name")).not.toHaveAttribute("aria-invalid");
+    expect(screen.getByLabelText("Name")).not.toHaveAttribute("aria-invalid");
     expect(screen.getByLabelText("Command")).not.toHaveAttribute("aria-invalid");
     expect(screen.queryByText("Enter a server name.")).toBeNull();
     expect(screen.queryByText(/Enter the command used/)).toBeNull();
@@ -174,15 +177,15 @@ describe("McpTab", () => {
     const user = userEvent.setup();
     render(<McpTab />, { wrapper: Wrapper });
 
-    await user.click(screen.getByRole("button", { name: /Add server/ }));
-    const nameInput = screen.getByLabelText("Server name");
+    await user.click(screen.getByRole("button", { name: /Add server/i }));
+    const nameInput = screen.getByLabelText("Name");
     await user.click(nameInput);
     await user.tab();
 
     expect(screen.queryByRole("alert")).toBeNull();
     expect(nameInput).not.toHaveAttribute("aria-invalid");
 
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
 
     const error = screen.getByText("Enter a server name.");
     expect(error).toHaveTextContent("Enter a server name.");
@@ -195,9 +198,9 @@ describe("McpTab", () => {
     const user = userEvent.setup();
     render(<McpTab />, { wrapper: Wrapper });
 
-    await user.click(screen.getByRole("button", { name: /Add server/ }));
-    await user.type(screen.getByLabelText("Server name"), "github");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: /Add server/i }));
+    await user.type(screen.getByLabelText("Name"), "github");
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
 
     expect(screen.getByLabelText("Command")).toHaveFocus();
     expect(
@@ -209,10 +212,10 @@ describe("McpTab", () => {
     const user = userEvent.setup();
     render(<McpTab />, { wrapper: Wrapper });
 
-    await user.click(screen.getByRole("button", { name: /Add server/ }));
-    await user.type(screen.getByLabelText("Server name"), "remote");
+    await user.click(screen.getByRole("button", { name: /Add server/i }));
+    await user.type(screen.getByLabelText("Name"), "remote");
     await user.click(screen.getByRole("button", { name: /^Streamable HTTP/ }));
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
 
     const urlInput = screen.getByLabelText("Server URL");
     expect(urlInput).toHaveFocus();
@@ -230,11 +233,11 @@ describe("McpTab", () => {
     const user = userEvent.setup();
     render(<McpTab />, { wrapper: Wrapper });
 
-    await user.click(screen.getByRole("button", { name: /Add server/ }));
-    const nameInput = screen.getByLabelText("Server name");
+    await user.click(screen.getByRole("button", { name: /Add server/i }));
+    const nameInput = screen.getByLabelText("Name");
     await user.type(nameInput, name);
     await user.type(screen.getByLabelText("Command"), "tool");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
 
     const error = screen.getByText(message);
     expect(nameInput).toHaveFocus();
@@ -249,12 +252,12 @@ describe("McpTab", () => {
     const user = userEvent.setup();
     render(<McpTab />, { wrapper: Wrapper });
 
-    await user.click(screen.getByRole("button", { name: /Add server/ }));
-    await user.type(screen.getByLabelText("Server name"), "github");
+    await user.click(screen.getByRole("button", { name: /Add server/i }));
+    await user.type(screen.getByLabelText("Name"), "github");
     await user.click(screen.getByRole("tab", { name: "JSON" }));
     const jsonInput = screen.getByLabelText("MCP server JSON configuration");
     fireEvent.change(jsonInput, { target: { value: json } });
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
 
     const error = screen.getByText(message);
     expect(jsonInput).toHaveFocus();
@@ -274,7 +277,7 @@ describe("McpTab", () => {
       const footer = dialog.querySelector<HTMLElement>(
         '[data-slot="mcp-dialog-footer"]',
       );
-      const submit = screen.getByRole("button", { name: "Add" });
+      const submit = screen.getByRole("button", { name: "Add Server" });
 
       expect(dialog).toHaveClass("flex", "max-h-[88vh]", "flex-col");
       expect(scrollArea).toHaveClass("overflow-y-auto");
@@ -283,13 +286,13 @@ describe("McpTab", () => {
       expect(submit).toHaveAttribute("form", scrollArea?.id);
     };
 
-    await user.click(screen.getByRole("button", { name: /Add server/ }));
+    await user.click(screen.getByRole("button", { name: /Add server/i }));
     expectStableDialogLayout();
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
-    await user.click(screen.getByRole("button", { name: /Add server/ }));
+    await user.click(screen.getByRole("button", { name: /Add server/i }));
     expectStableDialogLayout();
   });
 
@@ -400,7 +403,7 @@ describe("McpTab", () => {
     expect(nameInput).toBeDisabled();
     expect(screen.getByRole("button", { name: "Save name" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel rename" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /Add server/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Add server/i })).toBeDisabled();
 
     finishRename();
     await waitFor(() =>
@@ -421,7 +424,7 @@ describe("McpTab", () => {
     expect(
       screen.getByRole("heading", { name: "Replace configuration for linear" }),
     ).toBeInTheDocument();
-    expect(screen.queryByLabelText("Server name")).toBeNull();
+    expect(screen.queryByLabelText("Name")).toBeNull();
     expect(screen.queryByText("Name", { exact: true })).toBeNull();
     expect(screen.getByRole("dialog")).toHaveTextContent("linear");
     expect(screen.getByLabelText("Server URL")).toHaveValue("");
@@ -492,7 +495,7 @@ describe("McpTab", () => {
         "aria-selected",
         "true",
       );
-      expect(screen.getByRole("tab", { name: "Visual editor" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Form" })).toHaveAttribute(
         "aria-disabled",
         "false",
       );
@@ -518,7 +521,7 @@ describe("McpTab", () => {
 
     // The inventory itself stays visible — it carries no credential material.
     expect(screen.getByText("linear")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Add server/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Add server/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Rename server/ })).toBeNull();
     expect(
       screen.queryByRole("button", { name: /^Replace configuration / }),

@@ -651,6 +651,7 @@ func (q *MergeQueue) ensureReleaseArtifact(ctx context.Context, claim MergeQueue
 			"candidate_tree_sha": treeSHA,
 		},
 	}
+	request.ReleaseContract = &contract
 	artifact, result, err := q.artifactBuilder.BuildReleaseArtifact(ctx, request, contract)
 	if err != nil {
 		return fmt.Errorf("isolated release build failed: %w", err)

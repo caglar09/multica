@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
+import "@testing-library/jest-dom/vitest";
 import type { ComponentProps, ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../../locales/en/common.json";
@@ -11,6 +12,8 @@ import type { ManagedMcpServer } from "./mcp-config-model";
 import { McpServerDialog } from "./mcp-server-dialog";
 
 const TEST_RESOURCES = { en: { common: enCommon, agents: enAgents } };
+
+afterEach(cleanup);
 
 function Wrapper({ children }: { children: ReactNode }) {
   return (
@@ -57,10 +60,10 @@ describe("McpServerDialog", () => {
         hideNameWhenEditing: true,
       });
 
-      expect(screen.queryByLabelText("Server name")).toBeNull();
+      expect(screen.queryByLabelText("Name")).toBeNull();
       await user.clear(screen.getByLabelText("Command"));
       await user.type(screen.getByLabelText("Command"), "updated-command");
-      await user.click(screen.getByRole("button", { name: "Save" }));
+      await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
       await waitFor(() =>
         expect(onSave).toHaveBeenCalledWith(name, { command: "updated-command" }),
@@ -77,14 +80,14 @@ describe("McpServerDialog", () => {
         server: action === "rename" ? managedServer() : null,
       });
 
-      const input = screen.getByLabelText("Server name");
+      const input = screen.getByLabelText("Name");
       await user.clear(input);
       await user.type(input, "context7.dev");
       if (action === "create") {
         await user.type(screen.getByLabelText("Command"), "uvx");
       }
       await user.click(screen.getByRole("button", {
-        name: action === "create" ? "Add" : "Save",
+        name: action === "create" ? "Add Server" : "Save Changes",
       }));
 
       expect(input).toHaveFocus();
@@ -114,7 +117,7 @@ describe("McpServerDialog", () => {
       expect(screen.getByRole("tab", { name: "JSON" })).toHaveAttribute(
         "aria-selected", "true",
       );
-      await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+      await user.click(screen.getByRole("tab", { name: "Form" }));
       await user.click(screen.getByRole("button", { name: new RegExp(`^${selected}`) }));
       await user.type(screen.getByLabelText(label), value);
       await user.click(screen.getByRole("button", { name: "Replace configuration" }));
@@ -129,9 +132,9 @@ describe("McpServerDialog", () => {
     const onSave = vi.fn(() => new Promise<void>((resolve) => { finishSave = resolve; }));
     const { onOpenChange } = renderDialog({ server: managedServer(), onSave });
 
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     fireEvent.submit(screen.getByLabelText("Command").closest("form")!);
     await user.keyboard("{Escape}");
@@ -149,7 +152,7 @@ describe("McpServerDialog", () => {
     async (action) => {
       const user = userEvent.setup();
       const { onSave, onOpenChange } = renderDialog();
-      await user.type(screen.getByLabelText("Server name"), "draft");
+      await user.type(screen.getByLabelText("Name"), "draft");
 
       if (action === "Escape") await user.keyboard("{Escape}");
       else await user.click(screen.getByRole("button", { name: action }));
@@ -162,21 +165,21 @@ describe("McpServerDialog", () => {
   it("clears submitted JSON errors when returning to the visual editor", async () => {
     const user = userEvent.setup();
     const { onSave } = renderDialog();
-    await user.type(screen.getByLabelText("Server name"), "fetch");
+    await user.type(screen.getByLabelText("Name"), "fetch");
     await user.type(screen.getByLabelText("Command"), "uvx");
     await user.click(screen.getByRole("tab", { name: "JSON" }));
     fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
       target: { value: "{invalid" },
     });
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Invalid JSON");
 
-    await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+    await user.click(screen.getByRole("tab", { name: "Form" }));
 
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByLabelText("Command")).toHaveValue("uvx");
     expect(screen.getByLabelText("Command")).not.toHaveAttribute("aria-invalid");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add Server" }));
     expect(onSave).toHaveBeenCalledWith("fetch", { command: "uvx" });
   });
 
@@ -193,14 +196,14 @@ describe("McpServerDialog", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "Remove argument 2" }));
-    await user.clear(screen.getByLabelText("Startup arguments 2"));
-    await user.type(screen.getByLabelText("Startup arguments 2"), "updated-last");
+    await user.clear(screen.getByLabelText("Arguments 2"));
+    await user.type(screen.getByLabelText("Arguments 2"), "updated-last");
     await user.click(screen.getByRole("button", { name: "Remove environment variable 2" }));
     await user.clear(screen.getByLabelText("Environment variables: Variable name 2"));
     await user.type(screen.getByLabelText("Environment variables: Variable name 2"), "UPDATED");
     await user.clear(screen.getByLabelText("Environment variables: Value 2"));
     await user.type(screen.getByLabelText("Environment variables: Value 2"), "four");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
     expect(onSave).toHaveBeenCalledWith("fetch", {
       command: "uvx",
@@ -227,7 +230,7 @@ describe("McpServerDialog", () => {
     await user.type(screen.getByLabelText("HTTP headers: Header name 2"), "Updated");
     await user.clear(screen.getByLabelText("HTTP headers: Value 2"));
     await user.type(screen.getByLabelText("HTTP headers: Value 2"), "four");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
 
     expect(onSave).toHaveBeenCalledWith("fetch", {
       type: "http",
