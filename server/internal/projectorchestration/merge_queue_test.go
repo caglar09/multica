@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -77,6 +78,14 @@ func TestMergeQueueRetryLimit(t *testing.T) {
 		if !mergeAttemptExhausted(attempt) {
 			t.Fatalf("merge attempt %d did not exhaust the retry limit", attempt)
 		}
+	}
+}
+
+func TestSplitGitPathListPreservesWhitespace(t *testing.T) {
+	want := []string{"path with spaces.txt", "line\nbreak.txt", " leading.txt "}
+	got := splitGitPathList(strings.Join(want, "\x00") + "\x00")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("splitGitPathList() = %#v, want %#v", got, want)
 	}
 }
 

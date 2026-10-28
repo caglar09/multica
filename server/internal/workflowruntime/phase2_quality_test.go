@@ -15,6 +15,30 @@ func (run qualityGateRunnerFunc) Run(ctx context.Context, request projectorchest
 	return run(ctx, request)
 }
 
+func TestBrowserQAArtifactContentKeepsReviewableScreenshots(t *testing.T) {
+	screenshots := []any{map[string]any{
+		"path": "qa-0001.jpg", "content_type": "image/jpeg", "sha256": "digest", "data_base64": "aGVsbG8=",
+	}}
+	content, ok := browserQAArtifactContent("acceptance", "passed", "task-id", "commit-sha", "daemon_oci", map[string]any{
+		"browser_qa": map[string]any{"screenshots": screenshots, "console_errors": []string{}},
+	})
+	if !ok {
+		t.Fatal("browser QA evidence was not selected for artifact persistence")
+	}
+	if content["commit_sha"] != "commit-sha" || content["runner_type"] != "daemon_oci" {
+		t.Fatalf("artifact content lost commit-bound runner provenance: %#v", content)
+	}
+	qa, ok := content["browser_qa"].(map[string]any)
+	if !ok || len(qa["screenshots"].([]any)) != 1 {
+		t.Fatalf("artifact content lost screenshot evidence: %#v", content)
+	}
+	if _, ok := browserQAArtifactContent("unit_test", "passed", "task-id", "commit-sha", "daemon_oci", map[string]any{
+		"browser_qa": map[string]any{"screenshots": screenshots},
+	}); ok {
+		t.Fatal("non-acceptance gate wrote a browser QA artifact")
+	}
+}
+
 func TestQualityGate(t *testing.T) {
 	t.Run("NoRunnerIsUnavailable", func(t *testing.T) {
 		_, status, err := evaluateQualityGate(context.Background(), nil, projectorchestration.QualityGateRequest{})
@@ -230,7 +254,42 @@ func TestReviewApproved(t *testing.T) {
 	if !reviewApproved(map[string]any{"result": map[string]any{"verdict": "approved"}}) {
 		t.Fatal("approved verdict was not recognized")
 	}
+	if !reviewApproved(map[string]any{"result": map[string]any{"verdict": "approved", "goal_alignment_score": 80}}) {
+		t.Fatal("approved verdict at the goal-alignment threshold was rejected")
+	}
+	if reviewApproved(map[string]any{"result": map[string]any{"verdict": "approved", "goal_alignment_score": 79}}) {
+		t.Fatal("approved verdict below the goal-alignment threshold was accepted")
+	}
 	if reviewApproved(map[string]any{"result": map[string]any{"verdict": "changes_requested"}}) {
 		t.Fatal("changes_requested verdict must not pass review")
+	}
+}
+
+func TestQualityCommitURLSanitizesAndLinksRemote(t *testing.T) {
+	tests := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{
+			name:   "ssh remote",
+			remote: "git@github.com:multica-ai/multica.git",
+			want:   "https://github.com/multica-ai/multica/commit/abc123",
+		},
+		{
+			name:   "credentialed https remote",
+			remote: "https://user:secret@example.com/org/repo.git",
+			want:   "https://example.com/org/repo/commit/abc123",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := qualityCommitURLFromRemote(tt.remote, "abc123"); got != tt.want {
+				t.Fatalf("qualityCommitURLFromRemote() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if got := qualityCommitURLFromRemote("file:///tmp/repo", "abc123"); got != "" {
+		t.Fatalf("local remote should not produce a browser URL, got %q", got)
 	}
 }

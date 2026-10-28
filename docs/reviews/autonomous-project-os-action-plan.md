@@ -606,7 +606,7 @@ Aşağıdaki 20 görev, sistemin tüm açıklarını uçtan uca kapatacak şekil
 
 ---
 
-#### TASK-P2: Hiyerarşik Planlama Motoru (Epic $\rightarrow$ Story $\rightarrow$ Task Decomposition)
+#### TASK-P2: Hiyerarşik Planlama Motoru (Epic $\rightarrow$ Task Decomposition; iki katman)
 * **Öncelik:** P1 (Ölçeklenebilirlik & LLM Doğruluğu)
 * **Tahmini Süre:** 3 Gün
 * **Bağımlılıklar:** `TASK-P1`
@@ -618,7 +618,7 @@ Aşağıdaki 20 görev, sistemin tüm açıklarını uçtan uca kapatacak şekil
   * **Kademe 1 (Milestone/Epic DAG):**
     Planner önce sistemi 5-8 ana mimari faza (Epic) böler:
     Örn: `1. Data Modeling & Migrations` $\rightarrow$ `2. Core Authentication API` $\rightarrow$ `3. Workspace Engine` $\rightarrow$ `4. Frontend Cockpit` $\rightarrow$ `5. End-to-End Testing & Deployment`.
-  * **Kademe 2 (Just-In-Time Story Decomposition):**
+  * **Kademe 2 (Just-In-Time Task Decomposition):**
     Bir Epic aktif hale geldiğinde (`status = 'active'`), ilgili uzman ajan (Örn: Backend Lead veya Frontend Specialist) o faza özel 3-6 görevlik yerel bir alt DAG (Sub-DAG) oluşturur.
   * **Kaldıraç & Yerellik:**
     LLM hiçbir zaman 100 görevin tamamını aynı anda düşünmek zorunda kalmaz; her aşamada yalnızca odaklandığı faza ait spesifikasyon ve bağımlılıklarla çalışır.
@@ -1182,11 +1182,24 @@ Durumlar, aşağıdaki yerel görev ve dal entegrasyon kapılarının ebeveyn do
 ### Dalga 4: İleri Otonomi & Kullanıcı Kontrolü (Advanced Autonomy & UI) — Hafta 4
 * **TASK-G3:** Otonom Git Çatışma Çözücü Ajan (`GitConflictResolverAgent`)
 * **TASK-S4:** Hedefe Sadakat Denetçisi & Reviewer Prompt Enjeksiyonu (`GoalDriftAuditor`)
-* **TASK-P2:** Hiyerarşik Planlama Motoru (Epic $\rightarrow$ Story $\rightarrow$ Task Decomposition)
+* **TASK-P2:** Hiyerarşik Planlama Motoru (Epic $\rightarrow$ Task Decomposition; iki katman)
 * **TASK-E1:** Headless Browser & Playwright E2E Doğrulama Koşucusu
 * **TASK-U1:** Cockpit Kalite Kanıtları, Commit SHA & Doğrulama Rozetleri
 * **TASK-U2:** Kısmi Veri Uyarıları & Spesifikasyon-Gereksinim Kapsama Matrisi
 * *Hedef:* Büyük projelerin hiyerarşik yönetimi, çatışmaların otomatik çözülmesi, canlı tarayıcı testleri ve tam şeffaf kullanıcı arayüzü.
+
+### Dalga 4 Gerçekleştirme Durumu
+
+P2 hiyerarşisi, kullanıcının seçimi doğrultusunda iki katmanlı **Epic → Task** olarak uygulandı. Görev durumları alt görev kabul kapılarının ve üst entegrasyon kapısının yeniden doğrulamasına dayanır. Üretim dağıtımı insan onayında kaldı; bu çalışma sırasında dağıtım yapılmadı. `make check` bütün depo için yeşil değildir; locale parity, MCP kopyası, deployment bağlantısı ve eski settings testlerinde başarısız oldu ve E2E aşamasına ulaşmadı. Tam Go race koşusunda `internal/service` için toplu koşu hatası izole tekrarında geçerken, tam handler paketi `TestCommentSourceContextLifecycle` temizleme beklentisinde izole tekrarında da başarısız oldu. Bu sonuçlar görevlerin odaklı doğrulamasından ayrı tutulmuştur.
+
+| Görev | Durum | Yerel kanıt |
+|---|---|---|
+| TASK-G3 | implemented — scoped verified | `leaf-4.1.1:G1-G3`, `leaf-4.1.5:G1`, `node-4.1:N1-N3`, `GATES:R1`: çakışma çözümü, kalite kapısından sonra compare-and-swap ref ilerletme, bounded retry ve görünür escalation |
+| TASK-S4 | implemented — scoped verified | `leaf-4.1.2:G1-G4`, `leaf-4.1.5:G1`, `node-4.1:N1-N3`, `GATES:R1`: kanonik goal/non-goal/requirement bağlamı, düşük puanda changes requested ve kalıcı çeyrek ilerleme checkpoint denetimleri |
+| TASK-P2 | implemented — scoped verified | `leaf-4.1.3:G1-G5`, `leaf-4.1.5:G1`, `node-4.1:N1-N3`, `GATES:R1`: Epic → Task just-in-time ayrıştırma, hiyerarşi içeren digest, exact-digest onayı ve Epic bitince ardılın etkinleşmesi |
+| TASK-E1 | implemented — scoped verified | `leaf-4.1.4:G1-G4`, `leaf-4.1.5:G1`, `node-4.1:N1-N3`, `GATES:R1`: çevrimdışı pinned OCI Chromium form/yönlendirme smoke testi, fail-closed hata kuralları ve saklanan ekran görüntüsü kanıtı |
+| TASK-U1 | implemented — scoped verified | `leaf-4.2.1:G1`, `leaf-4.2.1:G4`, `GATES:R1`: deterministik runner kanıtı advisory beyandan ayrılıyor; schema fallback ve cockpit kanıt ayrıntıları test edildi |
+| TASK-U2 | implemented — scoped verified | `leaf-4.2.1:G2-G4`, `GATES:R1`: kısmi snapshot ve eksik bölüm uyarısı; requirement ID → Epic/Task → doğrulama/QA → deployment kapsam matrisi |
 
 ---
 

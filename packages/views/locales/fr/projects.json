@@ -292,5 +292,43 @@
     "approve": "Approuver cette révision",
     "approve_success": "Plan approuvé ; les tâches admissibles peuvent commencer.",
     "approve_error": "Impossible d'approuver ce plan."
+  },
+  "autonomous_evidence": {
+    "runner_daemon": "Exécuteur local daemon",
+    "runner_webhook": "Exécuteur webhook",
+    "runner_advisory": "Déclaration de l’agent",
+    "evidence_details": "Détails des preuves",
+    "command": "Commande",
+    "exit_code": "Code de sortie",
+    "duration": "Durée",
+    "milliseconds": "ms",
+    "error": "Erreur",
+    "waiver": "Dérogation",
+    "stdout": "stdout",
+    "stderr": "stderr",
+    "no_additional_evidence": "Aucune autre preuve d’exécution n’a été enregistrée.",
+    "requirement_coverage": "Couverture des exigences",
+    "coverage_description": "Chaque identifiant d’exigence stable est relié à son Epic ou Task, aux contrôles de vérification et aux dernières preuves de déploiement.",
+    "plan_nodes": "Nœuds du plan",
+    "no_linked_plan_node": "Aucun nœud de plan associé",
+    "verification_gates": "Contrôles de vérification",
+    "no_verification_evidence": "Aucune preuve de vérification",
+    "latest_deployments": "Derniers déploiements",
+    "no_deployment_recorded": "Aucun déploiement enregistré",
+    "stable_requirements_missing": "Aucun identifiant d’exigence stable n’est disponible dans la spécification actuelle.",
+    "non_goals": "Hors périmètre",
+    "non_goals_description": "Ces éléments sont explicitement exclus de la spécification du projet.",
+    "non_goal": "Hors périmètre",
+    "epic": "Epic",
+    "task": "Task",
+    "coverage_status": {
+      "unmapped": "Non associé",
+      "verification_failed": "Échec de la vérification",
+      "verified": "Vérifié",
+      "awaiting_verification": "En attente de vérification",
+      "in_progress": "En cours"
+    },
+    "screenshots": "Captures d’écran",
+    "screenshot": "Capture d’écran"
   }
 }

@@ -9,6 +9,7 @@ import (
 	"net/netip"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/pgvector/pgvector-go"
 )
 
 type ActivityLog struct {
@@ -326,6 +327,7 @@ type AutonomousProjectBrainEntry struct {
 	GovernanceState     string             `json:"governance_state"`
 	ConflictGroupID     pgtype.UUID        `json:"conflict_group_id"`
 	BrainRevision       int64              `json:"brain_revision"`
+	Embedding           pgvector.Vector    `json:"embedding"`
 }
 
 type AutonomousProjectBrainImpactProposal struct {
@@ -499,19 +501,23 @@ type AutonomousProjectControl struct {
 }
 
 type AutonomousProjectDeployment struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	ProjectID      pgtype.UUID        `json:"project_id"`
-	PlanID         pgtype.UUID        `json:"plan_id"`
-	Environment    string             `json:"environment"`
-	Provider       string             `json:"provider"`
-	ExternalRef    pgtype.Text        `json:"external_ref"`
-	Status         string             `json:"status"`
-	PolicySnapshot []byte             `json:"policy_snapshot"`
-	Evidence       []byte             `json:"evidence"`
-	StartedAt      pgtype.Timestamptz `json:"started_at"`
-	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ID                    pgtype.UUID        `json:"id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	ProjectID             pgtype.UUID        `json:"project_id"`
+	PlanID                pgtype.UUID        `json:"plan_id"`
+	Environment           string             `json:"environment"`
+	Provider              string             `json:"provider"`
+	ExternalRef           pgtype.Text        `json:"external_ref"`
+	Status                string             `json:"status"`
+	PolicySnapshot        []byte             `json:"policy_snapshot"`
+	Evidence              []byte             `json:"evidence"`
+	StartedAt             pgtype.Timestamptz `json:"started_at"`
+	CompletedAt           pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	ReleaseManifestID     pgtype.UUID        `json:"release_manifest_id"`
+	ReleaseManifestDigest pgtype.Text        `json:"release_manifest_digest"`
+	GenericOperationID    pgtype.UUID        `json:"generic_operation_id"`
+	NodeID                pgtype.UUID        `json:"node_id"`
 }
 
 type AutonomousProjectEscalation struct {
@@ -602,6 +608,8 @@ type AutonomousProjectPlan struct {
 	PlanDigest              string             `json:"plan_digest"`
 	ApprovedAt              pgtype.Timestamptz `json:"approved_at"`
 	ApprovedBy              pgtype.Text        `json:"approved_by"`
+	ReleaseManifestID       pgtype.UUID        `json:"release_manifest_id"`
+	ReleaseManifestDigest   pgtype.Text        `json:"release_manifest_digest"`
 }
 
 type AutonomousProjectPlanEdge struct {
@@ -660,6 +668,8 @@ type AutonomousProjectPlanNode struct {
 	BlockedCategory      pgtype.Text        `json:"blocked_category"`
 	LogicalNodeID        pgtype.UUID        `json:"logical_node_id"`
 	RequirementIds       []byte             `json:"requirement_ids"`
+	IsEpic               bool               `json:"is_epic"`
+	ParentEpicKey        pgtype.Text        `json:"parent_epic_key"`
 }
 
 type AutonomousProjectQualityGateRun struct {
@@ -683,6 +693,27 @@ type AutonomousProjectQualityGateRun struct {
 	WorktreePath    pgtype.Text        `json:"worktree_path"`
 	CommitSha       pgtype.Text        `json:"commit_sha"`
 	RunnerType      pgtype.Text        `json:"runner_type"`
+}
+
+type AutonomousProjectReleaseManifest struct {
+	ManifestID         pgtype.UUID        `json:"manifest_id"`
+	ManifestDigest     string             `json:"manifest_digest"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ProjectID          pgtype.UUID        `json:"project_id"`
+	PlanID             pgtype.UUID        `json:"plan_id"`
+	ChangeSetID        pgtype.UUID        `json:"change_set_id"`
+	PlanRevision       int64              `json:"plan_revision"`
+	PlanDigest         string             `json:"plan_digest"`
+	Environment        string             `json:"environment"`
+	CommitSha          string             `json:"commit_sha"`
+	TreeSha            string             `json:"tree_sha"`
+	Builder            string             `json:"builder"`
+	Outputs            []string           `json:"outputs"`
+	ArtifactDigest     string             `json:"artifact_digest"`
+	ArtifactStorageKey string             `json:"artifact_storage_key"`
+	QualityGateRunIds  []pgtype.UUID      `json:"quality_gate_run_ids"`
+	ManifestJson       []byte             `json:"manifest_json"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
 
 type AutonomousProjectReviewFinding struct {

@@ -448,6 +448,9 @@ func (s *Store) RefreshReady(ctx context.Context, workspaceID, projectID pgtype.
 }
 
 func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
+	if err := reconcileCompletedEpicsTx(ctx, tx, planID); err != nil {
+		return fmt.Errorf("reconcile completed project Epics: %w", err)
+	}
 	_, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node n
 		SET status = 'ready',
@@ -574,6 +577,7 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 		  AND NULLIF(p.plan_digest, '') IS NOT NULL
 		  AND p.approved_at IS NOT NULL
 		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
+		  AND n.is_epic = FALSE
 		  AND n.status IN ('running', 'verification')
 	`, workspaceID, projectID).Scan(&running); err != nil {
 		return nil, err
@@ -587,7 +591,7 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT n.id, n.node_key, n.kind, n.title, n.description, n.priority,
+		SELECT n.id, n.node_key, n.is_epic, COALESCE(n.parent_epic_key, ''), n.kind, n.title, n.description, n.priority,
 		       n.risk_level, COALESCE(n.required_role_family, ''),
 		       n.required_capabilities, n.acceptance_criteria, n.max_attempts
 		FROM autonomous_project_plan_node n
@@ -617,7 +621,7 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 		var kind, risk string
 		var capabilitiesJSON, criteriaJSON []byte
 		if err := rows.Scan(
-			&id, &item.Key, &kind, &item.Title, &item.Description, &item.Priority,
+			&id, &item.Key, &item.IsEpic, &item.ParentEpicKey, &kind, &item.Title, &item.Description, &item.Priority,
 			&risk, &item.RequiredRoleFamily, &capabilitiesJSON, &criteriaJSON, &item.MaxAttempts,
 		); err != nil {
 			return nil, err
@@ -776,6 +780,7 @@ func (s *Store) ClaimReadyNode(
 		  AND n.node_key = $3
 		  AND n.materialized_issue_id IS NOT NULL
 		  AND n.status = 'ready'
+		  AND n.is_epic = FALSE
 		  AND n.attempt < n.max_attempts
 		  AND p.status = 'active'
 		  AND NULLIF(p.plan_digest, '') IS NOT NULL
@@ -1431,12 +1436,12 @@ func (s *Store) LoadPlan(ctx context.Context, workspaceID, projectID pgtype.UUID
 	var createdAt, updatedAt pgtype.Timestamptz
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, revision, source_revision, specification_revision_id, planner_name, planner_model,
-		       goal, specification, policy, status, created_at, updated_at
+		       goal, specification, policy, status, plan_digest, created_at, updated_at
 		FROM autonomous_project_plan
 		WHERE workspace_id = $1 AND project_id = $2 AND revision = $3
 	`, workspaceID, projectID, revision).Scan(
 		&id, &out.Revision, &out.SourceRevision, &specificationRevisionID, &out.PlannerName, &model,
-		&out.Plan.Goal, &specJSON, &policyJSON, &out.Status, &createdAt, &updatedAt,
+		&out.Plan.Goal, &specJSON, &policyJSON, &out.Status, &out.PlanDigest, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return StoredPlan{}, err
@@ -1487,7 +1492,7 @@ func (s *Store) LoadLatestPlan(ctx context.Context, workspaceID, projectID pgtyp
 
 func (s *Store) loadSpecs(ctx context.Context, planID pgtype.UUID) ([]NodeSpec, []EdgeSpec, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT node_key, kind, title, description, priority,
+		SELECT node_key, is_epic, COALESCE(parent_epic_key, ''), kind, title, description, priority,
 		       COALESCE(required_role_family, ''), required_capabilities,
 		       acceptance_criteria, requirement_ids, risk_level, max_attempts
 		FROM autonomous_project_plan_node
@@ -1502,7 +1507,7 @@ func (s *Store) loadSpecs(ctx context.Context, planID pgtype.UUID) ([]NodeSpec, 
 		var node NodeSpec
 		var kind, risk string
 		var caps, criteria, requirementIDs []byte
-		if err := rows.Scan(&node.Key, &kind, &node.Title, &node.Description, &node.Priority,
+		if err := rows.Scan(&node.Key, &node.IsEpic, &node.ParentEpicKey, &kind, &node.Title, &node.Description, &node.Priority,
 			&node.RequiredRoleFamily, &caps, &criteria, &requirementIDs, &risk, &node.MaxAttempts); err != nil {
 			rows.Close()
 			return nil, nil, err
@@ -1589,6 +1594,7 @@ func (s *Store) StartExternalNode(
 		  AND n.project_id = $2
 		  AND n.node_key = $3
 		  AND n.status = 'ready'
+		  AND n.is_epic = FALSE
 		  AND n.attempt < n.max_attempts
 		  AND p.status = 'active'
 		  AND NULLIF(p.plan_digest, '') IS NOT NULL

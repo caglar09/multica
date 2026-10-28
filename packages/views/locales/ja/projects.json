@@ -521,5 +521,43 @@
     "approve": "このリビジョンを承認",
     "approve_success": "計画を承認しました。実行可能な作業を開始できます。",
     "approve_error": "計画を承認できませんでした。"
+  },
+  "autonomous_evidence": {
+    "runner_daemon": "ローカル daemon ランナー",
+    "runner_webhook": "Webhook ランナー",
+    "runner_advisory": "エージェント申告",
+    "evidence_details": "証拠の詳細",
+    "command": "コマンド",
+    "exit_code": "終了コード",
+    "duration": "所要時間",
+    "milliseconds": "ms",
+    "error": "エラー",
+    "waiver": "免除",
+    "stdout": "stdout",
+    "stderr": "stderr",
+    "no_additional_evidence": "追加のランナー証拠は記録されていません。",
+    "requirement_coverage": "要件カバレッジ",
+    "coverage_description": "各安定要件 ID を Epic または Task、検証ゲート、最新のデプロイ証拠に結び付けます。",
+    "plan_nodes": "計画ノード",
+    "no_linked_plan_node": "関連する計画ノードはありません",
+    "verification_gates": "検証ゲート",
+    "no_verification_evidence": "検証証拠はありません",
+    "latest_deployments": "最新のデプロイ",
+    "no_deployment_recorded": "デプロイ記録はありません",
+    "stable_requirements_missing": "現在の仕様に安定要件 ID がありません。",
+    "non_goals": "対象外",
+    "non_goals_description": "プロジェクト仕様で明示的に対象外とされています。",
+    "non_goal": "対象外",
+    "epic": "Epic",
+    "task": "Task",
+    "coverage_status": {
+      "unmapped": "未対応",
+      "verification_failed": "検証失敗",
+      "verified": "検証済み",
+      "awaiting_verification": "検証待ち",
+      "in_progress": "進行中"
+    },
+    "screenshots": "スクリーンショット",
+    "screenshot": "スクリーンショット"
   }
 }

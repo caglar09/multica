@@ -521,5 +521,43 @@
     "approve": "审批此版本",
     "approve_success": "计划已审批；符合条件的工作现在可以开始。",
     "approve_error": "无法审批此计划。"
+  },
+  "autonomous_evidence": {
+    "runner_daemon": "本地守护进程运行器",
+    "runner_webhook": "Webhook 运行器",
+    "runner_advisory": "代理自述",
+    "evidence_details": "证据详情",
+    "command": "命令",
+    "exit_code": "退出码",
+    "duration": "耗时",
+    "milliseconds": "毫秒",
+    "error": "错误",
+    "waiver": "豁免",
+    "stdout": "stdout",
+    "stderr": "stderr",
+    "no_additional_evidence": "没有记录其他运行器证据。",
+    "requirement_coverage": "需求覆盖",
+    "coverage_description": "每个稳定需求 ID 都关联到 Epic 或 Task、验证门禁及最新部署证据。",
+    "plan_nodes": "计划节点",
+    "no_linked_plan_node": "没有关联的计划节点",
+    "verification_gates": "验证门禁",
+    "no_verification_evidence": "没有验证证据",
+    "latest_deployments": "最近部署",
+    "no_deployment_recorded": "没有部署记录",
+    "stable_requirements_missing": "当前规格中没有可用的稳定需求 ID。",
+    "non_goals": "非目标",
+    "non_goals_description": "这些内容已在项目规格中明确排除。",
+    "non_goal": "非目标",
+    "epic": "Epic",
+    "task": "Task",
+    "coverage_status": {
+      "unmapped": "未映射",
+      "verification_failed": "验证失败",
+      "verified": "已验证",
+      "awaiting_verification": "等待验证",
+      "in_progress": "进行中"
+    },
+    "screenshots": "截图",
+    "screenshot": "截图"
   }
 }

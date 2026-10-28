@@ -20,6 +20,7 @@ import {
   Users,
   Workflow,
   Sparkles,
+  ListChecks,
 } from "lucide-react";
 import { toast } from "sonner";
 import { clientErrorMessage, errorCode } from "@multica/core/api";
@@ -76,6 +77,8 @@ import { CreateSkillDialog } from "../../skills/components/create-skill-dialog";
 import { useT } from "../../i18n";
 import { ProjectManagerHub } from "./project-manager-hub";
 import { AutonomousPlanApprovalCard } from "./autonomous-plan-approval-card";
+import { QualityGateEvidenceCard } from "./quality-gate-evidence-card";
+import { RequirementCoverageTab } from "./requirement-coverage-tab";
 
 function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -1826,6 +1829,26 @@ export function AutonomousControlCenter({
           </Card>
         ) : null}
 
+        {data.partial ? (
+          <div
+            role="status"
+            aria-live="polite"
+            className="mb-4 rounded-lg border border-amber-600/30 bg-amber-600/10 p-3 text-sm text-amber-800 dark:text-amber-300"
+          >
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <div>
+                <p>Some project history could not be loaded. The snapshot is partial.</p>
+                {data.missing_sections.length > 0 ? (
+                  <p className="mt-1 text-caption">
+                    Missing: {data.missing_sections.map((section) => section.replaceAll("_", " ")).join(", ")}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <Tabs defaultValue="overview" className="min-h-0">
           <TabsList variant="line" className="mb-4 max-w-full overflow-x-auto">
             <TabsTrigger value="overview">
@@ -1836,6 +1859,9 @@ export function AutonomousControlCenter({
             </TabsTrigger>
             <TabsTrigger value="plan">
               <GitBranch /> Project OS
+            </TabsTrigger>
+            <TabsTrigger value="coverage">
+              <ListChecks /> Requirement coverage
             </TabsTrigger>
             <TabsTrigger value="brain">
               <Brain /> Brain
@@ -1906,6 +1932,10 @@ export function AutonomousControlCenter({
                 }}
               />
             )}
+          </TabsContent>
+
+          <TabsContent value="coverage" className="space-y-4">
+            <RequirementCoverageTab snapshot={data} />
           </TabsContent>
 
           <TabsContent value="overview" className="space-y-4">
@@ -2487,28 +2517,7 @@ export function AutonomousControlCenter({
                     {data.quality_gates.length > 0 ? (
                       <div className="grid gap-2 md:grid-cols-2">
                         {data.quality_gates.map((gate) => (
-                          <div
-                            key={gate.id}
-                            className="flex items-center justify-between gap-3 rounded-lg border p-3"
-                          >
-                            <div>
-                              <div className="font-medium">{gate.gate_type}</div>
-                              <div className="text-caption text-muted-foreground">
-                                {formatTime(gate.updated_at)}
-                              </div>
-                            </div>
-                            <Badge
-                              variant={
-                                gate.status === "failed"
-                                  ? "destructive"
-                                  : gate.status === "passed"
-                                    ? "default"
-                                    : "outline"
-                              }
-                            >
-                              {gate.status}
-                            </Badge>
-                          </div>
+                          <QualityGateEvidenceCard key={gate.id} gate={gate} />
                         ))}
                       </div>
                     ) : (

@@ -74,6 +74,60 @@ func TestWebhookDeploymentAdapter(t *testing.T) {
 	}
 }
 
+func TestWebhookGoalDriftAuditorRequiresAuthenticatedBoundedVerdict(t *testing.T) {
+	const secret = "goal-drift-secret"
+	specification := ProjectSpecification{
+		Goal:             "Deliver a reliable workspace issue flow.",
+		Summary:          "Reliable issue flow",
+		Requirements:     []SpecificationRequirement{{ID: "REQ-ISSUE", Text: "Issues can be tracked.", Rationale: "Teams need shared work tracking.", Source: "brief"}},
+		DefinitionOfDone: []string{"Review evidence is complete."},
+	}
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if got := r.Header.Get("Authorization"); got != "Bearer "+secret {
+			t.Errorf("authorization = %q, want configured bearer secret", got)
+		}
+		var body struct {
+			Action  string                `json:"action"`
+			Request GoalDriftAuditRequest `json:"request"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Action != "audit_goal_drift" || body.Request.AuditID != "audit-1" ||
+			body.Request.Checkpoint != 25 || body.Request.PlanDigest != strings.Repeat("a", 64) ||
+			body.Request.Specification.Goal != specification.Goal || len(body.Request.CompletedWork) != 1 {
+			t.Errorf("goal drift audit request lost its immutable context: %+v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"verdict":"approved","summary":"Work remains aligned.","goal_alignment_score":92,"goal_alignment_rationale":"All required outcomes are represented.","requirement_attestations":["REQ-ISSUE"],"findings":[]}`))
+	}))
+	defer server.Close()
+	auditor := NewWebhookGoalDriftAuditor(WebhookAdapterConfig{
+		GoalDriftURL: server.URL, BearerToken: secret, Timeout: time.Second,
+	})
+	result, err := auditor.Audit(context.Background(), GoalDriftAuditRequest{
+		AuditID: "audit-1", WorkspaceID: "workspace-1", ProjectID: "project-1",
+		PlanID: "plan-1", PlanRevision: 3, PlanDigest: strings.Repeat("a", 64),
+		Checkpoint: 25, CompletedNodes: 1, TotalNodes: 4, Specification: specification,
+		CompletedWork: []GoalDriftWorkEvidence{{NodeKey: "api", Title: "Issue API", CommitSHA: strings.Repeat("b", 40)}},
+	})
+	if err != nil {
+		t.Fatalf("Audit() error = %v", err)
+	}
+	if !called || result.Verdict != "approved" || result.GoalAlignmentScore != 92 {
+		t.Fatalf("Audit() = %+v, called=%v", result, called)
+	}
+
+	missingSecret := NewWebhookGoalDriftAuditor(WebhookAdapterConfig{GoalDriftURL: server.URL, Timeout: time.Second})
+	if _, err := missingSecret.Audit(context.Background(), GoalDriftAuditRequest{
+		Checkpoint: 25, TotalNodes: 1, Specification: specification,
+	}); err == nil {
+		t.Fatal("goal drift audit accepted a missing webhook secret")
+	}
+}
+
 func TestWebhookDeploymentAdapter_RequiresExactManifestAcknowledgement(t *testing.T) {
 	manifest := ProviderReleaseManifest{
 		Version: 1, ManifestID: "00000000-0000-4000-8000-000000000011",

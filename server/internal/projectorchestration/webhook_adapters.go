@@ -23,6 +23,8 @@ import (
 type WebhookAdapterConfig struct {
 	RepositoryURL  string
 	QualityURL     string
+	ConflictURL    string
+	GoalDriftURL   string
 	DeploymentURL  string
 	ObservationURL string
 	BearerToken    string
@@ -32,11 +34,93 @@ type WebhookAdapterConfig struct {
 type webhookAdapters struct {
 	repositoryURL  string
 	qualityURL     string
+	conflictURL    string
+	goalDriftURL   string
 	deploymentURL  string
 	observationURL string
 	bearerToken    string
 	client         *http.Client
 }
+
+type ConflictPatchRequest struct {
+	ChangeSetID              string   `json:"change_set_id"`
+	WorkspaceID              string   `json:"workspace_id"`
+	ProjectID                string   `json:"project_id"`
+	PlanID                   string   `json:"plan_id"`
+	NodeID                   string   `json:"node_id"`
+	IssueID                  string   `json:"issue_id"`
+	SourceTaskID             string   `json:"source_task_id"`
+	ReviewTaskID             string   `json:"review_task_id"`
+	Attempt                  int      `json:"attempt"`
+	AgentRole                string   `json:"agent_role"`
+	BaseSHA                  string   `json:"base_sha"`
+	SourceSHA                string   `json:"source_sha"`
+	ConflictFiles            []string `json:"conflict_files"`
+	ConflictDiff             string   `json:"conflict_diff"`
+	SourceTaskSpecification  string   `json:"source_task_specification"`
+	SourceAcceptanceCriteria string   `json:"source_acceptance_criteria"`
+	ReviewTaskSpecification  string   `json:"review_task_specification"`
+	ReviewAcceptanceCriteria string   `json:"review_acceptance_criteria"`
+}
+
+type ConflictPatchProposal struct {
+	Resolved    bool   `json:"resolved"`
+	Patch       string `json:"patch"`
+	Explanation string `json:"explanation"`
+}
+
+type ConflictPatchResolver interface {
+	ResolvePatch(ctx context.Context, request ConflictPatchRequest) (ConflictPatchProposal, error)
+}
+
+type GoalDriftAuditRequest struct {
+	AuditID        string                  `json:"audit_id"`
+	WorkspaceID    string                  `json:"workspace_id"`
+	ProjectID      string                  `json:"project_id"`
+	PlanID         string                  `json:"plan_id"`
+	PlanRevision   int64                   `json:"plan_revision"`
+	PlanDigest     string                  `json:"plan_digest"`
+	Checkpoint     int                     `json:"checkpoint_percent"`
+	CompletedNodes int                     `json:"completed_nodes"`
+	TotalNodes     int                     `json:"total_nodes"`
+	Specification  ProjectSpecification    `json:"specification"`
+	CompletedWork  []GoalDriftWorkEvidence `json:"completed_work"`
+}
+
+type GoalDriftWorkEvidence struct {
+	NodeKey            string   `json:"node_key"`
+	Title              string   `json:"title"`
+	Description        string   `json:"description"`
+	RequirementIDs     []string `json:"requirement_ids"`
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+	CommitSHA          string   `json:"commit_sha,omitempty"`
+	ChangedFiles       []string `json:"changed_files,omitempty"`
+}
+
+type GoalDriftFinding struct {
+	ID          string `json:"id"`
+	Severity    string `json:"severity"`
+	Category    string `json:"category"`
+	Description string `json:"description"`
+	Evidence    string `json:"evidence"`
+	Blocking    bool   `json:"blocking"`
+	Lifecycle   string `json:"lifecycle,omitempty"`
+}
+
+type GoalDriftAuditResult struct {
+	Verdict                 string             `json:"verdict"`
+	Summary                 string             `json:"summary"`
+	GoalAlignmentScore      int                `json:"goal_alignment_score"`
+	GoalAlignmentRationale  string             `json:"goal_alignment_rationale"`
+	RequirementAttestations []string           `json:"requirement_attestations"`
+	Findings                []GoalDriftFinding `json:"findings"`
+}
+
+type GoalDriftAuditor interface {
+	Audit(ctx context.Context, request GoalDriftAuditRequest) (GoalDriftAuditResult, error)
+}
+
+const maxConflictPatchBytes = 1 << 20
 
 // webhookDeploymentPayload exists only for the outbound call. It is never
 // persisted as a deployment operation; the artifact URL is freshly presigned.
@@ -69,6 +153,20 @@ func NewWebhookQualityGateRunner(cfg WebhookAdapterConfig) QualityGateRunner {
 	return newWebhookAdapters(cfg)
 }
 
+func NewWebhookConflictPatchResolver(cfg WebhookAdapterConfig) ConflictPatchResolver {
+	if strings.TrimSpace(cfg.ConflictURL) == "" {
+		return nil
+	}
+	return newWebhookAdapters(cfg)
+}
+
+func NewWebhookGoalDriftAuditor(cfg WebhookAdapterConfig) GoalDriftAuditor {
+	if strings.TrimSpace(cfg.GoalDriftURL) == "" {
+		return nil
+	}
+	return newWebhookAdapters(cfg)
+}
+
 func NewWebhookDeploymentAdapter(cfg WebhookAdapterConfig) DeploymentAdapter {
 	if strings.TrimSpace(cfg.DeploymentURL) == "" {
 		return nil
@@ -91,11 +189,89 @@ func newWebhookAdapters(cfg WebhookAdapterConfig) *webhookAdapters {
 	return &webhookAdapters{
 		repositoryURL:  strings.TrimSpace(cfg.RepositoryURL),
 		qualityURL:     strings.TrimSpace(cfg.QualityURL),
+		conflictURL:    strings.TrimSpace(cfg.ConflictURL),
+		goalDriftURL:   strings.TrimSpace(cfg.GoalDriftURL),
 		deploymentURL:  strings.TrimSpace(cfg.DeploymentURL),
 		observationURL: strings.TrimSpace(cfg.ObservationURL),
 		bearerToken:    strings.TrimSpace(cfg.BearerToken),
 		client:         &http.Client{Timeout: timeout},
 	}
+}
+
+func (a *webhookAdapters) Audit(ctx context.Context, request GoalDriftAuditRequest) (GoalDriftAuditResult, error) {
+	if a == nil || a.goalDriftURL == "" {
+		return GoalDriftAuditResult{}, ErrAdapterNotConfigured
+	}
+	if strings.TrimSpace(a.bearerToken) == "" {
+		return GoalDriftAuditResult{}, errors.New("goal drift auditor webhook requires a bearer secret")
+	}
+	if request.Checkpoint != 25 && request.Checkpoint != 50 && request.Checkpoint != 75 && request.Checkpoint != 100 {
+		return GoalDriftAuditResult{}, errors.New("goal drift audit checkpoint is unsupported")
+	}
+	if request.CompletedNodes < 0 || request.TotalNodes <= 0 || request.CompletedNodes > request.TotalNodes || len(request.CompletedWork) > 200 {
+		return GoalDriftAuditResult{}, errors.New("goal drift audit evidence exceeds its safe bounds")
+	}
+	if err := ValidateProjectSpecification(request.Specification); err != nil {
+		return GoalDriftAuditResult{}, fmt.Errorf("validate goal drift audit specification: %w", err)
+	}
+	payload := map[string]any{"action": "audit_goal_drift", "request": request}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return GoalDriftAuditResult{}, fmt.Errorf("encode goal drift audit request: %w", err)
+	}
+	if len(encoded) > 1<<20 {
+		return GoalDriftAuditResult{}, errors.New("goal drift audit request exceeds the safe size limit")
+	}
+	var result GoalDriftAuditResult
+	if err := a.post(ctx, a.goalDriftURL, payload, &result); err != nil {
+		return GoalDriftAuditResult{}, err
+	}
+	if strings.TrimSpace(result.Summary) == "" || strings.TrimSpace(result.GoalAlignmentRationale) == "" {
+		return GoalDriftAuditResult{}, errors.New("goal drift audit response is missing its summary or rationale")
+	}
+	if result.GoalAlignmentScore < 0 || result.GoalAlignmentScore > 100 {
+		return GoalDriftAuditResult{}, errors.New("goal drift audit score must be between 0 and 100")
+	}
+	if len(result.Findings) > 100 {
+		return GoalDriftAuditResult{}, errors.New("goal drift audit response has too many findings")
+	}
+	switch result.Verdict {
+	case "approved", "changes_requested":
+	default:
+		return GoalDriftAuditResult{}, fmt.Errorf("goal drift audit returned unsupported verdict %q", result.Verdict)
+	}
+	return result, nil
+}
+
+func (a *webhookAdapters) ResolvePatch(ctx context.Context, request ConflictPatchRequest) (ConflictPatchProposal, error) {
+	if a == nil || a.conflictURL == "" {
+		return ConflictPatchProposal{}, ErrAdapterNotConfigured
+	}
+	if strings.TrimSpace(a.bearerToken) == "" {
+		return ConflictPatchProposal{}, errors.New("conflict resolver webhook requires a bearer secret")
+	}
+	if request.Attempt < 1 || request.Attempt > 2 || len(request.ConflictFiles) == 0 ||
+		len(request.ConflictFiles) > 256 || len(request.ConflictDiff) > 64*1024 {
+		return ConflictPatchProposal{}, errors.New("conflict resolver request exceeds its safe bounds")
+	}
+	payload := map[string]any{"action": "resolve_merge_conflict", "request": request}
+	var proposal ConflictPatchProposal
+	if err := a.post(ctx, a.conflictURL, payload, &proposal); err != nil {
+		return ConflictPatchProposal{}, err
+	}
+	if len(proposal.Patch) > maxConflictPatchBytes {
+		return ConflictPatchProposal{}, errors.New("conflict resolver patch exceeds the safe size limit")
+	}
+	if strings.TrimSpace(proposal.Explanation) == "" {
+		return ConflictPatchProposal{}, errors.New("conflict resolver response is missing an explanation")
+	}
+	if proposal.Resolved && strings.TrimSpace(proposal.Patch) == "" {
+		return ConflictPatchProposal{}, errors.New("resolved conflict response is missing its patch")
+	}
+	if !proposal.Resolved && strings.TrimSpace(proposal.Patch) != "" {
+		return ConflictPatchProposal{}, errors.New("unresolved conflict response must not include a patch")
+	}
+	return proposal, nil
 }
 
 func (a *webhookAdapters) Snapshot(

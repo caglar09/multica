@@ -1561,6 +1561,20 @@ func (r *Runtime) processProjectSchedulingForProject(
 	if materialized {
 		return nil
 	}
+	goalDriftAuditPending, err := r.enqueueGoalDriftAuditCheckpoints(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("queue goal drift audit checkpoint: %w", err)
+	}
+	if goalDriftAuditPending {
+		return nil
+	}
+	goalDriftBlocked, err := r.goalDriftAuditBlocksProject(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("check goal drift audit result: %w", err)
+	}
+	if goalDriftBlocked {
+		return nil
+	}
 
 	ready, err := r.projectStore.ListReadyNodes(ctx, workspaceID, projectID, 20)
 	if err != nil {
@@ -1574,6 +1588,23 @@ func (r *Runtime) processProjectSchedulingForProject(
 		if paused {
 			break
 		}
+		if node.IsEpic {
+			if err := r.expandReadyProjectEpic(ctx, workspaceID, projectID, node); err != nil {
+				if errors.Is(err, projectorchestration.ErrEpicExpansionStale) {
+					return nil
+				}
+				if escalationErr := r.openProjectEscalation(ctx, workspaceID, projectID, node, err); escalationErr != nil {
+					slog.Warn("project Epic decomposition escalation failed", "project_id", util.UUIDToString(projectID), "node", node.Key, "error", escalationErr)
+				}
+				if blockErr := r.blockProjectNodeForSchedulingCause(ctx, workspaceID, projectID, node, err); blockErr != nil {
+					slog.Warn("project Epic decomposition block projection failed", "project_id", util.UUIDToString(projectID), "node", node.Key, "error", blockErr)
+				}
+				continue
+			}
+			// PersistEpicExpansion creates a new approved revision. Reconcile it
+			// on the next scheduling pass so no task is dispatched from the old DAG.
+			return nil
+		}
 		if err := r.startReadyProjectNode(ctx, workspaceID, projectID, node); err != nil {
 			if errors.Is(err, service.ErrProjectAutonomousPaused) || errors.Is(err, service.ErrProjectAutonomousCancelled) {
 				break
@@ -1585,6 +1616,86 @@ func (r *Runtime) processProjectSchedulingForProject(
 				slog.Warn("project scheduler block projection failed", "project_id", util.UUIDToString(projectID), "node", node.Key, "error", blockErr)
 			}
 		}
+	}
+	return nil
+}
+
+func (r *Runtime) expandReadyProjectEpic(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	node projectorchestration.ReadyNode,
+) error {
+	if !node.IsEpic {
+		return errors.New("ready plan node is not an Epic")
+	}
+	if r == nil || r.projectStore == nil || r.projectPlanner == nil || r.taskSvc == nil || r.team == nil {
+		return projectorchestration.ErrPlannerUnavailable
+	}
+	stored, exists, err := r.projectStore.LoadLatestPlan(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("load approved plan for Epic %q: %w", node.Key, err)
+	}
+	if !exists || stored.Status != "active" || stored.PlanDigest == "" {
+		return projectorchestration.ErrEpicExpansionStale
+	}
+	revision, exists, err := r.projectStore.LoadLatestSpecification(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("load current specification for Epic %q: %w", node.Key, err)
+	}
+	if !exists || revision.ID == "" || revision.ID != stored.Plan.SpecificationRevisionID {
+		return fmt.Errorf("Epic %q plan is not bound to the current specification revision", node.Key)
+	}
+	project, err := r.taskSvc.Queries.GetProjectInWorkspace(ctx, dbGetProjectParams(projectID, workspaceID))
+	if err != nil {
+		return fmt.Errorf("load project for Epic %q: %w", node.Key, err)
+	}
+	team, ok, err := r.team.FindProject(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("load project team for Epic %q: %w", node.Key, err)
+	}
+	if !ok {
+		return errors.New("project team is not provisioned for Epic decomposition")
+	}
+	roles := make([]projectorchestration.TeamRole, 0, len(team.Plan.Roles))
+	for _, role := range team.Plan.Roles {
+		agentID, exists := team.Agent(role.Role)
+		if !exists {
+			continue
+		}
+		roles = append(roles, projectorchestration.TeamRole{
+			Role: role.Role, Family: role.Family, DisplayName: role.DisplayName,
+			Capabilities: role.Capabilities, AgentID: util.UUIDToString(agentID),
+		})
+	}
+	brief, planningContext, resources, policy, err := r.loadProjectPlanningBootstrap(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("load planning context for Epic %q: %w", node.Key, err)
+	}
+	description := ""
+	if project.Description.Valid {
+		description = project.Description.String
+	}
+	input := projectorchestration.PlanningInput{
+		WorkspaceID: workspaceID, ProjectID: projectID,
+		ProjectTitle: project.Title, ProjectDescription: description,
+		BootstrapBrief: brief, ProjectSpecification: &revision.Specification,
+		SpecificationRevisionID: revision.ID, Context: planningContext,
+		Resources: resources, Team: roles, CurrentPlan: &stored.Plan, Policy: policy,
+	}
+	expanded, execution, err := r.projectPlanner.DecomposeEpic(ctx, input, stored.Plan, node.Key)
+	if err != nil {
+		return fmt.Errorf("decompose Epic %q into Tasks: %w", node.Key, err)
+	}
+	planID, err := util.ParseUUID(stored.ID)
+	if err != nil {
+		return fmt.Errorf("parse approved plan identity for Epic %q: %w", node.Key, err)
+	}
+	_, err = r.projectStore.PersistEpicExpansion(
+		ctx, workspaceID, projectID, planID, stored.PlanDigest, node.Key,
+		execution.Provider, execution.Model, expanded,
+	)
+	if err != nil {
+		return fmt.Errorf("persist approved Task decomposition for Epic %q: %w", node.Key, err)
 	}
 	return nil
 }
@@ -1625,9 +1736,17 @@ func (r *Runtime) ensureProjectNodeIssue(
 		}
 		criteria = b.String()
 	}
+	goalContext, err := r.canonicalGoalReviewContextForNode(ctx, workspaceID, projectID, node.ID)
+	if err != nil {
+		return fmt.Errorf("load canonical goal review context for node %q: %w", node.Key, err)
+	}
+	goalContextText, err := goalContext.promptText()
+	if err != nil {
+		return err
+	}
 	description := fmt.Sprintf(
-		"[autonomous-project-node:%s]\nStage: %s\nRisk: %s\nRequired role: %s (%s)\n\n%s%s",
-		node.Key, node.Kind, node.Risk, role, family, node.Description, criteria,
+		"[autonomous-project-node:%s]\nStage: %s\nRisk: %s\nRequired role: %s (%s)\n\n%s%s\n\nCanonical project review context (authoritative):\n%s",
+		node.Key, node.Kind, node.Risk, role, family, node.Description, criteria, goalContextText,
 	)
 	res, err := r.issueSvc.Create(ctx, service.IssueCreateParams{
 		WorkspaceID:    workspaceID,
@@ -1666,6 +1785,48 @@ func (r *Runtime) ensureProjectNodeIssue(
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) canonicalGoalReviewContextForNode(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeID string,
+) (goalReviewContext, error) {
+	if r == nil || r.projectStore == nil || r.pool == nil {
+		return goalReviewContext{}, errors.New("canonical project review context is unavailable")
+	}
+	var planSpecificationRevisionID pgtype.UUID
+	err := r.pool.QueryRow(ctx, `
+		SELECT p.specification_revision_id
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id=n.plan_id
+		WHERE n.id=$1::uuid AND n.workspace_id=$2 AND n.project_id=$3
+		  AND p.workspace_id=$2 AND p.project_id=$3
+		  AND p.status IN ('active','blocked')
+		ORDER BY p.revision DESC
+		LIMIT 1
+	`, nodeID, workspaceID, projectID).Scan(&planSpecificationRevisionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return goalReviewContext{}, errors.New("active plan node with a specification revision was not found")
+	}
+	if err != nil {
+		return goalReviewContext{}, fmt.Errorf("load plan specification revision: %w", err)
+	}
+	if !planSpecificationRevisionID.Valid {
+		return goalReviewContext{}, errors.New("active plan is missing its canonical specification revision")
+	}
+
+	revision, ok, err := r.projectStore.LoadLatestSpecification(ctx, workspaceID, projectID)
+	if err != nil {
+		return goalReviewContext{}, fmt.Errorf("load latest canonical specification: %w", err)
+	}
+	if !ok {
+		return goalReviewContext{}, errors.New("canonical specification revision is unavailable")
+	}
+	if util.UUIDToString(planSpecificationRevisionID) != revision.ID {
+		return goalReviewContext{}, fmt.Errorf("plan specification revision %s is stale; current revision is %s", util.UUIDToString(planSpecificationRevisionID), revision.ID)
+	}
+	return canonicalGoalReviewContext(revision.Specification)
 }
 
 func (r *Runtime) syncProjectNodeBoardState(
@@ -3559,10 +3720,22 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 	changeSetMetadataError := ""
 	if !valid {
 		validationError = "task result is empty"
-	} else if reviewerTask {
-		if _, parseErr := parseReviewVerdict(task.Result); parseErr != nil {
+	} else if reviewerTask || artifactType == "review" {
+		verdict, parseErr := parseReviewVerdict(task.Result)
+		if parseErr != nil {
 			valid = false
 			validationError = parseErr.Error()
+		} else {
+			goalContext, contextErr := r.canonicalGoalReviewContextForNode(
+				ctx, issue.WorkspaceID, issue.ProjectID, util.UUIDToString(nodeID),
+			)
+			if contextErr != nil {
+				valid = false
+				validationError = contextErr.Error()
+			} else if goalErr := validateGoalDriftReview(verdict, goalContext.requirementIDs()); goalErr != nil {
+				valid = false
+				validationError = goalErr.Error()
+			}
 		}
 	} else if projectorchestration.NodeKind(kind) == projectorchestration.NodeQA {
 		if !structuredQAHandoff(task.Result) {

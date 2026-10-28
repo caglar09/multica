@@ -21,6 +21,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/openai/openai-go/v3 v3.61.0
 	github.com/pelletier/go-toml/v2 v2.4.3
+	github.com/pgvector/pgvector-go v0.4.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/redis/go-redis/v9 v9.22.0

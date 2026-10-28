@@ -77,6 +77,7 @@ func ValidatePlan(plan Plan, maxNodes int) error {
 	}
 
 	nodes := make(map[string]NodeSpec, len(plan.Nodes))
+	hasEpic := false
 	for i, node := range plan.Nodes {
 		node.Key = strings.TrimSpace(node.Key)
 		if node.Key == "" {
@@ -84,6 +85,18 @@ func ValidatePlan(plan Plan, maxNodes int) error {
 		}
 		if _, exists := nodes[node.Key]; exists {
 			return fmt.Errorf("%w: duplicate node key %q", ErrInvalidPlan, node.Key)
+		}
+		trimmedParentEpicKey := strings.TrimSpace(node.ParentEpicKey)
+		if trimmedParentEpicKey != node.ParentEpicKey {
+			return fmt.Errorf("%w: node %q has a non-canonical parent_epic_key", ErrInvalidPlan, node.Key)
+		}
+		node.ParentEpicKey = trimmedParentEpicKey
+		hasEpic = hasEpic || node.IsEpic
+		if node.IsEpic && node.ParentEpicKey != "" {
+			return fmt.Errorf("%w: epic node %q cannot have a parent epic", ErrInvalidPlan, node.Key)
+		}
+		if !node.IsEpic && node.ParentEpicKey == node.Key {
+			return fmt.Errorf("%w: node %q cannot be its own epic", ErrInvalidPlan, node.Key)
 		}
 		if _, ok := validKinds[node.Kind]; !ok {
 			return fmt.Errorf("%w: node %q has unsupported kind %q", ErrInvalidPlan, node.Key, node.Kind)
@@ -101,6 +114,25 @@ func ValidatePlan(plan Plan, maxNodes int) error {
 			return fmt.Errorf("%w: node %q requires acceptance criteria", ErrInvalidPlan, node.Key)
 		}
 		nodes[node.Key] = node
+	}
+	if hasEpic {
+		for _, node := range nodes {
+			if !node.IsEpic && node.ParentEpicKey == "" {
+				return fmt.Errorf("%w: Task node %q must belong to an Epic", ErrInvalidPlan, node.Key)
+			}
+		}
+	}
+	for _, node := range nodes {
+		if node.ParentEpicKey == "" {
+			continue
+		}
+		parent, ok := nodes[node.ParentEpicKey]
+		if !ok || !parent.IsEpic {
+			return fmt.Errorf("%w: node %q references unknown parent epic %q", ErrInvalidPlan, node.Key, node.ParentEpicKey)
+		}
+		if node.IsEpic {
+			return fmt.Errorf("%w: nested epics are not supported", ErrInvalidPlan)
+		}
 	}
 
 	seenEdges := make(map[string]struct{}, len(plan.Edges))
@@ -252,6 +284,8 @@ func EnsureLifecycle(plan Plan) Plan {
 			}
 			gate := NodeSpec{
 				Key:                  key,
+				ParentEpicKey:        source.ParentEpicKey,
+				RequirementIDs:       append([]string(nil), source.RequirementIDs...),
 				Kind:                 kind,
 				Title:                title + ": " + source.Title,
 				Description:          "Backend-synthesized mandatory lifecycle gate for " + source.Key + ".",
@@ -275,6 +309,9 @@ func EnsureLifecycle(plan Plan) Plan {
 		// processed on the next pass and receive their own independent review.
 		nodes := append([]NodeSpec(nil), plan.Nodes...)
 		for _, node := range nodes {
+			if node.IsEpic {
+				continue
+			}
 			if node.Kind != NodeImplementation && node.Kind != NodeMigration && node.Kind != NodeIntegration {
 				continue
 			}
@@ -326,6 +363,9 @@ func validateLifecycle(plan Plan) error {
 
 	hasImplementation := false
 	for _, node := range plan.Nodes {
+		if node.IsEpic {
+			continue
+		}
 		switch node.Kind {
 		case NodeImplementation, NodeMigration:
 			hasImplementation = true
@@ -342,6 +382,9 @@ func validateLifecycle(plan Plan) error {
 
 	if hasImplementation {
 		for _, node := range plan.Nodes {
+			if node.IsEpic {
+				continue
+			}
 			if node.Kind != NodeImplementation && node.Kind != NodeMigration && node.Kind != NodeIntegration {
 				continue
 			}

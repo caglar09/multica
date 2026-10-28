@@ -97,6 +97,8 @@ type Specification struct {
 
 type NodeSpec struct {
 	Key                  string    `json:"key"`
+	IsEpic               bool      `json:"is_epic,omitempty"`
+	ParentEpicKey        string    `json:"parent_epic_key,omitempty"`
 	RequirementIDs       []string  `json:"requirement_ids,omitempty"`
 	Kind                 NodeKind  `json:"kind"`
 	Title                string    `json:"title"`
@@ -135,6 +137,7 @@ type StoredPlan struct {
 	PlannerName    string
 	PlannerModel   string
 	Status         string
+	PlanDigest     string
 	Plan           Plan
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -144,6 +147,8 @@ type NodeState struct {
 	ID                   string
 	PlanID               string
 	Key                  string
+	IsEpic               bool
+	ParentEpicKey        string
 	Kind                 NodeKind
 	Status               string
 	Priority             int
@@ -165,6 +170,8 @@ type NodeState struct {
 type ReadyNode struct {
 	ID                   string
 	Key                  string
+	IsEpic               bool
+	ParentEpicKey        string
 	Kind                 NodeKind
 	Title                string
 	Description          string

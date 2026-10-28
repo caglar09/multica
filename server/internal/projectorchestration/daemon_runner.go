@@ -116,8 +116,17 @@ func (r *DaemonQualityGateRunner) Run(ctx context.Context, request QualityGateRe
 	if err != nil {
 		return daemonQualityFailure(result, err.Error(), nil)
 	}
+	qaScenario, browserQAEnabled, err := browserQAScenarioFromArtifact(request.GateType, request.Artifact)
+	if err != nil {
+		return daemonQualityFailure(result, err.Error(), map[string]any{
+			"repo_path":  repo,
+			"commit_sha": request.CommitSHA,
+		})
+	}
 	var command daemonQualityCommand
-	if request.ReleaseContract != nil {
+	if browserQAEnabled {
+		command = browserQACommand()
+	} else if request.ReleaseContract != nil {
 		command, err = releaseBuilderCommand(*request.ReleaseContract)
 	} else {
 		command, err = detectDaemonQualityCommand(worktree, request.GateType, request.CommitSHA)
@@ -190,6 +199,13 @@ func (r *DaemonQualityGateRunner) Run(ctx context.Context, request QualityGateRe
 			return daemonQualityFailure(result, preflightErr.Error(), result.Evidence)
 		}
 		result.Evidence["package_manager_version"] = version
+	}
+	browserQAOutputDir := ""
+	if browserQAEnabled {
+		browserQAOutputDir, err = prepareBrowserQAArtifacts(tempDir, qaScenario)
+		if err != nil {
+			return daemonQualityFailure(result, err.Error(), result.Evidence)
+		}
 	}
 
 	snapshotPath := filepath.Join(tempDir, "task.tar")
@@ -276,6 +292,18 @@ func (r *DaemonQualityGateRunner) Run(ctx context.Context, request QualityGateRe
 	} else if !timedOut && runCtx.Err() == nil {
 		return daemonQualityFailure(result, fmt.Sprintf("collect quality container output: %v", logsErr), result.Evidence)
 	}
+	var browserQAResult QAResult
+	if browserQAEnabled {
+		browserQAResult, err = readBrowserQAResult(browserQAOutputDir)
+		if err != nil {
+			result.Evidence["browser_qa"] = map[string]any{"passed": false, "evidence_error": boundedQualityString(err.Error(), 4096)}
+			if logEvidenceErr == nil {
+				logEvidenceErr = fmt.Errorf("collect browser QA evidence: %w", err)
+			}
+		} else {
+			result.Evidence["browser_qa"] = browserQAResultEvidence(qaScenario, browserQAResult)
+		}
+	}
 	result.DurationMs = time.Since(startedAt).Milliseconds()
 
 	if timedOut {
@@ -299,9 +327,15 @@ func (r *DaemonQualityGateRunner) Run(ctx context.Context, request QualityGateRe
 	if _, _, err := validateQualityWorktree(ctx, worktree, repo, request.CommitSHA); err != nil {
 		return daemonQualityFailure(result, fmt.Sprintf("task commit changed during quality execution: %v", err), result.Evidence)
 	}
-	result.Passed = result.ExitCode != nil && *result.ExitCode == 0
+	result.Passed = result.ExitCode != nil && *result.ExitCode == 0 && (!browserQAEnabled || browserQAResult.Passed)
 	if !result.Passed {
 		result.Error = "quality command did not exit successfully"
+		if browserQAEnabled {
+			result.Error = browserQAResult.Error
+			if result.Error == "" {
+				result.Error = "browser QA did not produce a clean, passing journey"
+			}
+		}
 	}
 	if result.Passed && request.ReleaseContract != nil {
 		artifact, artifactErr := packageReleaseOutputs(filepath.Join(tempDir, "release-output"), *request.ReleaseContract)
@@ -445,6 +479,17 @@ func startQualityContainer(ctx context.Context, runtimePath, runtimeName, tempDi
 		"--env=COREPACK_HOME=/opt/corepack", "--env=COREPACK_ENABLE_NETWORK=0",
 		"--env=COREPACK_DEFAULT_TO_LATEST=0",
 		"--env=npm_config_offline=true", "--env=npm_config_userconfig=/dev/null",
+	}
+	if command.project == "playwright" {
+		scenarioPath := filepath.Join(tempDir, "browser-qa-scenario.json")
+		artifactPath := filepath.Join(tempDir, "browser-qa-output")
+		if strings.Contains(scenarioPath, ",") || strings.Contains(artifactPath, ",") {
+			return errors.New("browser QA temporary path contains an unsupported OCI mount separator")
+		}
+		args = append(args,
+			"--mount=type=bind,source="+scenarioPath+",target=/input/browser-qa-scenario.json,readonly",
+			"--mount=type=bind,source="+artifactPath+",target=/tmp/browser-qa-output",
+		)
 	}
 	if request.ReleaseContract != nil {
 		releaseOutputPath := filepath.Join(tempDir, "release-output")
@@ -1087,6 +1132,15 @@ func qualityResultDigest(result QualityGateResult) string {
 		result.WorktreePath, result.RepoPath, result.CommitSHA, result.DurationMs,
 		result.Stdout, result.Stderr, result.OutputTruncated, result.TestCount,
 		result.FailedCount, boundedQualityString(result.Error, 4096)})
+	if browserEvidence, ok := result.Evidence["browser_qa"]; ok {
+		browserData, err := json.Marshal(browserEvidence)
+		if err != nil {
+			browserData = []byte("invalid_browser_qa_evidence")
+		}
+		browserDigest := sha256.Sum256(browserData)
+		data = append(data, []byte("\nbrowser_qa_sha256=")...)
+		data = append(data, []byte(hex.EncodeToString(browserDigest[:]))...)
+	}
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
 }

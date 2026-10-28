@@ -9,8 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/util"
@@ -32,10 +34,36 @@ var ErrMergeQueueBusy = errors.New("project merge queue is being processed")
 // the integration ref with compare-and-swap. The integration ref never points
 // at an unverified candidate.
 type MergeQueue struct {
-	store           *Store
-	runner          QualityGateRunner
-	artifactStore   ReleaseArtifactStore
-	artifactBuilder ReleaseArtifactBuilder
+	store               *Store
+	runner              QualityGateRunner
+	conflictResolver    ConflictResolver
+	artifactStore       ReleaseArtifactStore
+	artifactBuilder     ReleaseArtifactBuilder
+	conflictOutcomeMu   sync.Mutex
+	lastConflictOutcome *MergeQueueConflictOutcome
+}
+
+// MergeQueueConflictOutcome carries a resolver proposal or escalation back to
+// the runtime after ProcessNext releases its project advisory lock.
+type MergeQueueConflictOutcome struct {
+	Status string
+	ConflictResolutionResult
+	ChangeSetID          uuid.UUID
+	WorkspaceID          pgtype.UUID
+	ProjectID            pgtype.UUID
+	PlanID               pgtype.UUID
+	NodeID               pgtype.UUID
+	IssueID              pgtype.UUID
+	SourceTaskID         pgtype.UUID
+	PreviousReviewTaskID pgtype.UUID
+	OriginalCommitSHA    string
+	ChangeSetBaseSHA     string
+	IntegrationBaseSHA   string
+	IntegrationBranch    string
+	BranchName           string
+	RepoPath             string
+	WorktreeParent       string
+	WorktreePath         string
 }
 
 func NewMergeQueue(store *Store, runner QualityGateRunner) *MergeQueue {
@@ -51,7 +79,43 @@ func NewMergeQueue(store *Store, runner QualityGateRunner) *MergeQueue {
 	return queue
 }
 
-func (q *MergeQueue) ProcessNext(ctx context.Context, workspaceID, projectID pgtype.UUID) (result MergeResult, retErr error) {
+// WithConflictResolver installs the optional conflict-resolution workflow.
+// The resolver may create and requeue a verified resolution candidate, but it
+// cannot promote an integration ref; the normal merge queue remains the only
+// path that advances that ref.
+func (q *MergeQueue) WithConflictResolver(resolver ConflictResolver) *MergeQueue {
+	if q != nil {
+		q.conflictResolver = resolver
+	}
+	return q
+}
+
+func (q *MergeQueue) ProcessNext(ctx context.Context, workspaceID, projectID pgtype.UUID) (MergeResult, error) {
+	result, _, err := q.ProcessNextWithConflictResolution(ctx, workspaceID, projectID)
+	return result, err
+}
+
+// ProcessNextWithConflictResolution returns any conflict proposal only after
+// the merge lock held by ProcessNext has been released. The runtime must then
+// obtain fresh review and unit-test evidence and use the ordinary enqueue
+// contract before requeueing the proposal.
+func (q *MergeQueue) ProcessNextWithConflictResolution(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+) (MergeResult, *MergeQueueConflictOutcome, error) {
+	if q == nil {
+		return MergeResult{}, nil, errors.New("project merge queue requires a store and quality gate runner")
+	}
+	q.conflictOutcomeMu.Lock()
+	defer q.conflictOutcomeMu.Unlock()
+	q.lastConflictOutcome = nil
+	result, err := q.processNext(ctx, workspaceID, projectID)
+	outcome := q.lastConflictOutcome
+	q.lastConflictOutcome = nil
+	return result, outcome, err
+}
+
+func (q *MergeQueue) processNext(ctx context.Context, workspaceID, projectID pgtype.UUID) (result MergeResult, retErr error) {
 	if q == nil || q.store == nil || q.runner == nil {
 		return MergeResult{}, errors.New("project merge queue requires a store and quality gate runner")
 	}
@@ -191,13 +255,37 @@ func (q *MergeQueue) prepareVerifyPromote(ctx context.Context, claim MergeQueueC
 	}
 	mergeOutput, mergeErr := mergeCommitIntoWorktree(ctx, worktreePath, parent, claim.CommitSHA)
 	if mergeErr != nil {
-		conflicts, diffErr := runGit(ctx, worktreePath, "diff", "--name-only", "--diff-filter=U")
-		if diffErr == nil && strings.TrimSpace(conflicts) != "" {
+		conflictOutput, conflictExit, diffErr := runGitExit(ctx, worktreePath, "diff", "--name-only", "--diff-filter=U", "-z")
+		conflicts := splitGitPathList(conflictOutput)
+		if diffErr == nil && conflictExit == 0 && len(conflicts) > 0 {
+			evidence["phase"] = "conflict"
+			evidence["conflicts"] = conflicts
+			evidence["git_output"] = mergeOutput
+			conflictDiff, captureErr := runGit(ctx, worktreePath, "diff", "--cc", "--no-ext-diff", "--no-color", "--")
+			if len(conflictOutput) < mergeGitOutputLimit && captureErr == nil && len(conflictDiff) < mergeGitOutputLimit && strings.Contains(conflictDiff, "<<<<<<<") {
+				evidence["conflict_diff"] = conflictDiff
+				evidence["phase"] = "conflict_resolving"
+				if persistErr := q.store.persistMergeEvidence(ctx, claim, evidence); persistErr != nil {
+					_, _ = runGit(ctx, worktreePath, "merge", "--abort")
+					return result, persistErr
+				}
+				return q.resolveAndFinishConflict(ctx, claim, repoRoot, baseSHA, evidence)
+			}
 			_, _ = runGit(ctx, worktreePath, "merge", "--abort")
 			evidence["phase"] = "conflict"
-			evidence["conflicts"] = strings.Split(strings.TrimSpace(conflicts), "\n")
-			evidence["git_output"] = mergeOutput
-			return q.finishTerminal(ctx, claim, "conflict", "merge has unresolved conflicts", evidence)
+			if len(conflictOutput) >= mergeGitOutputLimit {
+				evidence["conflict_context_error"] = "conflict file list exceeds the safe context limit"
+			} else if captureErr != nil {
+				evidence["conflict_context_error"] = captureErr.Error()
+			} else if len(conflictDiff) > mergeGitOutputLimit {
+				evidence["conflict_context_error"] = "conflict diff exceeds the safe context limit"
+			} else {
+				evidence["conflict_context_error"] = "conflict diff did not contain conflict markers"
+			}
+			if persistErr := q.store.persistMergeEvidence(ctx, claim, evidence); persistErr != nil {
+				return result, persistErr
+			}
+			return q.resolveAndFinishConflict(ctx, claim, repoRoot, baseSHA, evidence)
 		}
 		if ctx.Err() != nil {
 			return result, ctx.Err()
@@ -261,6 +349,96 @@ func (q *MergeQueue) prepareVerifyPromote(ctx context.Context, claim MergeQueueC
 		return result, err
 	}
 	return q.promoteVerified(ctx, claim, evidence)
+}
+
+func (q *MergeQueue) resolveAndFinishConflict(
+	ctx context.Context,
+	claim MergeQueueClaim,
+	repoRoot, baseSHA string,
+	evidence map[string]any,
+) (MergeResult, error) {
+	message := "merge has unresolved conflicts"
+	outcome := &MergeQueueConflictOutcome{Status: "resolver_not_configured"}
+	if q.conflictResolver == nil {
+		evidence["resolution_status"] = "resolver_not_configured"
+		q.lastConflictOutcome = outcome
+		if worktreePath := mergeEvidenceString(evidence, "integration_worktree"); worktreePath != "" {
+			_, _ = runGit(ctx, worktreePath, "merge", "--abort")
+		}
+		return q.finishTerminal(ctx, claim, "conflict", message, evidence)
+	}
+
+	changeSetID := uuid.UUID(claim.ChangeSetID.Bytes)
+	resolution, err := q.conflictResolver.ResolveConflict(ctx, changeSetID)
+	if err != nil {
+		evidence["resolution_status"] = "resolver_failed"
+		evidence["resolution_error"] = err.Error()
+		outcome.Status = "resolver_failed"
+		outcome.Explanation = err.Error()
+	} else if err := ValidateConflictResolutionResult(resolution); err != nil {
+		evidence["resolution_status"] = "invalid_resolver_result"
+		evidence["resolution_error"] = err.Error()
+		outcome.Status = "invalid_resolver_result"
+		outcome.Explanation = err.Error()
+	} else if resolution.Resolved {
+		if err := ValidateConflictResolutionCommit(ctx, repoRoot, baseSHA, claim.CommitSHA, resolution.ResolutionSHA); err != nil {
+			evidence["resolution_status"] = "invalid_resolution_commit"
+			evidence["resolution_error"] = err.Error()
+			outcome.Status = "invalid_resolution_commit"
+			outcome.Explanation = err.Error()
+		} else {
+			evidence["resolution_status"] = "resolution_pending_review"
+			evidence["resolution_sha"] = resolution.ResolutionSHA
+			evidence["resolution_explanation"] = resolution.Explanation
+			outcome.Status = "resolution_pending_review"
+			outcome.ConflictResolutionResult = resolution
+			outcome.ChangeSetID = changeSetID
+			outcome.WorkspaceID = claim.WorkspaceID
+			outcome.ProjectID = claim.ProjectID
+			outcome.PlanID = claim.PlanID
+			outcome.NodeID = claim.NodeID
+			outcome.IssueID = claim.IssueID
+			outcome.SourceTaskID = claim.SourceTaskID
+			outcome.PreviousReviewTaskID = claim.ApprovedReviewTaskID
+			outcome.OriginalCommitSHA = claim.CommitSHA
+			outcome.ChangeSetBaseSHA = claim.BaseSHA
+			outcome.IntegrationBaseSHA = baseSHA
+			outcome.IntegrationBranch = claim.IntegrationBranch
+			outcome.BranchName = claim.BranchName
+			outcome.RepoPath = repoRoot
+			outcome.WorktreeParent = mergeEvidenceString(evidence, "worktree_parent")
+			outcome.WorktreePath = mergeEvidenceString(evidence, "integration_worktree")
+			message = "merge conflict resolved; fresh review and unit-test evidence are required before requeue"
+		}
+	} else {
+		evidence["resolution_status"] = "escalated"
+		evidence["resolution_explanation"] = resolution.Explanation
+		outcome.Status = "escalated"
+		outcome.ConflictResolutionResult = resolution
+		if resolution.EscalationID != nil {
+			evidence["escalation_category"] = "merge_conflict"
+			evidence["escalation_id"] = resolution.EscalationID.String()
+			message = "merge conflict requires human resolution; escalation " + resolution.EscalationID.String()
+		} else {
+			evidence["resolution_error"] = "resolver exhausted attempts without creating a merge_conflict escalation"
+		}
+	}
+	q.lastConflictOutcome = outcome
+	worktreePath := mergeEvidenceString(evidence, "integration_worktree")
+	_, _ = runGit(ctx, worktreePath, "merge", "--abort")
+	evidence["phase"] = "conflict"
+	return q.finishTerminal(ctx, claim, "conflict", message, evidence)
+}
+
+func splitGitPathList(output string) []string {
+	parts := strings.Split(output, "\x00")
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			paths = append(paths, part)
+		}
+	}
+	return paths
 }
 
 func (q *MergeQueue) verifyCandidate(
@@ -573,7 +751,9 @@ func (q *MergeQueue) finishTerminal(ctx context.Context, claim MergeQueueClaim, 
 	if err := q.store.finishMerge(ctx, claim, status, "", message, evidence); err != nil {
 		return MergeResult{ChangeSetID: claim.ChangeSetID}, errors.Join(errors.New(message), err)
 	}
-	_ = cleanupMergeWorktree(context.Background(), claim, evidence)
+	if evidence["resolution_status"] != "resolution_pending_review" {
+		_ = cleanupMergeWorktree(context.Background(), claim, evidence)
+	}
 	return MergeResult{ChangeSetID: claim.ChangeSetID, Status: status, ErrorDetails: message}, nil
 }
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"os/exec"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -221,11 +223,28 @@ func (r *Runtime) runDeterministicGate(ctx context.Context, q nodeQualityContext
 		Artifact: withoutAgentTestClaims(artifact),
 	}
 	result, status, runErr := evaluateQualityGate(ctx, r.qualityGateRunner, request)
+	if result.CommitSHA == commitSHA && (result.RunnerType == "daemon_oci" || result.RunnerType == "webhook_oci") {
+		if commitURL := qualityCommitURL(ctx, repoPath, commitSHA); commitURL != "" {
+			if result.Evidence == nil {
+				result.Evidence = make(map[string]any)
+			}
+			result.Evidence["commit_url"] = commitURL
+		}
+	}
 	mode := "deterministic_runner"
 	if r.qualityGateRunner == nil {
 		mode = "missing_runner"
 	}
 	evidence := map[string]any{"mode": mode, "runner_evidence": result.Evidence, "source_task_id": taskID}
+	if artifactContent, ok := browserQAArtifactContent(gateType, status, taskID, commitSHA, result.RunnerType, result.Evidence); ok {
+		if persistErr := r.persistBrowserQAArtifact(ctx, q, taskID, artifactContent); persistErr != nil {
+			evidence["browser_qa_artifact_error"] = persistErr.Error()
+			if runErr == nil {
+				runErr = fmt.Errorf("persist browser QA evidence artifact: %w", persistErr)
+				status = "unavailable"
+			}
+		}
+	}
 	if runErr != nil {
 		message := runErr.Error()
 		if r.qualityGateRunner == nil {
@@ -238,6 +257,92 @@ func (r *Runtime) runDeterministicGate(ctx context.Context, q nodeQualityContext
 		return runErr
 	}
 	return r.recordPolicyGate(ctx, q, gateType, status, "", evidence)
+}
+
+func browserQAArtifactContent(
+	gateType, status, taskID, commitSHA, runnerType string,
+	evidence map[string]any,
+) (map[string]any, bool) {
+	if !strings.EqualFold(strings.TrimSpace(gateType), "acceptance") || evidence == nil {
+		return nil, false
+	}
+	browserEvidence, ok := evidence["browser_qa"]
+	if !ok || browserEvidence == nil {
+		return nil, false
+	}
+	return map[string]any{
+		"gate_type":   "acceptance",
+		"status":      status,
+		"task_id":     taskID,
+		"commit_sha":  commitSHA,
+		"runner_type": runnerType,
+		"browser_qa":  browserEvidence,
+	}, true
+}
+
+func (r *Runtime) persistBrowserQAArtifact(
+	ctx context.Context,
+	q nodeQualityContext,
+	taskID string,
+	content map[string]any,
+) error {
+	if r == nil || r.pool == nil {
+		return errors.New("browser QA artifact storage is unavailable")
+	}
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		return fmt.Errorf("encode browser QA artifact: %w", err)
+	}
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_artifact (
+			workspace_id, project_id, plan_id, node_id, artifact_type,
+			name, schema_version, content, immutable
+		)
+		VALUES ($1,$2,$3,$4,'qa_report',$5,1,$6::jsonb,true)
+	`, q.WorkspaceID, q.ProjectID, q.PlanID, q.NodeID,
+		fmt.Sprintf("acceptance browser QA %s", taskID), encoded)
+	if err != nil {
+		return fmt.Errorf("insert autonomous project browser QA artifact: %w", err)
+	}
+	return nil
+}
+
+func qualityCommitURL(ctx context.Context, repoPath, commitSHA string) string {
+	repoPath = strings.TrimSpace(repoPath)
+	commitSHA = strings.TrimSpace(commitSHA)
+	if repoPath == "" || commitSHA == "" {
+		return ""
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repoPath, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	return qualityCommitURLFromRemote(string(output), commitSHA)
+}
+
+func qualityCommitURLFromRemote(remote, commitSHA string) string {
+	remote = strings.TrimSpace(remote)
+	commitSHA = strings.TrimSpace(commitSHA)
+	if remote == "" || commitSHA == "" {
+		return ""
+	}
+	if strings.HasPrefix(remote, "git@") {
+		at := strings.IndexByte(remote, '@')
+		colon := strings.IndexByte(remote, ':')
+		if at < 0 || colon <= at+1 {
+			return ""
+		}
+		remote = "https://" + remote[at+1:colon] + "/" + strings.TrimLeft(remote[colon+1:], "/")
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.Path = strings.TrimSuffix(parsed.Path, ".git") + "/commit/" + url.PathEscape(commitSHA)
+	return parsed.String()
 }
 
 func (r *Runtime) recordUnavailableTaskQualityGate(ctx context.Context, q nodeQualityContext, gateType, taskID string, gateErr error) error {
@@ -608,7 +713,24 @@ func sharedNumericToken(left, right string) bool {
 
 func reviewApproved(artifact map[string]any) bool {
 	result, _ := artifact["result"].(map[string]any)
-	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(result["verdict"])), "approved")
+	if result == nil {
+		return false
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return false
+	}
+	var approval struct {
+		Verdict            string `json:"verdict"`
+		GoalAlignmentScore *int   `json:"goal_alignment_score"`
+	}
+	if err := json.Unmarshal(encoded, &approval); err != nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(approval.Verdict), "approved") {
+		return false
+	}
+	return approval.GoalAlignmentScore == nil || *approval.GoalAlignmentScore >= 80
 }
 
 func (r *Runtime) reconcileCompletedProjectQuality(ctx context.Context, issue db.Issue) error {

@@ -155,6 +155,67 @@ func TestDaemonQualityGateRunner(t *testing.T) {
 	})
 }
 
+func TestDaemonQualityGateRunnerBrowserQAIsolatedAndFailsClosedWithoutReport(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required to create the recorded task worktree")
+	}
+	request := newDaemonQualityRequest(t, "package runner\n")
+	request.GateType = "acceptance"
+	request.Artifact = map[string]any{"browser_qa": map[string]any{
+		"target_url":          "http://127.0.0.1:4173/login",
+		"preview_command":     []any{"corepack", "pnpm", "dev", "--host", "127.0.0.1"},
+		"steps":               []any{"assert-visible form", "assert-url /dashboard"},
+		"viewport":            map[string]any{"width": float64(1280), "height": float64(720)},
+		"capture_screenshots": true,
+	}}
+	runtimePath := fakeQualityRuntime(t, fakeQualityRuntimeConfig{exitCode: 0})
+	result, err := (&DaemonQualityGateRunner{runtimePath: runtimePath}).Run(context.Background(), request)
+	if err == nil || result.Passed || !strings.Contains(result.Error, "browser QA evidence") {
+		t.Fatalf("missing browser report was not rejected: result=%+v err=%v", result, err)
+	}
+	if result.Evidence["container_image"] != qualityPlaywrightImage || result.Evidence["network_disabled"] != true {
+		t.Fatalf("browser runner did not preserve isolated image evidence: %+v", result.Evidence)
+	}
+	args, readErr := os.ReadFile(runtimeArgsLog(runtimePath))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, required := range []string{
+		"--network=none", "--read-only", "--pull=never", "--cap-drop=ALL",
+		"--security-opt=no-new-privileges",
+		"target=/input/browser-qa-scenario.json,readonly", "target=/tmp/browser-qa-output",
+		"/opt/multica/qa-runner.cjs", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	} {
+		if !strings.Contains(string(args), required) {
+			t.Errorf("browser container invocation is missing %q: %s", required, args)
+		}
+	}
+	if strings.Contains(string(args), request.WorktreePath) || strings.Contains(string(args), "--network=host") {
+		t.Fatalf("browser OCI invocation escaped its isolated commit snapshot: %s", args)
+	}
+}
+
+func TestDaemonQualityGateRunnerBrowserQAUnavailableImageFailsClosed(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required to create the recorded task worktree")
+	}
+	request := newDaemonQualityRequest(t, "package runner\n")
+	request.GateType = "acceptance"
+	request.Artifact = map[string]any{"browser_qa": map[string]any{
+		"target_url":      "http://localhost:4173/login",
+		"preview_command": []any{"pnpm", "dev"},
+		"steps":           []any{"assert-visible form"},
+	}}
+	runtimePath := fakeQualityRuntime(t, fakeQualityRuntimeConfig{imageUnavailable: true})
+	result, err := (&DaemonQualityGateRunner{runtimePath: runtimePath}).Run(context.Background(), request)
+	if err == nil || result.Passed || !strings.Contains(result.Error, "image pulls are disabled") {
+		t.Fatalf("missing Playwright image was not rejected: result=%+v err=%v", result, err)
+	}
+	if _, statErr := os.Stat(runtimeArgsLog(runtimePath)); !os.IsNotExist(statErr) {
+		t.Fatalf("runner started a container after the Playwright image check failed: %v", statErr)
+	}
+}
+
 func TestDetectDaemonQualityCommandUsesRecordedCommitScope(t *testing.T) {
 	repo := t.TempDir()
 	gitTestCommand(t, repo, "init")
@@ -298,6 +359,50 @@ func TestDaemonQualityGateRunnerMissingPNPMIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestDaemonQualityGateRunnerBrowserQAOCIIntegration(t *testing.T) {
+	if os.Getenv("MULTICA_RUN_BROWSER_QA_OCI_SMOKE") != "1" {
+		t.Skip("set MULTICA_RUN_BROWSER_QA_OCI_SMOKE=1 to run the pinned Chromium browser journey")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required to create committed smoke-test worktrees")
+	}
+
+	request := newDaemonQualityRequest(t, "package runner\n")
+	request.GateType = "acceptance"
+	request.Artifact = map[string]any{
+		"browser_qa": map[string]any{
+			"target_url":      "http://127.0.0.1:4173/",
+			"preview_command": []string{"node", "-e", `const http=require('http');http.createServer((req,res)=>{res.writeHead(200,{'content-type':'text/html'});if(req.url.startsWith('/thanks')){res.end('<!doctype html><title>Order</title><h1>Thank you</h1>')}else{res.end('<!doctype html><title>Checkout</title><h1>Checkout</h1><form action="/thanks" method="get"><label>Order<input id="order" name="order"></label><button type="submit">Place order</button></form>')}}).listen(4173,'127.0.0.1')`},
+			"steps": []string{
+				"assert-visible text=Checkout",
+				"fill #order = ORD-1",
+				"click button[type=submit]",
+				"assert-visible text=Thank you",
+				"assert-url /thanks?order=ORD-1",
+			},
+			"viewport":            map[string]any{"width": 1280, "height": 720},
+			"capture_screenshots": true,
+		},
+	}
+
+	result, err := NewDaemonQualityGateRunner().Run(context.Background(), request)
+	if err != nil || !result.Passed || result.ExitCode == nil || *result.ExitCode != 0 {
+		t.Fatalf("real Chromium browser QA failed: result=%+v error=%v", result, err)
+	}
+	if err := ValidateQualityGatePass(request, result); err != nil {
+		t.Fatalf("browser QA evidence failed validation: %v", err)
+	}
+	qaEvidence, ok := result.Evidence["browser_qa"].(map[string]any)
+	if !ok || qaEvidence["passed"] != true || qaEvidence["network_disabled"] != true {
+		t.Fatalf("browser QA did not persist passing isolated evidence: %+v", result.Evidence["browser_qa"])
+	}
+	screenshots, ok := qaEvidence["screenshots"].([]QAScreenshot)
+	if !ok || len(screenshots) == 0 || screenshots[0].SHA256 == "" || screenshots[0].DataBase64 == "" {
+		t.Fatalf("browser QA did not retain reviewable screenshot evidence: %+v", qaEvidence["screenshots"])
+	}
+	t.Logf("Chromium browser QA: image=%v screenshot_sha256=%s trace=%v", result.Evidence["container_image"], screenshots[0].SHA256, qaEvidence["execution_trace"])
+}
+
 func TestDaemonQualityGateRunnerBuildReleaseArtifactOCIIntegration(t *testing.T) {
 	if os.Getenv("MULTICA_RUN_OCI_QUALITY_SMOKE") != "1" {
 		t.Skip("set MULTICA_RUN_OCI_QUALITY_SMOKE=1 to run pinned-image OCI smoke checks")
@@ -420,11 +525,12 @@ func qualitySmokeExitCode(exitCode *int) any {
 }
 
 type fakeQualityRuntimeConfig struct {
-	exitCode      int
-	stdout        string
-	stderr        string
-	malformedLogs bool
-	timeoutWait   bool
+	exitCode         int
+	stdout           string
+	stderr           string
+	malformedLogs    bool
+	timeoutWait      bool
+	imageUnavailable bool
 }
 
 func fakeQualityRuntime(t *testing.T, config fakeQualityRuntimeConfig) string {
@@ -444,7 +550,11 @@ func fakeQualityRuntime(t *testing.T, config fakeQualityRuntimeConfig) string {
 	script := "#!/bin/sh\nset -eu\n"
 	script += "env > " + shellTestQuote(envLog) + "\n"
 	script += "case \"$1\" in\n"
-	script += "  image) printf '%s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n"
+	if config.imageUnavailable {
+		script += "  image) printf '%s\\n' 'image unavailable' >&2; exit 1 ;;\n"
+	} else {
+		script += "  image) printf '%s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n"
+	}
 	script += "  run) printf '%s\\n' \"$*\" > " + shellTestQuote(argsLog) + "; shift; while [ \"$#\" -gt 0 ]; do if [ \"$1\" = '--cidfile' ]; then printf '%s\\n' 'abcdef123456' > \"$2\"; shift 2; else shift; fi; done ;;\n"
 	script += "  wait)\n"
 	if config.timeoutWait {

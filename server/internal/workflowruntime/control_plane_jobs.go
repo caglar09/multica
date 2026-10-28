@@ -23,6 +23,7 @@ const (
 	controlPlaneJobProjectPlanner = "project_planner"
 	controlPlaneJobBrainLearning  = "brain_learning"
 	controlPlaneJobQualityGate    = "quality_gate"
+	controlPlaneJobGoalDriftAudit = "goal_drift_audit"
 	controlPlaneJobImpactAnalysis = "impact_analysis"
 	controlPlaneJobPlanMutation   = "plan_mutation"
 
@@ -76,6 +77,14 @@ type planMutationJobPayload struct {
 	Operations      []projectorchestration.PlanMutationOperation `json:"operations"`
 	PlannerName     string                                       `json:"planner_name"`
 	PlannerModel    string                                       `json:"planner_model"`
+}
+
+type goalDriftAuditJobPayload struct {
+	PlanID                  string `json:"plan_id"`
+	PlanRevision            int64  `json:"plan_revision"`
+	PlanDigest              string `json:"plan_digest"`
+	SpecificationRevisionID string `json:"specification_revision_id"`
+	CheckpointPercent       int    `json:"checkpoint_percent"`
 }
 
 func (r *Runtime) enqueueControlPlaneJob(
@@ -389,6 +398,9 @@ func (r *Runtime) handleControlPlaneJob(ctx context.Context, job controlPlaneJob
 
 	case controlPlaneJobQualityGate:
 		return r.executeQualityGateJob(ctx, job)
+
+	case controlPlaneJobGoalDriftAudit:
+		return r.executeGoalDriftAuditJob(ctx, job)
 
 	case controlPlaneJobImpactAnalysis:
 		var payload impactAnalysisJobPayload

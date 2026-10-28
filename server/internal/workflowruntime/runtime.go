@@ -61,6 +61,8 @@ func ConfigFromEnv() Config {
 		AdapterConfig: projectorchestration.WebhookAdapterConfig{
 			RepositoryURL:  strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_REPOSITORY_ANALYZER_WEBHOOK_URL")),
 			QualityURL:     strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_QUALITY_GATE_WEBHOOK_URL")),
+			ConflictURL:    strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_CONFLICT_RESOLVER_WEBHOOK_URL")),
+			GoalDriftURL:   strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_GOAL_DRIFT_WEBHOOK_URL")),
 			DeploymentURL:  strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_DEPLOYMENT_WEBHOOK_URL")),
 			ObservationURL: strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_OBSERVATION_WEBHOOK_URL")),
 			BearerToken:    strings.TrimSpace(os.Getenv("MULTICA_AUTONOMOUS_WEBHOOK_BEARER_TOKEN")),
@@ -127,25 +129,27 @@ func ConfigFromEnv() Config {
 }
 
 type Runtime struct {
-	ctx                  context.Context
-	pool                 *pgxpool.Pool
-	taskSvc              *service.TaskService
-	issueSvc             *service.IssueService
-	store                *workflow.PostgresStore
-	engine               *workflow.Engine
-	team                 *teamprovision.Provisioner
-	projectStore         *projectorchestration.Store
-	projectPlanner       *projectorchestration.Planner
-	projectLeader        *MikaProjectLeaderExecutor
-	brainExecutor        *BrainRuntimeExecutor
-	repositoryAnalyzer   projectorchestration.RepositoryAnalyzer
-	qualityGateRunner    projectorchestration.QualityGateRunner
-	releaseArtifactStore projectorchestration.ReleaseArtifactStore
-	deploymentAdapter    projectorchestration.DeploymentAdapter
-	deploymentBridge     *AutonomousDeploymentBridge
-	observationAdapter   projectorchestration.ObservationAdapter
-	planningSem          chan struct{}
-	config               Config
+	ctx                   context.Context
+	pool                  *pgxpool.Pool
+	taskSvc               *service.TaskService
+	issueSvc              *service.IssueService
+	store                 *workflow.PostgresStore
+	engine                *workflow.Engine
+	team                  *teamprovision.Provisioner
+	projectStore          *projectorchestration.Store
+	projectPlanner        *projectorchestration.Planner
+	projectLeader         *MikaProjectLeaderExecutor
+	brainExecutor         *BrainRuntimeExecutor
+	repositoryAnalyzer    projectorchestration.RepositoryAnalyzer
+	qualityGateRunner     projectorchestration.QualityGateRunner
+	conflictPatchResolver projectorchestration.ConflictPatchResolver
+	goalDriftAuditor      projectorchestration.GoalDriftAuditor
+	releaseArtifactStore  projectorchestration.ReleaseArtifactStore
+	deploymentAdapter     projectorchestration.DeploymentAdapter
+	deploymentBridge      *AutonomousDeploymentBridge
+	observationAdapter    projectorchestration.ObservationAdapter
+	planningSem           chan struct{}
+	config                Config
 }
 
 func Register(ctx context.Context, bus *events.Bus, pool *pgxpool.Pool, taskSvc *service.TaskService, cfg Config) (*Runtime, error) {
@@ -208,21 +212,23 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 			svc.Metrics = taskSvc.Metrics
 			return svc
 		}(),
-		store:                store,
-		engine:               engine,
-		team:                 teamprovision.New(pool, taskSvc.Queries, planner),
-		projectStore:         projectorchestration.NewStore(pool),
-		projectPlanner:       projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
-		projectLeader:        NewMikaProjectLeaderExecutor(pool, taskSvc),
-		brainExecutor:        NewBrainRuntimeExecutor(pool, taskSvc),
-		repositoryAnalyzer:   projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
-		qualityGateRunner:    qualityGateRunner,
-		releaseArtifactStore: releaseArtifactStore,
-		deploymentAdapter:    deploymentBridge,
-		deploymentBridge:     deploymentBridge,
-		observationAdapter:   projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
-		planningSem:          make(chan struct{}, 4),
-		config:               cfg,
+		store:                 store,
+		engine:                engine,
+		team:                  teamprovision.New(pool, taskSvc.Queries, planner),
+		projectStore:          projectorchestration.NewStore(pool),
+		projectPlanner:        projectorchestration.NewPlanner(projectExecutor, projectorchestration.DefaultMaxNodes, projectPolicy),
+		projectLeader:         NewMikaProjectLeaderExecutor(pool, taskSvc),
+		brainExecutor:         NewBrainRuntimeExecutor(pool, taskSvc),
+		repositoryAnalyzer:    projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
+		qualityGateRunner:     qualityGateRunner,
+		conflictPatchResolver: projectorchestration.NewWebhookConflictPatchResolver(cfg.AdapterConfig),
+		goalDriftAuditor:      projectorchestration.NewWebhookGoalDriftAuditor(cfg.AdapterConfig),
+		releaseArtifactStore:  releaseArtifactStore,
+		deploymentAdapter:     deploymentBridge,
+		deploymentBridge:      deploymentBridge,
+		observationAdapter:    projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
+		planningSem:           make(chan struct{}, 4),
+		config:                cfg,
 	}
 
 	for _, eventType := range []string{protocol.EventIssueCreated, protocol.EventIssueUpdated} {

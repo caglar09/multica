@@ -185,6 +185,16 @@ func ValidateRequirementCoverage(plan Plan) error {
 		}
 	}
 
+	epics := make(map[string]NodeSpec)
+	children := make(map[string][]NodeSpec)
+	for _, node := range plan.Nodes {
+		if node.IsEpic {
+			epics[node.Key] = node
+		} else if node.ParentEpicKey != "" {
+			children[node.ParentEpicKey] = append(children[node.ParentEpicKey], node)
+		}
+	}
+
 	for _, node := range plan.Nodes {
 		seenNodeRequirements := make(map[string]struct{}, len(node.RequirementIDs))
 		for _, rawID := range node.RequirementIDs {
@@ -200,6 +210,9 @@ func ValidateRequirementCoverage(plan Plan) error {
 				return fmt.Errorf("%w: node %q repeats requirement ID %q", ErrInvalidRequirementCoverage, node.Key, id)
 			}
 			seenNodeRequirements[id] = struct{}{}
+			if node.IsEpic {
+				continue
+			}
 			switch node.Kind {
 			case NodeImplementation, NodeMigration:
 				state.implementation = true
@@ -212,14 +225,59 @@ func ValidateRequirementCoverage(plan Plan) error {
 
 	for _, requirement := range requirements {
 		state := covered[requirement.ID]
-		if !state.implementation {
-			return fmt.Errorf("%w: requirement %q has no implementation node", ErrUncoveredRequirement, requirement.ID)
+		if state.implementation && state.verification {
+			continue
 		}
-		if !state.verification {
+		deferred := false
+		for key, epic := range epics {
+			if !containsString(epic.RequirementIDs, requirement.ID) {
+				continue
+			}
+			if len(children[key]) == 0 {
+				deferred = true
+				break
+			}
+		}
+		if !deferred {
+			if !state.implementation {
+				return fmt.Errorf("%w: requirement %q has no implementation node", ErrUncoveredRequirement, requirement.ID)
+			}
 			return fmt.Errorf("%w: requirement %q has no independent review or QA node", ErrUncoveredRequirement, requirement.ID)
 		}
 	}
+
+	for key, epic := range epics {
+		if len(children[key]) == 0 {
+			continue
+		}
+		for _, requirementID := range epic.RequirementIDs {
+			state := coverage{}
+			for _, child := range children[key] {
+				if !containsString(child.RequirementIDs, requirementID) {
+					continue
+				}
+				switch child.Kind {
+				case NodeImplementation, NodeMigration:
+					state.implementation = true
+				case NodeReview, NodeQA:
+					state.verification = true
+				}
+			}
+			if !state.implementation || !state.verification {
+				return fmt.Errorf("%w: expanded epic %q lacks implementation and verification coverage for requirement %q", ErrUncoveredRequirement, epic.Key, requirementID)
+			}
+		}
+	}
 	return nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 type PlanMutationOperationType string

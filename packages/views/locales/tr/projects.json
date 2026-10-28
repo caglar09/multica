@@ -509,5 +509,43 @@
     "approve": "Bu revizyonu onayla",
     "approve_success": "Plan onaylandı; uygun işler başlayabilir.",
     "approve_error": "Plan onaylanamadı."
+  },
+  "autonomous_evidence": {
+    "runner_daemon": "Yerel daemon çalıştırıcısı",
+    "runner_webhook": "Webhook çalıştırıcısı",
+    "runner_advisory": "Ajan beyanı",
+    "evidence_details": "Kanıt ayrıntıları",
+    "command": "Komut",
+    "exit_code": "Çıkış kodu",
+    "duration": "Süre",
+    "milliseconds": "ms",
+    "error": "Hata",
+    "waiver": "Feragat",
+    "stdout": "stdout",
+    "stderr": "stderr",
+    "no_additional_evidence": "Ek çalıştırıcı kanıtı kaydedilmedi.",
+    "requirement_coverage": "Gereksinim kapsamı",
+    "coverage_description": "Her sabit gereksinim kimliği; ilgili Epic veya Task, doğrulama kapıları ve en son dağıtım kanıtıyla eşleşir.",
+    "plan_nodes": "Plan düğümleri",
+    "no_linked_plan_node": "Bağlı plan düğümü yok",
+    "verification_gates": "Doğrulama kapıları",
+    "no_verification_evidence": "Doğrulama kanıtı yok",
+    "latest_deployments": "Son dağıtımlar",
+    "no_deployment_recorded": "Dağıtım kaydı yok",
+    "stable_requirements_missing": "Geçerli spesifikasyonda sabit gereksinim kimlikleri bulunmuyor.",
+    "non_goals": "Kapsam dışı hedefler",
+    "non_goals_description": "Proje spesifikasyonunda açıkça kapsam dışında bırakılmıştır.",
+    "non_goal": "Kapsam dışı",
+    "epic": "Epic",
+    "task": "Görev",
+    "coverage_status": {
+      "unmapped": "Eşleştirilmemiş",
+      "verification_failed": "Doğrulama başarısız",
+      "verified": "Doğrulandı",
+      "awaiting_verification": "Doğrulama bekliyor",
+      "in_progress": "Devam ediyor"
+    },
+    "screenshots": "Ekran görüntüleri",
+    "screenshot": "Ekran görüntüsü"
   }
 }

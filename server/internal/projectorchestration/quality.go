@@ -29,7 +29,13 @@ func ValidateQualityGatePass(request QualityGateRequest, result QualityGateResul
 	}
 	var command daemonQualityCommand
 	var err error
-	if request.ReleaseContract != nil {
+	_, browserQAEnabled, browserQAErr := browserQAScenarioFromArtifact(request.GateType, request.Artifact)
+	if browserQAErr != nil {
+		return fmt.Errorf("validate browser QA scenario: %w", browserQAErr)
+	}
+	if browserQAEnabled {
+		command = browserQACommand()
+	} else if request.ReleaseContract != nil {
 		command, err = releaseBuilderCommand(*request.ReleaseContract)
 	} else {
 		command, err = detectDaemonQualityCommand(request.WorktreePath, request.GateType, request.CommitSHA)

@@ -627,5 +627,43 @@
     "approve": "Approve this revision",
     "approve_success": "Plan approved; eligible work can begin.",
     "approve_error": "Could not approve this plan."
+  },
+  "autonomous_evidence": {
+    "runner_daemon": "Daemon local runner",
+    "runner_webhook": "Webhook runner",
+    "runner_advisory": "Advisory agent claim",
+    "evidence_details": "Evidence details",
+    "command": "Command",
+    "exit_code": "Exit code",
+    "duration": "Duration",
+    "milliseconds": "ms",
+    "error": "Error",
+    "waiver": "Waiver",
+    "stdout": "stdout",
+    "stderr": "stderr",
+    "no_additional_evidence": "No additional runner evidence was recorded.",
+    "requirement_coverage": "Requirement coverage",
+    "coverage_description": "Each stable requirement ID connects to its Epic or Task, verification gates, and latest deployment evidence.",
+    "plan_nodes": "Plan nodes",
+    "no_linked_plan_node": "No linked plan node",
+    "verification_gates": "Verification gates",
+    "no_verification_evidence": "No verification evidence",
+    "latest_deployments": "Latest deployments",
+    "no_deployment_recorded": "No deployment recorded",
+    "stable_requirements_missing": "Stable requirement IDs are not available in the current specification.",
+    "non_goals": "Non-goals",
+    "non_goals_description": "Explicitly excluded from this project specification.",
+    "non_goal": "Non-goal",
+    "epic": "Epic",
+    "task": "Task",
+    "coverage_status": {
+      "unmapped": "Unmapped",
+      "verification_failed": "Verification failed",
+      "verified": "Verified",
+      "awaiting_verification": "Awaiting verification",
+      "in_progress": "In progress"
+    },
+    "screenshots": "Screenshots",
+    "screenshot": "Screenshot"
   }
 }

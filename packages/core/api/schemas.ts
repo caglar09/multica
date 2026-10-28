@@ -2248,6 +2248,33 @@ export const AutonomousProjectControlSchema = z.object({
   last_error: z.string().nullable().catch(null),
 }).loose();
 
+export const AutonomousQualityGateSchema = z.object({
+  id: z.string().default(""),
+  node_id: z.string().default(""),
+  gate_type: z.string().default(""),
+  status: z.string().default("unknown"),
+  required: z.boolean().catch(false),
+  evidence: z.record(z.string(), z.unknown()).catch({}),
+  last_error: z.string().nullable().catch(null),
+  updated_at: z.string().default(""),
+}).loose();
+
+export const AutonomousProjectDeploymentSchema = z.object({
+  id: z.string().default(""),
+  environment: z.string().default("unknown"),
+  status: z.string().default("unknown"),
+  commit_sha: z.string().nullable().catch(null),
+  manifest_digest: z.string().nullable().catch(null),
+  updated_at: z.string().default(""),
+}).loose();
+
+export const AutonomousProjectSnapshotFieldsSchema = z.object({
+  partial: z.boolean().catch(false),
+  missing_sections: z.array(z.string()).catch([]),
+  quality_gates: z.array(AutonomousQualityGateSchema).catch([]),
+  deployments: z.array(AutonomousProjectDeploymentSchema).catch([]),
+}).loose();
+
 export const AutonomousProjectPlanSnapshotSchema = z.object({
   id: z.string().default(""),
   revision: z.number().int().nonnegative().catch(0),
@@ -2285,6 +2312,8 @@ export const AutonomousProjectPlanSnapshotSchema = z.object({
   nodes: z.array(z.object({
     id: z.string().default(""),
     key: z.string().default(""),
+    is_epic: z.boolean().catch(false),
+    parent_epic_key: z.string().nullable().catch(null),
     kind: z.string().default(""),
     title: z.string().default(""),
     status: z.string().default(""),

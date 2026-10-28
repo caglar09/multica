@@ -289,6 +289,7 @@ import {
   ApproveAutonomousProjectPlanResponseSchema,
   AutonomousProjectControlSchema,
   AutonomousProjectPlanSnapshotSchema,
+  AutonomousProjectSnapshotFieldsSchema,
   CancelProjectAutonomousResponseSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
@@ -4196,8 +4197,20 @@ export class ApiClient {
   async getProjectAutonomous(id: string): Promise<AutonomousProjectSnapshot> {
     const endpoint = `/api/projects/${id}/autonomous`;
     const snapshot = await this.fetch<AutonomousProjectSnapshot>(endpoint);
+    const snapshotFields = parseWithFallback(
+      snapshot,
+      AutonomousProjectSnapshotFieldsSchema,
+      {
+        partial: false,
+        missing_sections: [],
+        quality_gates: [],
+        deployments: [],
+      },
+      { endpoint },
+    );
     return {
       ...snapshot,
+      ...snapshotFields,
       control: parseWithFallback(
         snapshot?.control,
         AutonomousProjectControlSchema,

@@ -71,9 +71,12 @@ type implementationHandoffOutput struct {
 }
 
 type reviewVerdictOutput struct {
-	Verdict  string           `json:"verdict"`
-	Summary  string           `json:"summary"`
-	Findings []handoffFinding `json:"findings"`
+	Verdict                 string           `json:"verdict"`
+	Summary                 string           `json:"summary"`
+	GoalAlignmentScore      *int             `json:"goal_alignment_score,omitempty"`
+	GoalAlignmentRationale  string           `json:"goal_alignment_rationale,omitempty"`
+	RequirementAttestations []string         `json:"requirement_attestations,omitempty"`
+	Findings                []handoffFinding `json:"findings"`
 }
 
 type durableHandoffEnvelope struct {
@@ -213,6 +216,9 @@ func parseReviewVerdict(raw json.RawMessage) (reviewVerdictOutput, error) {
 	if strings.TrimSpace(out.Summary) == "" {
 		return reviewVerdictOutput{}, errors.New("review verdict summary is required")
 	}
+	if err := validateOptionalGoalAlignment(out); err != nil {
+		return reviewVerdictOutput{}, err
+	}
 	if len(out.Findings) > 100 {
 		return reviewVerdictOutput{}, errors.New("review verdict has too many findings")
 	}
@@ -235,7 +241,77 @@ func parseReviewVerdict(raw json.RawMessage) (reviewVerdictOutput, error) {
 	default:
 		return reviewVerdictOutput{}, fmt.Errorf("unsupported review verdict %q", out.Verdict)
 	}
+	if out.Verdict == "approved" && out.GoalAlignmentScore != nil && *out.GoalAlignmentScore < 80 {
+		if len(out.Findings) >= 100 {
+			return reviewVerdictOutput{}, errors.New("review verdict has too many findings to record the goal-alignment rejection")
+		}
+		out.Verdict = "changes_requested"
+		out.Findings = append(out.Findings, goalAlignmentRejectionFinding(out))
+	}
 	return out, nil
+}
+
+func validateOptionalGoalAlignment(out reviewVerdictOutput) error {
+	if out.GoalAlignmentScore == nil {
+		if strings.TrimSpace(out.GoalAlignmentRationale) != "" || len(out.RequirementAttestations) > 0 {
+			return errors.New("goal-alignment rationale and requirement attestations require a score")
+		}
+		return nil
+	}
+	if *out.GoalAlignmentScore < 0 || *out.GoalAlignmentScore > 100 {
+		return errors.New("goal alignment score must be between 0 and 100")
+	}
+	if strings.TrimSpace(out.GoalAlignmentRationale) == "" {
+		return errors.New("goal alignment rationale is required when a score is provided")
+	}
+	if len(out.GoalAlignmentRationale) > 10000 {
+		return errors.New("goal alignment rationale exceeds 10000 characters")
+	}
+	if len(out.RequirementAttestations) == 0 || len(out.RequirementAttestations) > 500 {
+		return errors.New("goal alignment requires between 1 and 500 requirement attestations")
+	}
+	seen := make(map[string]struct{}, len(out.RequirementAttestations))
+	for _, id := range out.RequirementAttestations {
+		if strings.TrimSpace(id) == "" || id != strings.TrimSpace(id) || len(id) > 120 {
+			return errors.New("requirement attestations must contain canonical IDs of at most 120 characters")
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("duplicate requirement attestation %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
+
+func goalAlignmentRejectionFinding(out reviewVerdictOutput) handoffFinding {
+	return handoffFinding{
+		ID:          goalAlignmentFindingID(out.Findings),
+		Severity:    "high",
+		Category:    "goal_alignment",
+		Description: "reviewed changes do not meet the minimum goal-alignment score",
+		Evidence:    fmt.Sprintf("goal_alignment_score=%d; rationale: %s", *out.GoalAlignmentScore, strings.TrimSpace(out.GoalAlignmentRationale)),
+		Blocking:    true,
+	}
+}
+
+func goalAlignmentFindingID(findings []handoffFinding) string {
+	const base = "goal_alignment_below_threshold"
+	for suffix := 1; ; suffix++ {
+		candidate := base
+		if suffix > 1 {
+			candidate = fmt.Sprintf("%s_%d", base, suffix)
+		}
+		used := false
+		for _, finding := range findings {
+			if finding.ID == candidate {
+				used = true
+				break
+			}
+		}
+		if !used {
+			return candidate
+		}
+	}
 }
 
 func validateFinding(finding handoffFinding) error {

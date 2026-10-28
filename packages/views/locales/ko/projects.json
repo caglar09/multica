@@ -521,5 +521,43 @@
     "approve": "이 리비전 승인",
     "approve_success": "계획이 승인되어 진행 가능한 작업을 시작할 수 있습니다.",
     "approve_error": "계획을 승인하지 못했습니다."
+  },
+  "autonomous_evidence": {
+    "runner_daemon": "로컬 데몬 러너",
+    "runner_webhook": "Webhook 러너",
+    "runner_advisory": "에이전트 자체 주장",
+    "evidence_details": "증거 세부 정보",
+    "command": "명령",
+    "exit_code": "종료 코드",
+    "duration": "소요 시간",
+    "milliseconds": "ms",
+    "error": "오류",
+    "waiver": "면제",
+    "stdout": "stdout",
+    "stderr": "stderr",
+    "no_additional_evidence": "추가 러너 증거가 기록되지 않았습니다.",
+    "requirement_coverage": "요구사항 범위",
+    "coverage_description": "각 안정적인 요구사항 ID를 Epic 또는 Task, 검증 게이트, 최신 배포 증거와 연결합니다.",
+    "plan_nodes": "계획 노드",
+    "no_linked_plan_node": "연결된 계획 노드가 없습니다",
+    "verification_gates": "검증 게이트",
+    "no_verification_evidence": "검증 증거가 없습니다",
+    "latest_deployments": "최근 배포",
+    "no_deployment_recorded": "배포 기록이 없습니다",
+    "stable_requirements_missing": "현재 명세에 안정적인 요구사항 ID가 없습니다.",
+    "non_goals": "비목표",
+    "non_goals_description": "프로젝트 명세에서 명시적으로 제외되었습니다.",
+    "non_goal": "비목표",
+    "epic": "Epic",
+    "task": "Task",
+    "coverage_status": {
+      "unmapped": "매핑되지 않음",
+      "verification_failed": "검증 실패",
+      "verified": "검증됨",
+      "awaiting_verification": "검증 대기 중",
+      "in_progress": "진행 중"
+    },
+    "screenshots": "스크린샷",
+    "screenshot": "스크린샷"
   }
 }

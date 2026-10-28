@@ -408,7 +408,7 @@ func (s *Store) BindChangeApprovalEscalation(ctx context.Context, id, escalation
 }
 
 func (s *Store) LoadLogicalPlanNodes(ctx context.Context, workspaceID, projectID pgtype.UUID, planID string) ([]LogicalPlanNode, error) {
-	rows, err := s.pool.Query(ctx, `SELECT n.logical_node_id,n.node_key,n.kind,n.title,n.description,n.priority,COALESCE(n.required_role_family,''),n.required_capabilities,n.acceptance_criteria,n.requirement_ids,n.risk_level,n.max_attempts,n.status,n.materialized_issue_id,COALESCE(i.revision,0) FROM autonomous_project_plan_node n LEFT JOIN issue i ON i.id=n.materialized_issue_id AND i.workspace_id=n.workspace_id WHERE n.workspace_id=$1 AND n.project_id=$2 AND n.plan_id=$3::uuid ORDER BY n.created_at,n.node_key`, workspaceID, projectID, planID)
+	rows, err := s.pool.Query(ctx, `SELECT n.logical_node_id,n.node_key,n.is_epic,COALESCE(n.parent_epic_key,''),n.kind,n.title,n.description,n.priority,COALESCE(n.required_role_family,''),n.required_capabilities,n.acceptance_criteria,n.requirement_ids,n.risk_level,n.max_attempts,n.status,n.materialized_issue_id,COALESCE(i.revision,0) FROM autonomous_project_plan_node n LEFT JOIN issue i ON i.id=n.materialized_issue_id AND i.workspace_id=n.workspace_id WHERE n.workspace_id=$1 AND n.project_id=$2 AND n.plan_id=$3::uuid ORDER BY n.created_at,n.node_key`, workspaceID, projectID, planID)
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +419,7 @@ func (s *Store) LoadLogicalPlanNodes(ctx context.Context, workspaceID, projectID
 		var logicalID, issueID pgtype.UUID
 		var kind, risk string
 		var capabilities, criteria, requirementIDs []byte
-		if err := rows.Scan(&logicalID, &item.Spec.Key, &kind, &item.Spec.Title, &item.Spec.Description, &item.Spec.Priority, &item.Spec.RequiredRoleFamily, &capabilities, &criteria, &requirementIDs, &risk, &item.Spec.MaxAttempts, &item.Status, &issueID, &item.IssueRevision); err != nil {
+		if err := rows.Scan(&logicalID, &item.Spec.Key, &item.Spec.IsEpic, &item.Spec.ParentEpicKey, &kind, &item.Spec.Title, &item.Spec.Description, &item.Spec.Priority, &item.Spec.RequiredRoleFamily, &capabilities, &criteria, &requirementIDs, &risk, &item.Spec.MaxAttempts, &item.Status, &issueID, &item.IssueRevision); err != nil {
 			return nil, err
 		}
 		item.LogicalNodeID = util.UUIDToString(logicalID)

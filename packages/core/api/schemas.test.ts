@@ -77,6 +77,48 @@ import {
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
+import {
+  AutonomousProjectPlanSnapshotSchema,
+  AutonomousProjectSnapshotFieldsSchema,
+} from "./schemas";
+
+describe("autonomous project snapshot compatibility", () => {
+  it("defaults partial and hierarchy fields for older responses", () => {
+    expect(AutonomousProjectSnapshotFieldsSchema.parse({})).toMatchObject({
+      partial: false,
+      missing_sections: [],
+      quality_gates: [],
+      deployments: [],
+    });
+
+    const plan = AutonomousProjectPlanSnapshotSchema.parse({
+      nodes: [{ id: "node-id", key: "task-a" }],
+    });
+    expect(plan.nodes[0]).toMatchObject({
+      is_epic: false,
+      parent_epic_key: null,
+    });
+  });
+
+  it("keeps valid partial-data and deployment evidence", () => {
+    expect(AutonomousProjectSnapshotFieldsSchema.parse({
+      partial: true,
+      missing_sections: ["activity.tasks"],
+      deployments: [{
+        id: "deployment-id",
+        environment: "production",
+        status: "succeeded",
+        commit_sha: "abc123",
+        manifest_digest: "digest",
+        updated_at: "2026-10-28T00:00:00Z",
+      }],
+    })).toMatchObject({
+      partial: true,
+      missing_sections: ["activity.tasks"],
+      deployments: [{ environment: "production", commit_sha: "abc123" }],
+    });
+  });
+});
 
 describe("DeploymentLogResultSchema", () => {
   it("falls back when provider log output is malformed", () => {

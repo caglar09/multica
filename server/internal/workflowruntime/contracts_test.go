@@ -41,6 +41,29 @@ func TestStructuredReviewVerdictApprovedRejectsBlockingFinding(t *testing.T) {
 	}
 }
 
+func TestReviewVerdict_RejectsLowAlignmentScore(t *testing.T) {
+	raw := `{"verdict":"approved","summary":"technically sound","goal_alignment_score":75,"goal_alignment_rationale":"implementation changes the approved product direction","requirement_attestations":["REQ-1"],"findings":[]}`
+	out, err := parseReviewVerdict(wrappedOutput(raw))
+	if err != nil {
+		t.Fatalf("parse low-alignment review: %v", err)
+	}
+	if out.Verdict != "changes_requested" {
+		t.Fatalf("verdict = %q, want changes_requested", out.Verdict)
+	}
+	if len(out.Findings) != 1 || !out.Findings[0].Blocking || out.Findings[0].Category != "goal_alignment" {
+		t.Fatalf("low-alignment review findings = %#v", out.Findings)
+	}
+
+	atThreshold := `{"verdict":"approved","summary":"aligned","goal_alignment_score":80,"goal_alignment_rationale":"matches the project goal","requirement_attestations":["REQ-1"],"findings":[]}`
+	approved, err := parseReviewVerdict(wrappedOutput(atThreshold))
+	if err != nil {
+		t.Fatalf("parse review at the threshold: %v", err)
+	}
+	if approved.Verdict != "approved" || len(approved.Findings) != 0 {
+		t.Fatalf("score 80 review = %#v, want approved without synthetic findings", approved)
+	}
+}
+
 func TestImplementationHandoffContract(t *testing.T) {
 	raw := `{"summary":"implemented","decisions":["kept API stable"],"artifacts":[{"type":"diff","ref":"git","description":"implementation"}],"changed_files":["server/a.go"],"commit_sha":"abc1234","diff":"server/a.go changed","tests":[{"name":"go test ./...","status":"passed","evidence":"ok"}],"findings":[],"risks":[],"blockers":[]}`
 	out, err := parseImplementationHandoff(wrappedOutput(raw))

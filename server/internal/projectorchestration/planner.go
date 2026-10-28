@@ -324,6 +324,7 @@ Return exactly this JSON shape:
   "nodes": [
     {
       "key": "stable_snake_case_key",
+      "is_epic": true,
       "requirement_ids": ["stable_requirement_id"],
       "kind": "research|product|architecture|design|implementation|migration|integration|review|qa|security|release|deploy|observe|incident",
       "title": "...",
@@ -355,6 +356,74 @@ Planning rules:
 11. Treat production deployment, destructive migrations, credentials and irreversible actions as approval-sensitive even under high autonomy.
 12. Every artifact edge MUST declare required_artifact_type. Allowed values: product_spec, architecture, api_contract, data_model, test_plan, implementation_handoff, review, security_review, qa_report, integration_report, release_manifest, deployment_record, incident_report, postmortem, generic. Predecessor completion alone never satisfies an artifact edge.
 13. When an authoritative ProjectSpecification is supplied, preserve it exactly; keep the legacy requirements string array and add matching requirement_details with the original IDs, rationale and source.
-14. Every requirement ID must appear on at least one implementation or migration node and on a separate, independent review or QA node. Do not invent IDs or attach unknown IDs.
+14. This is the compact initial plan: every node must be an Epic (is_epic: true) with no parent_epic_key; do not create Task-level implementation or review nodes yet.
+15. Map every authoritative requirement ID to at least one Epic. Do not invent IDs or attach unknown IDs. Task-level implementation and verification coverage, including an independent review or QA Task, is required later when each Epic is decomposed.
+16. Keep Epics outcome-oriented and broad enough to defer implementation details until the Epic becomes active. Use only the two supported levels: Epic -> Task.
 `, util.UUIDToString(input.ProjectID), input.ProjectTitle, input.ProjectDescription, input.BootstrapBrief, projectSpecificationJSON, string(contextJSON), string(resourcesJSON), string(teamJSON), current, string(policyJSON))
+}
+
+func projectEpicDecompositionUserPrompt(input PlanningInput, epic NodeSpec) string {
+	planJSON, _ := json.Marshal(input.CurrentPlan)
+	epicJSON, _ := json.Marshal(epic)
+	teamJSON, _ := json.Marshal(input.Team)
+	contextJSON, _ := json.Marshal(input.Context)
+	resourcesJSON, _ := json.Marshal(input.Resources)
+	policyJSON, _ := json.Marshal(input.Policy)
+	specificationJSON, _ := json.Marshal(input.ProjectSpecification)
+	return fmt.Sprintf(`Decompose one active Epic into its Task-level execution sub-DAG.
+
+Epic to decompose:
+%s
+
+Current approved plan:
+%s
+
+Authoritative ProjectSpecification:
+%s
+
+Project Knowledge / Brain context:
+%s
+
+Attached project sources/resources:
+%s
+
+Provisioned Technology Team:
+%s
+
+Backend-owned safety policy:
+%s
+
+Return exactly one JSON object with this shape:
+{
+  "nodes": [
+    {
+      "key": "stable_snake_case_task_key",
+      "is_epic": false,
+      "parent_epic_key": "%s",
+      "requirement_ids": ["requirement_id_from_parent_epic"],
+      "kind": "research|product|architecture|design|implementation|migration|integration|review|qa|security|release|deploy|observe|incident",
+      "title": "...",
+      "description": "...",
+      "priority": 0,
+      "required_role_family": "one provisioned family when applicable",
+      "required_capabilities": ["..."],
+      "acceptance_criteria": ["..."],
+      "risk": "low|medium|high|critical",
+      "max_attempts": 3
+    }
+  ],
+  "edges": [
+    {"from": "task_key", "to": "task_key", "type": "hard|soft|artifact", "required_artifact_type": "required for artifact edges; otherwise omit"}
+  ]
+}
+
+Rules:
+1. Return Task nodes only. Do not create Epics, nested parents, or edges to nodes outside this Epic.
+2. Every Task must set parent_epic_key to the supplied Epic key. The backend will enforce it.
+3. Every requirement ID assigned to this Epic must appear on at least one implementation or migration Task and on a separate review or QA Task.
+4. Every requirement ID must come from the Epic or authoritative specification; do not invent or omit IDs.
+5. Build a complete dependency DAG with no cycles. Add only dependencies needed inside this Epic.
+6. Every artifact edge MUST declare required_artifact_type. Use only the allowed types in the plan contract.
+7. Acceptance criteria must be objective and verifiable. Use only provisioned role families.
+8. Keep the Task sub-DAG minimal and fit within the backend node limit.`, string(epicJSON), string(planJSON), string(specificationJSON), string(contextJSON), string(resourcesJSON), string(teamJSON), string(policyJSON), epic.Key)
 }

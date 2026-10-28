@@ -191,29 +191,56 @@ type AutonomousBrainResponse struct {
 }
 
 type AutonomousProjectResponse struct {
-	Enabled      bool                                `json:"enabled"`
-	Control      AutonomousControlResponse           `json:"control"`
-	Health       AutonomousProjectHealthResponse     `json:"health"`
-	Bootstrap    *AutonomousProjectBootstrapResponse `json:"bootstrap"`
-	Draft        *AutonomousTeamDraftResponse        `json:"draft"`
-	Runtimes     []AutonomousRuntimeOptionResponse   `json:"runtimes"`
-	Skills       []AutonomousSkillOptionResponse     `json:"skills"`
-	Team         *AutonomousTeamResponse             `json:"team"`
-	Workflows    []AutonomousWorkflowResponse        `json:"workflows"`
-	Actions      []AutonomousActionResponse          `json:"actions"`
-	Activity     []AutonomousActivityResponse        `json:"activity"`
-	Decisions    []AutonomousDecisionResponse        `json:"decisions"`
-	Plan         *AutonomousProjectPlanResponse      `json:"plan"`
-	QualityGates []AutonomousQualityGateResponse     `json:"quality_gates"`
-	Escalations  []AutonomousEscalationResponse      `json:"escalations"`
-	Diagnostics  []AutonomousDiagnosticResponse      `json:"diagnostics"`
-	Budget       *AutonomousBudgetResponse           `json:"budget"`
-	Brain        *AutonomousBrainResponse            `json:"brain"`
+	Partial         bool                                  `json:"partial"`
+	MissingSections []string                              `json:"missing_sections"`
+	Enabled         bool                                  `json:"enabled"`
+	Control         AutonomousControlResponse             `json:"control"`
+	Health          AutonomousProjectHealthResponse       `json:"health"`
+	Bootstrap       *AutonomousProjectBootstrapResponse   `json:"bootstrap"`
+	Draft           *AutonomousTeamDraftResponse          `json:"draft"`
+	Runtimes        []AutonomousRuntimeOptionResponse     `json:"runtimes"`
+	Skills          []AutonomousSkillOptionResponse       `json:"skills"`
+	Team            *AutonomousTeamResponse               `json:"team"`
+	Workflows       []AutonomousWorkflowResponse          `json:"workflows"`
+	Actions         []AutonomousActionResponse            `json:"actions"`
+	Activity        []AutonomousActivityResponse          `json:"activity"`
+	Decisions       []AutonomousDecisionResponse          `json:"decisions"`
+	Plan            *AutonomousProjectPlanResponse        `json:"plan"`
+	QualityGates    []AutonomousQualityGateResponse       `json:"quality_gates"`
+	Deployments     []AutonomousProjectDeploymentResponse `json:"deployments"`
+	Escalations     []AutonomousEscalationResponse        `json:"escalations"`
+	Diagnostics     []AutonomousDiagnosticResponse        `json:"diagnostics"`
+	Budget          *AutonomousBudgetResponse             `json:"budget"`
+	Brain           *AutonomousBrainResponse              `json:"brain"`
+}
+
+type AutonomousProjectDeploymentResponse struct {
+	ID             string  `json:"id"`
+	Environment    string  `json:"environment"`
+	Status         string  `json:"status"`
+	CommitSHA      *string `json:"commit_sha"`
+	ManifestDigest *string `json:"manifest_digest"`
+	UpdatedAt      string  `json:"updated_at"`
+}
+
+func markAutonomousSnapshotPartial(resp *AutonomousProjectResponse, section string) {
+	if resp == nil {
+		return
+	}
+	resp.Partial = true
+	for _, missing := range resp.MissingSections {
+		if missing == section {
+			return
+		}
+	}
+	resp.MissingSections = append(resp.MissingSections, section)
 }
 
 type AutonomousProjectPlanNodeResponse struct {
 	ID                  string          `json:"id"`
 	Key                 string          `json:"key"`
+	IsEpic              bool            `json:"is_epic"`
+	ParentEpicKey       *string         `json:"parent_epic_key"`
 	Kind                string          `json:"kind"`
 	Title               string          `json:"title"`
 	Status              string          `json:"status"`
@@ -340,16 +367,18 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	}
 
 	resp := AutonomousProjectResponse{
-		Runtimes:     []AutonomousRuntimeOptionResponse{},
-		Skills:       []AutonomousSkillOptionResponse{},
-		Workflows:    []AutonomousWorkflowResponse{},
-		Actions:      []AutonomousActionResponse{},
-		Activity:     []AutonomousActivityResponse{},
-		Decisions:    []AutonomousDecisionResponse{},
-		QualityGates: []AutonomousQualityGateResponse{},
-		Escalations:  []AutonomousEscalationResponse{},
-		Diagnostics:  []AutonomousDiagnosticResponse{},
-		Health:       AutonomousProjectHealthResponse{Status: "idle"},
+		Runtimes:        []AutonomousRuntimeOptionResponse{},
+		Skills:          []AutonomousSkillOptionResponse{},
+		Workflows:       []AutonomousWorkflowResponse{},
+		Actions:         []AutonomousActionResponse{},
+		Activity:        []AutonomousActivityResponse{},
+		Decisions:       []AutonomousDecisionResponse{},
+		QualityGates:    []AutonomousQualityGateResponse{},
+		Deployments:     []AutonomousProjectDeploymentResponse{},
+		MissingSections: []string{},
+		Escalations:     []AutonomousEscalationResponse{},
+		Diagnostics:     []AutonomousDiagnosticResponse{},
+		Health:          AutonomousProjectHealthResponse{Status: "idle"},
 	}
 
 	var pausedAt, cancelledAt, replanRequestedAt, replanCompletedAt pgtype.Timestamptz
@@ -698,7 +727,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		projectPlan.Edges = []AutonomousProjectPlanEdgeResponse{}
 
 		nodeRows, queryErr := h.DB.Query(r.Context(), `
-			SELECT n.id, n.node_key, n.kind, n.title, n.status, n.priority, n.risk_level,
+			SELECT n.id, n.node_key, n.is_epic, n.parent_epic_key, n.kind, n.title, n.status, n.priority, n.risk_level,
 			       n.required_role_family, n.assigned_role, n.assigned_agent_id,
 			       n.materialized_issue_id, n.attempt, n.max_attempts,
 			       n.blocked_category, n.blocked_reason, i.status, wr.state,
@@ -720,11 +749,11 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		for nodeRows.Next() {
 			var node AutonomousProjectPlanNodeResponse
 			var nodeID, agentID, issueID pgtype.UUID
-			var family, assignedRole, blockedCategory, blockedReason, issueStatus, workflowState pgtype.Text
+			var parentEpicKey, family, assignedRole, blockedCategory, blockedReason, issueStatus, workflowState pgtype.Text
 			var criteria, requirementIDs []byte
 			var updatedAt time.Time
 			if err := nodeRows.Scan(
-				&nodeID, &node.Key, &node.Kind, &node.Title, &node.Status, &node.Priority, &node.Risk,
+				&nodeID, &node.Key, &node.IsEpic, &parentEpicKey, &node.Kind, &node.Title, &node.Status, &node.Priority, &node.Risk,
 				&family, &assignedRole, &agentID, &issueID, &node.Attempt, &node.MaxAttempts,
 				&blockedCategory, &blockedReason, &issueStatus, &workflowState,
 				&criteria, &requirementIDs, &updatedAt,
@@ -734,6 +763,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 				return
 			}
 			node.ID = uuidToString(nodeID)
+			node.ParentEpicKey = nullableTextString(parentEpicKey)
 			node.RequiredRoleFamily = nullableTextString(family)
 			node.AssignedRole = nullableTextString(assignedRole)
 			node.AssignedAgentID = nullableUUIDString(agentID)
@@ -781,17 +811,19 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		LIMIT 100
 	`, workspaceID, projectID)
 	if gateErr != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load autonomous quality gates")
-		return
-	}
-	for gateRows.Next() {
-		var gate AutonomousQualityGateResponse
-		var id, nodeID pgtype.UUID
-		var lastError pgtype.Text
-		var evidence []byte
-		var updatedAt time.Time
-		if gateRows.Scan(&id, &nodeID, &gate.GateType, &gate.Status, &gate.Required,
-			&evidence, &lastError, &updatedAt) == nil {
+		markAutonomousSnapshotPartial(&resp, "quality_gates")
+	} else {
+		for gateRows.Next() {
+			var gate AutonomousQualityGateResponse
+			var id, nodeID pgtype.UUID
+			var lastError pgtype.Text
+			var evidence []byte
+			var updatedAt time.Time
+			if scanErr := gateRows.Scan(&id, &nodeID, &gate.GateType, &gate.Status, &gate.Required,
+				&evidence, &lastError, &updatedAt); scanErr != nil {
+				markAutonomousSnapshotPartial(&resp, "quality_gates")
+				continue
+			}
 			gate.ID = uuidToString(id)
 			gate.NodeID = uuidToString(nodeID)
 			gate.Evidence = append(json.RawMessage(nil), evidence...)
@@ -799,8 +831,51 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 			gate.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
 			resp.QualityGates = append(resp.QualityGates, gate)
 		}
+		if rowsErr := gateRows.Err(); rowsErr != nil {
+			markAutonomousSnapshotPartial(&resp, "quality_gates")
+		}
+		gateRows.Close()
 	}
-	gateRows.Close()
+
+	deploymentRows, deploymentErr := h.DB.Query(r.Context(), `
+		SELECT d.id, d.environment, d.status, rm.commit_sha,
+		       d.release_manifest_digest,
+		       COALESCE(d.completed_at, d.started_at, d.created_at)
+		FROM autonomous_project_deployment d
+		LEFT JOIN autonomous_project_release_manifest rm
+		  ON rm.manifest_id = d.release_manifest_id
+		 AND rm.manifest_digest = d.release_manifest_digest
+		 AND rm.workspace_id = d.workspace_id
+		 AND rm.project_id = d.project_id
+		WHERE d.workspace_id = $1 AND d.project_id = $2
+		ORDER BY COALESCE(d.completed_at, d.started_at, d.created_at) DESC
+		LIMIT 20
+	`, workspaceID, projectID)
+	if deploymentErr != nil {
+		markAutonomousSnapshotPartial(&resp, "deployments")
+	} else {
+		for deploymentRows.Next() {
+			var item AutonomousProjectDeploymentResponse
+			var id pgtype.UUID
+			var commitSHA, manifestDigest pgtype.Text
+			var updatedAt time.Time
+			if scanErr := deploymentRows.Scan(
+				&id, &item.Environment, &item.Status, &commitSHA, &manifestDigest, &updatedAt,
+			); scanErr != nil {
+				markAutonomousSnapshotPartial(&resp, "deployments")
+				continue
+			}
+			item.ID = uuidToString(id)
+			item.CommitSHA = nullableTextString(commitSHA)
+			item.ManifestDigest = nullableTextString(manifestDigest)
+			item.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
+			resp.Deployments = append(resp.Deployments, item)
+		}
+		if rowsErr := deploymentRows.Err(); rowsErr != nil {
+			markAutonomousSnapshotPartial(&resp, "deployments")
+		}
+		deploymentRows.Close()
+	}
 
 	escalationRows, escalationErr := h.DB.Query(r.Context(), `
 		SELECT id, node_id, category, status, severity, summary, context,
@@ -1169,7 +1244,10 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 				var role, family, name, reason string
 				var agentID pgtype.UUID
 				var createdAt time.Time
-				if memberRows.Scan(&role, &family, &agentID, &name, &reason, &createdAt) == nil {
+				if scanErr := memberRows.Scan(&role, &family, &agentID, &name, &reason, &createdAt); scanErr != nil {
+					markAutonomousSnapshotPartial(&resp, "activity.team_members")
+					continue
+				} else {
 					agentIDString := uuidToString(agentID)
 					sortable = append(sortable, autonomousActivitySortable{
 						At: createdAt,
@@ -1185,7 +1263,12 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 					})
 				}
 			}
+			if rowsErr := memberRows.Err(); rowsErr != nil {
+				markAutonomousSnapshotPartial(&resp, "activity.team_members")
+			}
 			memberRows.Close()
+		} else {
+			markAutonomousSnapshotPartial(&resp, "activity.team_members")
 		}
 
 		decisionRows, err := h.DB.Query(r.Context(), `
@@ -1203,10 +1286,13 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 				var plannerModel pgtype.Text
 				var plan []byte
 				var createdAt time.Time
-				if decisionRows.Scan(
+				if scanErr := decisionRows.Scan(
 					&id, &decision.SourceType, &sourceID, &decision.SourceRevision,
 					&decision.PlannerName, &plannerModel, &plan, &createdAt,
-				) == nil {
+				); scanErr != nil {
+					markAutonomousSnapshotPartial(&resp, "decisions")
+					continue
+				} else {
 					decision.ID = uuidToString(id)
 					decision.SourceID = uuidToString(sourceID)
 					decision.PlannerModel = nullableTextString(plannerModel)
@@ -1235,7 +1321,12 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 					})
 				}
 			}
+			if rowsErr := decisionRows.Err(); rowsErr != nil {
+				markAutonomousSnapshotPartial(&resp, "decisions")
+			}
 			decisionRows.Close()
+		} else {
+			markAutonomousSnapshotPartial(&resp, "decisions")
 		}
 	}
 
@@ -1253,7 +1344,10 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 			var eventID, eventType, issueTitle string
 			var issueID pgtype.UUID
 			var createdAt time.Time
-			if eventRows.Scan(&eventID, &eventType, &issueID, &issueTitle, &createdAt) == nil {
+			if scanErr := eventRows.Scan(&eventID, &eventType, &issueID, &issueTitle, &createdAt); scanErr != nil {
+				markAutonomousSnapshotPartial(&resp, "activity.workflow_events")
+				continue
+			} else {
 				issueIDString := uuidToString(issueID)
 				sortable = append(sortable, autonomousActivitySortable{
 					At: createdAt,
@@ -1268,7 +1362,12 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 				})
 			}
 		}
+		if rowsErr := eventRows.Err(); rowsErr != nil {
+			markAutonomousSnapshotPartial(&resp, "activity.workflow_events")
+		}
 		eventRows.Close()
+	} else {
+		markAutonomousSnapshotPartial(&resp, "activity.workflow_events")
 	}
 
 	taskRows, err := h.DB.Query(r.Context(), `
@@ -1289,11 +1388,14 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 			var failureReason, taskError pgtype.Text
 			var fireAt, completedAt pgtype.Timestamptz
 			var createdAt time.Time
-			if taskRows.Scan(
+			if scanErr := taskRows.Scan(
 				&taskID, &agentID, &agentName, &issueID, &issueTitle, &status,
 				&failureReason, &taskError, &fireAt, &retryOf, &rerunOf,
 				&createdAt, &completedAt,
-			) == nil {
+			); scanErr != nil {
+				markAutonomousSnapshotPartial(&resp, "activity.tasks")
+				continue
+			} else {
 				at := createdAt
 				if completedAt.Valid {
 					at = completedAt.Time
@@ -1336,7 +1438,12 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 				})
 			}
 		}
+		if rowsErr := taskRows.Err(); rowsErr != nil {
+			markAutonomousSnapshotPartial(&resp, "activity.tasks")
+		}
 		taskRows.Close()
+	} else {
+		markAutonomousSnapshotPartial(&resp, "activity.tasks")
 	}
 
 	sort.SliceStable(sortable, func(i, j int) bool { return sortable[i].At.After(sortable[j].At) })

@@ -201,6 +201,8 @@ export interface UpdateAutonomousBrainConfig {
 export interface AutonomousProjectPlanNode {
   id: string;
   key: string;
+  is_epic: boolean;
+  parent_epic_key: string | null;
   kind: string;
   title: string;
   status: string;
@@ -278,6 +280,15 @@ export interface AutonomousQualityGate {
   updated_at: string;
 }
 
+export interface AutonomousProjectDeployment {
+  id: string;
+  environment: string;
+  status: string;
+  commit_sha: string | null;
+  manifest_digest: string | null;
+  updated_at: string;
+}
+
 export interface AutonomousEscalation {
   id: string;
   node_id: string | null;
@@ -327,6 +338,8 @@ export interface AutonomousBudget {
 }
 
 export interface AutonomousProjectSnapshot {
+  partial: boolean;
+  missing_sections: string[];
   enabled: boolean;
   control: AutonomousProjectControl;
   health: AutonomousProjectHealth;
@@ -341,6 +354,7 @@ export interface AutonomousProjectSnapshot {
   decisions: AutonomousDecision[];
   plan: AutonomousProjectPlanSnapshot | null;
   quality_gates: AutonomousQualityGate[];
+  deployments: AutonomousProjectDeployment[];
   escalations: AutonomousEscalation[];
   diagnostics: AutonomousDiagnostic[];
   budget: AutonomousBudget | null;
