@@ -151,6 +151,23 @@
       "done": "Tamamlandı.",
       "blocked": "Harici bir bağımlılık nedeniyle durdu.",
       "cancelled": "Yapılmamasına karar verildi."
+    },
+    "reorder_hint": "Panoları, listeleri ve menüleri aynı kategori içinde sürükleyerek yeniden sıralayın.",
+    "category_labels": {
+      "unstarted": "Başlanmadı",
+      "started": "Başladı",
+      "done": "Tamamlandı",
+      "closed": "Kapalı"
+    },
+    "pr_auto_complete_badge": "PR birleştirildiğinde ayarlanır",
+    "built_in_descriptions": {
+      "backlog": "Beklemede. Bir görevi buraya atamak ajan çalıştırmasını başlatmaz.",
+      "todo": "Sırada. Bir görevi buraya taşımak atanan ajanı başlatır.",
+      "in_progress": "Üzerinde aktif olarak çalışılıyor.",
+      "in_review": "Teslim edildi; insan incelemesi bekleniyor. Otopilot çalıştırmasını tamamlar.",
+      "blocked": "Harici bir bağımlılık nedeniyle durakladı.",
+      "done": "Tamamlandı.",
+      "cancelled": "Yapılmamasına karar verildi."
     }
   },
   "quick_actions": {
@@ -234,6 +251,21 @@
     "sticky_comment_bar": {
       "title": "Sabit yorum çubuğu",
       "hint": "Bir görev sayfasını kaydırırken yorum çubuğunu en alta sabitlenmiş olarak tutun."
+    },
+    "region_title": "Dil ve bölge",
+    "appearance_title": "Görünüm",
+    "comments_title": "Yorumlar ve sohbet",
+    "running_agent_reply": {
+      "title": "Çalışan bir ajana yanıt verirken",
+      "hint": "Yalnızca varsayılanı belirler. Göndermeden önce her mesaj için değiştirebilirsiniz.",
+      "steer": "Mevcut çalıştırmaya ekle"
+    },
+    "issue_fields_title": "Görev oluştururken gösterilen alanlar",
+    "issue_fields": {
+      "field": "Alan",
+      "quick": "Ajanla oluştur",
+      "manual": "Elle oluştur",
+      "unsupported": "Ajanla oluştururken kullanılamaz"
     }
   },
   "shortcuts": {
@@ -367,7 +399,9 @@
       "zoom_in": "Yakınlaştır",
       "zoom_out": "Uzaklaştır",
       "reset_zoom": "Yakınlaştırmayı sıfırla",
-      "close_dialog": "İletişim kutusunu veya menüyü kapat"
+      "close_dialog": "İletişim kutusunu veya menüyü kapat",
+      "select_tab_1_to_8": "1–8 arasındaki sekmeyi seç",
+      "select_last_tab": "Son sekmeyi seç"
     }
   },
   "chat": {
@@ -389,6 +423,13 @@
       "project": "Proje",
       "due_date": "Bitiş tarihi",
       "start_date": "Başlangıç tarihi"
+    },
+    "opening": {
+      "title": "Görevleri açma",
+      "click": "Karta veya satıra tıklayınca açılır",
+      "hint": "Shift+tıklama diğer görünümü açar.",
+      "page": "Tam sayfa",
+      "peek": "Yan panel önizlemesi"
     }
   },
   "mcp": {
@@ -442,6 +483,13 @@
       "code": "Kod",
       "channels": "Mesajlaşma",
       "deployment_providers": "Dağıtım sağlayıcıları"
+    },
+    "search": "Ayarları ara",
+    "groups": {
+      "personal": "Kişisel",
+      "workspace": "Çalışma alanı",
+      "issues": "Görevler ve iş akışı",
+      "connections": "Bağlantılar ve eklentiler"
     }
   },
   "plugins": {
@@ -756,7 +804,9 @@
       "cli_hint": "CLI'da şu komutla oturum açın:",
       "copy_command_tooltip": "Komutu kopyala",
       "done": "Bitti"
-    }
+    },
+    "purpose": "CLI ve API için kimlik doğrulaması sağlar.",
+    "usage_help": "Kullanım"
   },
   "workspace": {
     "section_general": "Çalışma alanı detayları",
@@ -796,7 +846,11 @@
     "deleting": "Siliniyor...",
     "toast_delete_failed": "Çalışma alanı silinemedi",
     "confirm_cancel": "İptal",
-    "confirm_action": "Onayla"
+    "confirm_action": "Onayla",
+    "context_hint": "Her çalıştırmada tüm ajanlara iletilir.",
+    "slug_hint": "Her çalışma alanı URL’sinin parçasıdır. Değiştirilemez.",
+    "copy_slug": "Slug’ı kopyala",
+    "change_prefix": "Görev önekini değiştir…"
   },
   "delete_workspace_dialog": {
     "title": "Çalışma alanını sil",
@@ -1458,6 +1512,12 @@
     "expiry_24h": "24 saat",
     "expiry_7d": "7 gün",
     "expiry_30d": "30 gün",
-    "expiry_never": "Süresiz"
+    "expiry_never": "Süresiz",
+    "members_label": "Üyeler",
+    "pending_label": "Bekleyen davetler",
+    "share_links_label": "Paylaşım bağlantıları",
+    "search_placeholder": "İsim veya e-posta ara",
+    "you": "Siz",
+    "joined": "Katıldı {{date}}"
   }
 }

@@ -461,5 +461,8 @@
       "confirm": "Kalıcı olarak sil",
       "deleting": "Siliniyor…"
     }
+  },
+  "wakeups": {
+    "title": "Görev uyandırmaları"
   }
 }
