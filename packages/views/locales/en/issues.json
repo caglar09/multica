@@ -1756,5 +1756,18 @@
   },
   "hover_card": {
     "created_updated": "created {{created}} · updated {{updated}}"
+  },
+  "dependencies": {
+    "title": "Dependencies",
+    "blocked_count": "Blocked · {{count}}",
+    "blocked_by": "Blocked by",
+    "blocks": "Blocks",
+    "remove": "Remove dependency",
+    "remove_failed": "Could not remove dependency",
+    "issue_identifier_placeholder": "Issue identifier (e.g. MUL-123)",
+    "issue_identifier_label": "Issue identifier to block on",
+    "add": "Add",
+    "added": "Dependency added",
+    "add_failed": "Could not add dependency"
   }
 }

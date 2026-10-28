@@ -4803,6 +4803,8 @@ type TaskCompleteRequest struct {
 	WorktreeBaseSHA      string   `json:"worktree_base_sha,omitempty"`
 	WorktreeCommitSHA    string   `json:"worktree_commit_sha,omitempty"`
 	WorktreeChangedFiles []string `json:"worktree_changed_files,omitempty"`
+	WorktreePath         string   `json:"worktree_path,omitempty"`
+	WorktreeRepoPath     string   `json:"worktree_repo_path,omitempty"`
 	// SessionRolloutMissing: the daemon withheld this task's Codex session
 	// because its rollout was missing (MUL-5305). Clear the resume pointer and
 	// flag the continuity gap for the next claim.
@@ -4830,6 +4832,8 @@ func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.BranchName = util.SanitizeTextForPostgres(req.BranchName)
 	req.WorktreeBaseSHA = util.SanitizeTextForPostgres(req.WorktreeBaseSHA)
 	req.WorktreeCommitSHA = util.SanitizeTextForPostgres(req.WorktreeCommitSHA)
+	req.WorktreePath = util.SanitizeTextForPostgres(req.WorktreePath)
+	req.WorktreeRepoPath = util.SanitizeTextForPostgres(req.WorktreeRepoPath)
 	for i := range req.WorktreeChangedFiles {
 		req.WorktreeChangedFiles[i] = util.SanitizeTextForPostgres(req.WorktreeChangedFiles[i])
 	}

@@ -688,6 +688,156 @@ deleted_profiles AS (
 )
 DELETE FROM project WHERE project.workspace_id = $1;
 
+-- name: DeleteWorkspaceAutonomousChildren :exec
+WITH
+ws_runs AS MATERIALIZED (
+    SELECT id FROM autonomous_workflow_run WHERE autonomous_workflow_run.workspace_id = $1
+),
+ws_teams AS MATERIALIZED (
+    SELECT id FROM autonomous_project_team WHERE autonomous_project_team.workspace_id = $1
+),
+ws_change_requests AS MATERIALIZED (
+    SELECT id FROM autonomous_project_change_request WHERE autonomous_project_change_request.workspace_id = $1
+),
+deleted_workflow_actions AS (
+    DELETE FROM autonomous_workflow_action WHERE run_id IN (SELECT id FROM ws_runs)
+),
+deleted_workflow_events AS (
+    DELETE FROM autonomous_workflow_processed_event WHERE run_id IN (SELECT id FROM ws_runs)
+),
+deleted_team_analysis AS (
+    DELETE FROM autonomous_project_team_analysis WHERE team_id IN (SELECT id FROM ws_teams)
+),
+deleted_team_members AS (
+    DELETE FROM autonomous_project_team_member WHERE team_id IN (SELECT id FROM ws_teams)
+),
+deleted_change_request_events AS (
+    DELETE FROM autonomous_project_change_request_event WHERE change_request_id IN (SELECT id FROM ws_change_requests)
+),
+deleted_node_retirements AS (
+    DELETE FROM autonomous_project_node_retirement WHERE autonomous_project_node_retirement.workspace_id = $1
+),
+deleted_plan_mutations AS (
+    DELETE FROM autonomous_project_plan_mutation WHERE autonomous_project_plan_mutation.workspace_id = $1
+)
+SELECT 1;
+
+-- name: DeleteWorkspaceAutonomousProjectChangeRequests :exec
+DELETE FROM autonomous_project_change_request WHERE autonomous_project_change_request.workspace_id = $1;
+
+-- name: DeleteWorkspaceAutonomousProjectData :exec
+WITH
+deleted_performance AS (
+    DELETE FROM autonomous_agent_performance WHERE autonomous_agent_performance.workspace_id = $1
+),
+deleted_control_plane_jobs AS (
+    DELETE FROM autonomous_control_plane_job WHERE autonomous_control_plane_job.workspace_id = $1
+),
+deleted_artifacts AS (
+    DELETE FROM autonomous_project_artifact WHERE autonomous_project_artifact.workspace_id = $1
+),
+deleted_bootstrap AS (
+    DELETE FROM autonomous_project_bootstrap WHERE autonomous_project_bootstrap.workspace_id = $1
+),
+deleted_brain_config AS (
+    DELETE FROM autonomous_project_brain_config WHERE autonomous_project_brain_config.workspace_id = $1
+),
+deleted_brain_entries AS (
+    DELETE FROM autonomous_project_brain_entry WHERE autonomous_project_brain_entry.workspace_id = $1
+),
+deleted_brain_proposals AS (
+    DELETE FROM autonomous_project_brain_impact_proposal WHERE autonomous_project_brain_impact_proposal.workspace_id = $1
+),
+deleted_brain_jobs AS (
+    DELETE FROM autonomous_project_brain_learning_job WHERE autonomous_project_brain_learning_job.workspace_id = $1
+),
+deleted_brain_snapshots AS (
+    DELETE FROM autonomous_project_brain_snapshot WHERE autonomous_project_brain_snapshot.workspace_id = $1
+),
+deleted_brain_states AS (
+    DELETE FROM autonomous_project_brain_state WHERE autonomous_project_brain_state.workspace_id = $1
+),
+deleted_budgets AS (
+    DELETE FROM autonomous_project_budget WHERE autonomous_project_budget.workspace_id = $1
+),
+deleted_change_sets AS (
+    DELETE FROM autonomous_project_change_set WHERE autonomous_project_change_set.workspace_id = $1
+),
+deleted_context_compilations AS (
+    DELETE FROM autonomous_project_context_compilation WHERE autonomous_project_context_compilation.workspace_id = $1
+),
+deleted_controls AS (
+    DELETE FROM autonomous_project_control WHERE autonomous_project_control.workspace_id = $1
+),
+deleted_deployments AS (
+    DELETE FROM autonomous_project_deployment WHERE autonomous_project_deployment.workspace_id = $1
+),
+deleted_escalations AS (
+    DELETE FROM autonomous_project_escalation WHERE autonomous_project_escalation.workspace_id = $1
+),
+deleted_handoffs AS (
+    DELETE FROM autonomous_project_handoff WHERE autonomous_project_handoff.workspace_id = $1
+),
+deleted_incidents AS (
+    DELETE FROM autonomous_project_incident WHERE autonomous_project_incident.workspace_id = $1
+),
+deleted_plan_edges AS (
+    DELETE FROM autonomous_project_plan_edge WHERE autonomous_project_plan_edge.workspace_id = $1
+),
+deleted_plan_nodes AS (
+    DELETE FROM autonomous_project_plan_node WHERE autonomous_project_plan_node.workspace_id = $1
+),
+deleted_quality_gates AS (
+    DELETE FROM autonomous_project_quality_gate_run WHERE autonomous_project_quality_gate_run.workspace_id = $1
+),
+deleted_review_findings AS (
+    DELETE FROM autonomous_project_review_finding WHERE autonomous_project_review_finding.workspace_id = $1
+),
+deleted_review_verdicts AS (
+    DELETE FROM autonomous_project_review_verdict WHERE autonomous_project_review_verdict.workspace_id = $1
+),
+deleted_team_drafts AS (
+    DELETE FROM autonomous_project_team_draft WHERE autonomous_project_team_draft.workspace_id = $1
+),
+deleted_usage_accounting AS (
+    DELETE FROM autonomous_project_usage_accounting WHERE autonomous_project_usage_accounting.workspace_id = $1
+),
+deleted_deployment_events AS (
+    DELETE FROM deployment_event WHERE deployment_event.workspace_id = $1
+),
+deleted_deployment_operations AS (
+    DELETE FROM deployment_operation WHERE deployment_operation.workspace_id = $1
+),
+deleted_deployment_revisions AS (
+    DELETE FROM deployment_source_revision WHERE deployment_source_revision.workspace_id = $1
+),
+deleted_deployment_targets AS (
+    DELETE FROM deployment_target WHERE deployment_target.workspace_id = $1
+),
+deleted_deployment_connections AS (
+    DELETE FROM deployment_provider_connection WHERE deployment_provider_connection.workspace_id = $1
+),
+deleted_deployment_oauth_states AS (
+    DELETE FROM deployment_vercel_oauth_state WHERE deployment_vercel_oauth_state.workspace_id = $1
+)
+SELECT 1;
+
+-- name: DeleteWorkspaceAutonomousWorkflowRunsAndTeams :exec
+WITH
+deleted_workflow_runs AS (
+    DELETE FROM autonomous_workflow_run WHERE autonomous_workflow_run.workspace_id = $1
+)
+DELETE FROM autonomous_project_team WHERE autonomous_project_team.workspace_id = $1;
+
+-- name: DeleteWorkspaceAutonomousPlans :exec
+DELETE FROM autonomous_project_plan WHERE workspace_id = $1;
+
+-- name: DeleteWorkspaceAutonomousSpecificationHeads :exec
+DELETE FROM autonomous_project_specification_head WHERE autonomous_project_specification_head.workspace_id = $1;
+
+-- name: DeleteWorkspaceAutonomousSpecificationRevisions :exec
+DELETE FROM autonomous_project_specification_revision WHERE autonomous_project_specification_revision.workspace_id = $1;
+
 -- name: DeleteWorkspaceAdministration :exec
 WITH
 deleted_members AS (

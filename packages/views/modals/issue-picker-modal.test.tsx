@@ -30,7 +30,7 @@ const DUPLICATE = issue({
   identifier: "MUL-2",
   title: "Tap targets too small on iPhone",
   status: "cancelled",
-  duplicate_of: { id: "original", identifier: "MUL-1", title: "Tap targets too small", status: "todo" },
+  duplicate_of: { id: "original", identifier: "MUL-1", title: "Tap targets too small", status: "todo", done: false },
 });
 
 afterEach(() => {

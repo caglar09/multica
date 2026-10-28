@@ -650,11 +650,10 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                 <div>
                   <div className="flex items-center gap-2 text-body font-medium">
                     <Sparkles className="size-4" />
-                    Autonomous Project Bootstrap
+                    {t(($) => $.create_project.bootstrap.title)}
                   </div>
                   <p className="mt-1 text-caption text-muted-foreground">
-                    This intake becomes durable Project Brain context before the
-                    Technology Team and Project OS plan are created.
+                    {t(($) => $.create_project.bootstrap.description)}
                   </p>
                 </div>
                 <span className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -665,12 +664,12 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
               <div className="grid gap-3 md:grid-cols-2">
                 <label className="block">
                   <span className="mb-1 block text-caption font-medium">
-                    Project brief
+                    {t(($) => $.create_project.bootstrap.brief)}
                   </span>
                   <textarea
                     value={bootstrapBrief}
                     onChange={(event) => setBootstrapBrief(event.target.value)}
-                    placeholder="Outcome, users, business intent, hard constraints…"
+                    placeholder={t(($) => $.create_project.bootstrap.brief_placeholder)}
                     className="min-h-24 w-full resize-y rounded-md border bg-background px-2.5 py-2 text-body outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   />
                 </label>
@@ -678,7 +677,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                   <div className="mb-1 flex items-center justify-between gap-2">
                     <span className="flex items-center gap-1 text-caption font-medium">
                       <Brain className="size-3.5" />
-                      Project knowledge
+                      {t(($) => $.create_project.bootstrap.knowledge)}
                     </span>
                     <button
                       type="button"
@@ -686,7 +685,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                       className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
                     >
                       <Plus className="size-3" />
-                      Add document
+                      {t(($) => $.create_project.bootstrap.add_document)}
                     </button>
                   </div>
                   <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
@@ -707,12 +706,12 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                             className="h-8 rounded-md border bg-background px-2 text-caption"
                           >
                             <option value="prd">PRD</option>
-                            <option value="requirements">Requirements</option>
-                            <option value="architecture">Architecture</option>
-                            <option value="design">Design</option>
-                            <option value="api_spec">API spec</option>
-                            <option value="reference">Reference</option>
-                            <option value="note">Note</option>
+                            <option value="requirements">{t(($) => $.create_project.bootstrap.kind_requirements)}</option>
+                            <option value="architecture">{t(($) => $.create_project.bootstrap.kind_architecture)}</option>
+                            <option value="design">{t(($) => $.create_project.bootstrap.kind_design)}</option>
+                            <option value="api_spec">{t(($) => $.create_project.bootstrap.kind_api_spec)}</option>
+                            <option value="reference">{t(($) => $.create_project.bootstrap.kind_reference)}</option>
+                            <option value="note">{t(($) => $.create_project.bootstrap.kind_note)}</option>
                           </select>
                           <input
                             value={item.title}
@@ -721,12 +720,12 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                                 title: event.target.value,
                               })
                             }
-                            placeholder="Document title"
+                            placeholder={t(($) => $.create_project.bootstrap.document_title)}
                             className="h-8 min-w-0 rounded-md border bg-background px-2 text-caption"
                           />
                           <button
                             type="button"
-                            aria-label="Remove knowledge document"
+                            aria-label={t(($) => $.create_project.bootstrap.remove_document)}
                             onClick={() => removeBootstrapKnowledge(index)}
                             className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                           >
@@ -740,7 +739,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                               content: event.target.value,
                             })
                           }
-                          placeholder="Paste requirements, decisions, contracts, constraints, or reference material…"
+                          placeholder={t(($) => $.create_project.bootstrap.document_content_placeholder)}
                           className="min-h-20 w-full resize-y rounded-md border-0 bg-muted/20 px-2.5 py-2 text-caption outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         />
                       </div>
@@ -752,7 +751,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                         className="flex min-h-24 w-full items-center justify-center gap-2 rounded-md border border-dashed text-caption text-muted-foreground hover:bg-muted/30 hover:text-foreground"
                       >
                         <FileText className="size-4" />
-                        Add PRD, architecture, API spec, or reference
+                        {t(($) => $.create_project.bootstrap.add_knowledge_prompt)}
                       </button>
                     ) : null}
                   </div>
@@ -763,14 +762,14 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                 <div>
                   <div className="mb-1.5 flex items-center gap-1 text-caption font-medium">
                     <ShieldCheck className="size-3.5" />
-                    Approval guardrails
+                    {t(($) => $.create_project.bootstrap.approval_guardrails)}
                   </div>
                   <div className="grid gap-1.5 sm:grid-cols-2">
                     {[
-                      ["Database migrations", approvalDatabaseMigration, setApprovalDatabaseMigration],
-                      ["Production deployment", approvalProductionDeploy, setApprovalProductionDeploy],
-                      ["Major dependencies", approvalMajorDependency, setApprovalMajorDependency],
-                      ["Critical risk", approvalCriticalRisk, setApprovalCriticalRisk],
+                      [t(($) => $.create_project.bootstrap.database_migrations), approvalDatabaseMigration, setApprovalDatabaseMigration],
+                      [t(($) => $.create_project.bootstrap.production_deployment), approvalProductionDeploy, setApprovalProductionDeploy],
+                      [t(($) => $.create_project.bootstrap.major_dependencies), approvalMajorDependency, setApprovalMajorDependency],
+                      [t(($) => $.create_project.bootstrap.critical_risk), approvalCriticalRisk, setApprovalCriticalRisk],
                     ].map(([label, checked, setter]) => (
                       <label
                         key={label as string}
@@ -790,11 +789,11 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                 </div>
                 <div>
                   <div className="mb-1.5 text-caption font-medium">
-                    Execution budget
+                    {t(($) => $.create_project.bootstrap.execution_budget)}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="text-[11px] text-muted-foreground">
-                      Parallel nodes
+                      {t(($) => $.create_project.bootstrap.parallel_nodes)}
                       <input
                         type="number"
                         min={1}
@@ -809,7 +808,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                       />
                     </label>
                     <label className="text-[11px] text-muted-foreground">
-                      Max attempts
+                      {t(($) => $.create_project.bootstrap.max_attempts)}
                       <input
                         type="number"
                         min={1}
@@ -825,7 +824,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                     </label>
                   </div>
                   <p className="mt-1.5 text-[11px] text-muted-foreground">
-                    Server limits remain the hard ceiling.
+                    {t(($) => $.create_project.bootstrap.server_limits)}
                   </p>
                 </div>
               </div>
@@ -847,22 +846,31 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                   <Sparkles className="size-3" />
                   <span>
                     {autonomous
-                      ? `Autonomous · ${autonomyLevel.replace("_", " ")}`
-                      : "Standard project"}
+                      ? t(($) => $.create_project.bootstrap.autonomy_level, {
+                          level:
+                            autonomyLevel === "assisted"
+                              ? t(($) => $.create_project.bootstrap.level_assisted)
+                              : autonomyLevel === "development"
+                                ? t(($) => $.create_project.bootstrap.level_development)
+                                : autonomyLevel === "delivery"
+                                  ? t(($) => $.create_project.bootstrap.level_delivery)
+                                  : t(($) => $.create_project.bootstrap.level_closed_loop),
+                        })
+                      : t(($) => $.create_project.bootstrap.standard_project)}
                   </span>
                 </PillButton>
               }
             />
             <DropdownMenuContent align="start" className="w-56">
               <DropdownMenuItem onClick={() => setAutonomous(false)}>
-                Standard project
+                {t(($) => $.create_project.bootstrap.standard_project)}
               </DropdownMenuItem>
               {(
                 [
-                  ["assisted", "Autonomous · Assisted"],
-                  ["development", "Autonomous · Development"],
-                  ["delivery", "Autonomous · Delivery"],
-                  ["closed_loop", "Autonomous · Closed loop"],
+                  ["assisted", t(($) => $.create_project.bootstrap.autonomous_assisted)],
+                  ["development", t(($) => $.create_project.bootstrap.autonomous_development)],
+                  ["delivery", t(($) => $.create_project.bootstrap.autonomous_delivery)],
+                  ["closed_loop", t(($) => $.create_project.bootstrap.autonomous_closed_loop)],
                 ] as Array<[ProjectAutonomyLevel, string]>
               ).map(([level, label]) => (
                 <DropdownMenuItem

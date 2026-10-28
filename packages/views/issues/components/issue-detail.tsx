@@ -1557,10 +1557,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       {
         onSuccess: () => {
           setDependencyIssueReference("");
-          toast.success("Dependency added");
+          toast.success(t(($) => $.dependencies.added));
         },
         onError: (error) =>
-          toast.error(error instanceof Error ? error.message : "Could not add dependency"),
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : t(($) => $.dependencies.add_failed),
+          ),
       },
     );
   };
@@ -3005,17 +3009,19 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       <div>
         <div className="flex items-center gap-1 px-2 py-1 mb-2 text-caption font-medium">
           <Network className="!size-3 text-muted-foreground" />
-          <span>Dependencies</span>
+          <span>{t(($) => $.dependencies.title)}</span>
           {issue.is_blocked ? (
             <span className="ml-auto rounded bg-destructive/10 px-1.5 py-0.5 text-[11px] text-destructive">
-              Blocked · {issue.unresolved_blocker_count ?? 0}
+              {t(($) => $.dependencies.blocked_count, {
+                count: issue.unresolved_blocker_count ?? 0,
+              })}
             </span>
           ) : null}
         </div>
         <div className="space-y-2 pl-2">
           {(issue.blocked_by?.length ?? 0) > 0 ? (
             <div>
-              <div className="mb-1 text-caption text-muted-foreground">Blocked by</div>
+              <div className="mb-1 text-caption text-muted-foreground">{t(($) => $.dependencies.blocked_by)}</div>
               <div className="space-y-1">
                 {issue.blocked_by?.map((dependency) => (
                   <div key={dependency.id} className="group flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-accent/50">
@@ -3027,13 +3033,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     <button
                       type="button"
                       className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-                      aria-label="Remove dependency"
-                      title="Remove dependency"
+                      aria-label={t(($) => $.dependencies.remove)}
+                      title={t(($) => $.dependencies.remove)}
                       disabled={deleteDependency.isPending}
                       onClick={() =>
                         deleteDependency.mutate(
                           { issueId: issue.id, dependencyId: dependency.id },
-                          { onError: () => toast.error("Could not remove dependency") },
+                          { onError: () => toast.error(t(($) => $.dependencies.remove_failed)) },
                         )
                       }
                     >
@@ -3046,7 +3052,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           ) : null}
           {(issue.blocks?.length ?? 0) > 0 ? (
             <div>
-              <div className="mb-1 text-caption text-muted-foreground">Blocks</div>
+              <div className="mb-1 text-caption text-muted-foreground">{t(($) => $.dependencies.blocks)}</div>
               <div className="space-y-1">
                 {issue.blocks?.map((dependency) => (
                   <AppLink key={dependency.id} href={paths.issueDetail(dependency.issue_id)} className="flex items-center gap-1.5 rounded-md px-2 py-1 text-caption hover:bg-accent/50">
@@ -3068,12 +3074,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             <Input
               value={dependencyIssueReference}
               onChange={(event) => setDependencyIssueReference(event.target.value)}
-              placeholder="Issue identifier (e.g. MUL-123)"
+              placeholder={t(($) => $.dependencies.issue_identifier_placeholder)}
               className="h-8 text-caption"
-              aria-label="Issue identifier to block on"
+              aria-label={t(($) => $.dependencies.issue_identifier_label)}
             />
             <Button type="submit" size="sm" variant="outline" disabled={!dependencyIssueReference.trim() || createDependency.isPending}>
-              Add
+              {t(($) => $.dependencies.add)}
             </Button>
           </form>
         </div>

@@ -73,15 +73,18 @@ type extensionOperatorClass struct {
 	Extension     string
 }
 
-// issuePropertiesBigramOperatorClass gates migration 446. pg_bigm ships with
-// neither core Postgres nor the pgvector image CI and self-hosted deployments
-// run, so the index it builds is best-effort; the contains prefilter it
-// accelerates stays correct without it.
-var issuePropertiesBigramOperatorClass = extensionOperatorClass{
+// pgBigmOperatorClass gates migrations that build optional pg_bigm indexes.
+// pg_bigm ships with neither core Postgres nor the pgvector image CI and
+// self-hosted deployments run.
+var pgBigmOperatorClass = extensionOperatorClass{
 	AccessMethod:  "gin",
 	OperatorClass: "gin_bigm_ops",
 	Extension:     "pg_bigm",
 }
+
+// issuePropertiesBigramOperatorClass gates migration 446. The index it builds
+// is best-effort; the contains prefilter it accelerates stays correct without it.
+var issuePropertiesBigramOperatorClass = pgBigmOperatorClass
 
 // preMigrationHooks wires migration version → hook. The version key is
 // the file basename without the `.up.sql` suffix, matching what
@@ -356,11 +359,14 @@ var concurrentIndexCleanups = map[string]string{
 	"473_deployment_operation_idempotency_idx":                  "idx_deployment_operation_idempotency",
 	"474_deployment_event_dedupe_idx":                           "idx_deployment_event_dedupe",
 	"478_deployment_operation_idempotency_tuple":                "idx_deployment_operation_idempotency_tuple",
-	"449_autonomous_workflow_run_identity_index":               "idx_autonomous_workflow_run_identity",
+	"483_deployment_source_revision_identity":                    "idx_deployment_source_revision_identity",
+	"449_autonomous_workflow_run_identity_index":                "idx_autonomous_workflow_run_identity",
 	"450_autonomous_workflow_action_claim_index":                "idx_autonomous_workflow_action_claim",
 	"451_autonomous_workflow_action_order_index":                "idx_autonomous_workflow_action_order",
 	"452_autonomous_workflow_processed_run_index":               "idx_autonomous_workflow_processed_run",
-	"456_autonomous_workflow_run_project_index":                  "idx_autonomous_workflow_run_project",
+	"456_autonomous_workflow_run_project_index":                 "idx_autonomous_workflow_run_project",
+	"495_autonomous_project_leader_indexes":                     "uq_chat_session_project_leader",
+	"496_autonomous_project_leader_message_index":               "uq_chat_message_client_message_id",
 	"498_issue_dependency_unique_index":                         "idx_issue_dependency_unique_edge",
 	"472_agent_task_queue_chat_session_index":                   "idx_agent_task_queue_chat_session",
 	"474_dingtalk_bot_identity_workspace_index":                 "idx_dingtalk_bot_identity_workspace",
@@ -398,7 +404,6 @@ var concurrentDownIndexCleanups = map[string]string{
 	"455_drop_comment_content_trgm_index":                   "idx_comment_content_trgm",
 	"463_drop_issue_description_bigm_index":                 "idx_issue_description_bigm",
 	"464_drop_issue_description_trgm_index":                 "idx_issue_description_trgm",
-	"498_issue_dependency_unique_index":                     "idx_issue_dependency_unique_edge",
 	"473_drop_agent_task_queue_chat_with_session_index":     "idx_agent_task_queue_chat_with_session_created_at",
 }
 
@@ -473,9 +478,6 @@ func refuseChannelChatRouteHistoryRollbackWith(ctx context.Context, query rowQue
 }
 
 var upMigrationConditions = map[string]migrationCondition{
-	// Fresh databases that successfully built the CJK-friendly bigram index do
-	// not need to build the trigram fallback only to remove it at migration 371.
-	"140_comment_content_trgm_index": whenIndexNotUsable(commentContentBigramIndex),
 	// Preserve applied history; pending 469 is superseded by the bounded expand
 	// migration. SaaS backfills separately; self-host converges in 491.
 	"469_issue_status_lifecycle_categories": skipMigration("superseded by 478 expansion and 491 convergence (MUL-7365)"),
@@ -494,6 +496,11 @@ var upMigrationConditions = map[string]migrationCondition{
 	// else, rather than failing the run (and with it backend startup) on every
 	// database without the extension.
 	"446_issue_properties_bigm_index": whenOperatorClassAvailable(issuePropertiesBigramOperatorClass),
+}
+
+var downMigrationConditions = map[string]migrationCondition{
+	"454_drop_comment_content_bigm_index":   whenOperatorClassAvailable(pgBigmOperatorClass),
+	"463_drop_issue_description_bigm_index": whenOperatorClassAvailable(pgBigmOperatorClass),
 }
 
 func hooksForDirection(direction string) map[string]preMigrationHook {
@@ -523,12 +530,20 @@ func ensureSourceContextRollbackSafe(ctx context.Context, pool *pgxpool.Pool) er
 }
 
 func conditionsForDirection(direction string) map[string]migrationCondition {
-	if direction == "up" {
+	switch direction {
+	case "up":
 		return upMigrationConditions
+	case "down":
+		return downMigrationConditions
+	default:
+		return nil
 	}
-	// Rollbacks intentionally ignore environment gates: they restore the
-	// portable pre-migration schema regardless of which up SQL actually ran.
-	return nil
+}
+
+func skipMigration(reason string) migrationCondition {
+	return func(context.Context, *pgxpool.Conn) (bool, string, error) {
+		return false, reason, nil
+	}
 }
 
 func whenIndexUsable(requirement usableIndexRequirement) migrationCondition {
@@ -588,6 +603,20 @@ func whenOperatorClassAvailable(opclass extensionOperatorClass) migrationConditi
 		}
 		if !available {
 			return false, fmt.Sprintf("operator class %s (%s) is not installed", opclass.OperatorClass, opclass.Extension), nil
+		}
+		return true, "", nil
+	}
+}
+
+func whenOperatorClassUnavailable(opclass extensionOperatorClass) migrationCondition {
+	available := whenOperatorClassAvailable(opclass)
+	return func(ctx context.Context, conn *pgxpool.Conn) (bool, string, error) {
+		apply, _, err := available(ctx, conn)
+		if err != nil {
+			return false, "", err
+		}
+		if apply {
+			return false, fmt.Sprintf("operator class %s (%s) is installed", opclass.OperatorClass, opclass.Extension), nil
 		}
 		return true, "", nil
 	}

@@ -366,7 +366,8 @@ function Metric({ label, value, warn = false }: { label: string; value: number; 
 }
 
 function WorkflowRow({ run }: { run: AutonomousWorkflowRun }) {
-  return <div className="rounded-lg border bg-muted/20 p-2.5"><div className="flex items-start justify-between gap-2"><span className="min-w-0 truncate text-xs font-medium text-foreground">{run.issue_title}</span><Badge variant={run.state === "blocked" ? "destructive" : "outline"} className="shrink-0 text-[10px]">{run.state}</Badge></div><p className="mt-1 text-[11px] text-muted-foreground">{run.owner_agent_name ?? "Unassigned"} · {run.pending_actions} pending · {run.failed_actions} failed</p></div>;
+  const { t } = useT("projects");
+  return <div className="rounded-lg border bg-muted/20 p-2.5"><div className="flex items-start justify-between gap-2"><span className="min-w-0 truncate text-xs font-medium text-foreground">{run.issue_title}</span><Badge variant={run.state === "blocked" ? "destructive" : "outline"} className="shrink-0 text-[10px]">{run.state}</Badge></div><p className="mt-1 text-[11px] text-muted-foreground">{run.owner_agent_name ?? t(($) => $.cockpit.owner_unassigned)} · {run.pending_actions} {t(($) => $.cockpit.pending_actions)} · {run.failed_actions} {t(($) => $.cockpit.failed_actions)}</p></div>;
 }
 
 export function ActivityTimelineWidget({ snapshot, className }: { snapshot?: AutonomousProjectSnapshot | null; className?: string }) {

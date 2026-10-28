@@ -906,6 +906,7 @@ var antigravityBlockedArgs = map[string]blockedArgMode{
 	"--conversation":                 blockedWithValue, // managed via ExecOptions.ResumeSessionID
 	"--model":                        blockedWithValue, // managed via ExecOptions.Model / agent.model
 	"--output-format":                blockedWithValue, // stream-json is required for token accounting
+	"--input-format":                 blockedWithValue, // unsupported by Antigravity
 	"--print-timeout":                blockedWithValue,
 	"--dangerously-skip-permissions": blockedStandalone, // always-on in daemon mode
 	"--log-file":                     blockedWithValue,  // daemon needs it for session capture
@@ -956,8 +957,19 @@ func buildAntigravityArgs(prompt, logPath string, timeout time.Duration, opts Ex
 	if opts.Cwd != "" {
 		args = append(args, "--add-dir", filepath.Clean(opts.Cwd))
 	}
-	args = append(args, filterCustomArgs(opts.ExtraArgs, antigravityBlockedArgs, logger)...)
-	args = append(args, filterCustomArgs(opts.CustomArgs, antigravityBlockedArgs, logger)...)
+	blockedArgs := antigravityBlockedArgs
+	if opts.ReadOnly {
+		blockedArgs = make(map[string]blockedArgMode, len(antigravityBlockedArgs)+1)
+		for flag, mode := range antigravityBlockedArgs {
+			blockedArgs[flag] = mode
+		}
+		blockedArgs["--mode"] = blockedWithValue
+	}
+	args = append(args, filterCustomArgs(opts.ExtraArgs, blockedArgs, logger)...)
+	args = append(args, filterCustomArgs(opts.CustomArgs, blockedArgs, logger)...)
+	if opts.ReadOnly {
+		args = append(args, "--mode", "plan")
+	}
 	return args
 }
 

@@ -84,12 +84,11 @@ export function installContextMenu(webContents: WebContents): void {
         new MenuItem({
           label: labels.copyLinkAddress,
           click: () => {
-            // Electron 44 made clipboard writes async (W3C Clipboard API
-            // alignment); catch so a failed write can't surface as an
-            // unhandled rejection in the main process.
-            clipboard.writeText(linkURL).catch((err: unknown) => {
+            try {
+              clipboard.writeText(linkURL);
+            } catch (err) {
               console.warn("[context-menu] copy link address failed", err);
-            });
+            }
           },
         }),
       );

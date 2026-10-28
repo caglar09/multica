@@ -1,6 +1,6 @@
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Project } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -29,10 +29,12 @@ const mocks = vi.hoisted(() => ({
   setOpen: vi.fn(),
   pauseAutonomousProject: vi.fn(),
   resumeAutonomousProject: vi.fn(),
+  cancelAutonomousProject: vi.fn(),
   replanAutonomousProject: vi.fn(),
-	restartAutonomousWorkflow: vi.fn(),
-	retryAutonomousAction: vi.fn(),
-	rerunAutonomousIssue: vi.fn(),
+  projectCancelled: false,
+  restartAutonomousWorkflow: vi.fn(),
+  retryAutonomousAction: vi.fn(),
+  rerunAutonomousIssue: vi.fn(),
 	startProjectPlanning: vi.fn(),
 }));
 
@@ -64,6 +66,10 @@ vi.mock("@multica/core/projects", () => ({
   }),
   useResumeAutonomousProject: () => ({
     mutate: mocks.resumeAutonomousProject,
+    isPending: false,
+  }),
+  useCancelAutonomousProject: () => ({
+    mutate: mocks.cancelAutonomousProject,
     isPending: false,
   }),
   useReplanAutonomousProject: () => ({
@@ -112,7 +118,10 @@ vi.mock("@tanstack/react-query", () => ({
         return {
           data: {
             enabled: true,
-            control: { paused: true },
+            control: {
+              paused: true,
+              cancelled_at: mocks.projectCancelled ? "2026-10-26T10:00:00Z" : null,
+            },
             health: { active_workflows: 0 },
             team: {
               members: [
@@ -283,11 +292,45 @@ vi.mock("@multica/ui/components/ui/sheet", () => ({
 vi.mock("@multica/ui/components/ui/alert-dialog", () => ({
   AlertDialog: ({
     open,
+    onOpenChange,
     children,
   }: {
     open: boolean;
+    onOpenChange: (open: boolean) => void;
     children: React.ReactNode;
-  }) => (open ? <div role="alertdialog">{children}</div> : null),
+  }) => {
+    const [trigger, ...content] = React.Children.toArray(children);
+    const wiredTrigger = React.isValidElement(trigger)
+      ? React.cloneElement(
+          trigger as React.ReactElement<{ onOpenChange?: (open: boolean) => void }>,
+          { onOpenChange },
+        )
+      : trigger;
+    return (
+      <>
+        {wiredTrigger}
+        {open ? <div role="alertdialog">{content}</div> : null}
+      </>
+    );
+  },
+  AlertDialogTrigger: ({
+    render,
+    onOpenChange,
+  }: {
+    render: React.ReactNode;
+    onOpenChange?: (open: boolean) => void;
+  }) => {
+    if (!React.isValidElement(render)) return <>{render}</>;
+    const child = render as React.ReactElement<{
+      onClick?: React.MouseEventHandler<HTMLButtonElement>;
+    }>;
+    return React.cloneElement(child, {
+      onClick: (event) => {
+        onOpenChange?.(true);
+        child.props.onClick?.(event);
+      },
+    });
+  },
   AlertDialogContent: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
@@ -443,10 +486,12 @@ beforeEach(() => {
   mocks.setOpen.mockReset();
   mocks.pauseAutonomousProject.mockReset();
   mocks.resumeAutonomousProject.mockReset();
+  mocks.cancelAutonomousProject.mockReset();
   mocks.replanAutonomousProject.mockReset();
-	mocks.restartAutonomousWorkflow.mockReset();
-	mocks.retryAutonomousAction.mockReset();
-	mocks.rerunAutonomousIssue.mockReset();
+  mocks.projectCancelled = false;
+  mocks.restartAutonomousWorkflow.mockReset();
+  mocks.retryAutonomousAction.mockReset();
+  mocks.rerunAutonomousIssue.mockReset();
 });
 
 describe("ProjectDetail content tabs", () => {
@@ -617,12 +662,43 @@ describe("ProjectDetail inspector sidebar", () => {
     expect(screen.getByText("Execution Paused")).toBeInTheDocument();
     expect(screen.getByText("2 Active Agents")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /resume loop/i }));
+    await user.click(
+      within(screen.getByRole("banner")).getByRole("button", {
+        name: /resume loop/i,
+      }),
+    );
 
     expect(mocks.resumeAutonomousProject).toHaveBeenCalledWith(
       PROJECT.id,
       expect.objectContaining({ onSuccess: expect.any(Function) }),
     );
+  });
+
+  it("requires confirmation before permanently cancelling project execution", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail();
+
+    await user.click(screen.getByRole("button", { name: "Cancel execution" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent("cannot be resumed or replanned afterward");
+
+    await user.click(screen.getByRole("button", { name: "Cancel project permanently" }));
+    expect(mocks.cancelAutonomousProject).toHaveBeenCalledWith(
+      PROJECT.id,
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+  });
+
+  it("shows terminal cancellation status without pause, resume, replan, or cancel actions", () => {
+    mocks.projectCancelled = true;
+    renderProjectDetail();
+
+    expect(screen.getByRole("status")).toHaveTextContent("Permanently cancelled");
+    expect(
+      screen.queryByRole("button", {
+        name: /pause loop|resume loop|replan|cancel execution/i,
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it("does not fall back to a standard PM chat when the dedicated session is unavailable", async () => {

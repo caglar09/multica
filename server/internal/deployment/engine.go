@@ -111,6 +111,7 @@ func (d *AsyncDispatcher) dispatch(ctx context.Context, op Operation, request De
 		defer cancel()
 	}
 	remote, err := provider.TriggerDeployment(providerCtx, request)
+	ScrubBytes(request.Credentials.RawSecret)
 	next := op
 	next.AttemptCount++
 	next.LeaseOwner = nil
@@ -135,7 +136,6 @@ func (d *AsyncDispatcher) dispatch(ctx context.Context, op Operation, request De
 	}
 	// The provider timeout must not cancel the durable failure write.
 	stored, updateErr := d.Repository.UpdateOperation(context.WithoutCancel(providerCtx), next, op.Revision)
-	ScrubBytes(request.Credentials.RawSecret)
 	if updateErr != nil {
 		return next, updateErr
 	}

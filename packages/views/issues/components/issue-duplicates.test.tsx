@@ -82,7 +82,7 @@ const DUPLICATE = issue({
   title: "Status picker is hard to tap",
   status: "cancelled",
   creator_id: "user-2",
-  duplicate_of: { id: "original", identifier: "MUL-6980", title: "Tap targets are too small", status: "in_progress" },
+  duplicate_of: { id: "original", identifier: "MUL-6980", title: "Tap targets are too small", status: "in_progress", done: false },
 });
 
 function renderWithQuery(ui: ReactNode) {

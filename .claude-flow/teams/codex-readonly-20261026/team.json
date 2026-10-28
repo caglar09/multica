@@ -1,0 +1,94 @@
+{
+  "id": "codex-readonly-20261026",
+  "name": "codex-readonly-20261026",
+  "topology": "hierarchical",
+  "maxAgents": 3,
+  "status": "shutdown",
+  "createdAt": "2026-10-26T20:28:54.344Z",
+  "host": "codex",
+  "members": {
+    "researcher": {
+      "name": "researcher",
+      "role": "researcher",
+      "status": "shutdown",
+      "registeredAt": "2026-10-26T20:29:02.514Z",
+      "next": [],
+      "spawn": {
+        "grok": {
+          "contract": "grok-build-1.0.41",
+          "spawn": {
+            "description": "researcher:researcher@codex-readonly-20261026",
+            "background": true,
+            "isolation": "none"
+          },
+          "advisory": {
+            "capability_mode": "read-only",
+            "subagent_type": "explore",
+            "note": "Grok Build 1.0.41 does not take capability_mode or subagent_type on spawn_subagent. The child is general-purpose; the prompt carries the constraint. isolation is the enforced knob. .grok/agents/*.md are session profiles (grok --agent-profile), not spawn types."
+          }
+        },
+        "claude": {
+          "taskType": "researcher",
+          "note": "optional back-compat path via Task tool"
+        }
+      }
+    },
+    "architect": {
+      "name": "architect",
+      "role": "architect",
+      "status": "shutdown",
+      "registeredAt": "2026-10-26T20:29:04.942Z",
+      "next": [],
+      "spawn": {
+        "grok": {
+          "contract": "grok-build-1.0.41",
+          "spawn": {
+            "description": "architect:architect@codex-readonly-20261026",
+            "background": true,
+            "isolation": "none"
+          },
+          "advisory": {
+            "capability_mode": "read-only",
+            "subagent_type": "plan",
+            "note": "Grok Build 1.0.41 does not take capability_mode or subagent_type on spawn_subagent. The child is general-purpose; the prompt carries the constraint. isolation is the enforced knob. .grok/agents/*.md are session profiles (grok --agent-profile), not spawn types."
+          }
+        },
+        "claude": {
+          "taskType": "system-architect",
+          "note": "optional back-compat path via Task tool"
+        }
+      }
+    },
+    "reviewer": {
+      "name": "reviewer",
+      "role": "reviewer",
+      "status": "shutdown",
+      "registeredAt": "2026-10-26T20:29:06.693Z",
+      "next": [],
+      "spawn": {
+        "grok": {
+          "contract": "grok-build-1.0.41",
+          "spawn": {
+            "description": "reviewer:reviewer@codex-readonly-20261026",
+            "background": true,
+            "isolation": "none"
+          },
+          "advisory": {
+            "capability_mode": "read-only",
+            "subagent_type": "general-purpose",
+            "note": "Grok Build 1.0.41 does not take capability_mode or subagent_type on spawn_subagent. The child is general-purpose; the prompt carries the constraint. isolation is the enforced knob. .grok/agents/*.md are session profiles (grok --agent-profile), not spawn types."
+          }
+        },
+        "claude": {
+          "taskType": "reviewer",
+          "note": "optional back-compat path via Task tool"
+        }
+      }
+    }
+  },
+  "plan": {
+    "steps": [],
+    "index": 0
+  },
+  "shutdownAt": "2026-10-26T20:30:18.307Z"
+}

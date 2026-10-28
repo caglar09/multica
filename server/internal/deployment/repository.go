@@ -28,6 +28,7 @@ type Repository interface {
 	CreateOperation(context.Context, CreateOperationInput) (operation Operation, created bool, err error)
 	ListOperations(context.Context, string, string) ([]Operation, error)
 	GetOperation(context.Context, string, string) (Operation, error)
+	GetOperationByProviderOperation(context.Context, string, string) (Operation, error)
 	UpdateOperation(context.Context, Operation, int64) (Operation, error)
 	AppendEvent(context.Context, AppendEventInput) (event Event, created bool, err error)
 	ListEvents(context.Context, string, string) ([]Event, error)

@@ -326,6 +326,8 @@ func TestUnauthorizedDeploymentActionRejected(t *testing.T) {
 		ConnectionID: connA.ID,
 		Name:         "wsA-prod-target",
 		Environment:  "production",
+		ExternalID:   stringPtr("prod-project"),
+		Config:       json.RawMessage(`{"repository":"owner/repo","branch":"main"}`),
 	})
 
 	// Sub-test 1: Role "member" attempting production deployment trigger -> 403 Forbidden
@@ -395,6 +397,8 @@ func TestUnauthorizedDeploymentActionRejected(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{
 			"action":             "deploy",
 			"commit_sha":         "sha-prod-confirmed",
+			"repository":         "owner/repo",
+			"git_ref":            "main",
 			"approval_reference": "APR-12345",
 			"confirmed":          true,
 		})

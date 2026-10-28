@@ -275,9 +275,11 @@ func TestHandlerSecurity_InvalidWebhookReturns401WithoutDBUpdate(t *testing.T) {
 		Environment:    "preview",
 		OperationKind:  "deploy",
 	})
-	op.Status = deployment.StatusRunning
+	op.Status = deployment.StatusBuilding
 	op.ProviderOperationID = &provOpID
-	_, _ = repo.UpdateOperation(ctx, op, op.Revision)
+	if _, err := repo.UpdateOperation(ctx, op, op.Revision); err != nil {
+		t.Fatalf("set operation status for invalid webhook assertion: %v", err)
+	}
 
 	payload := []byte(`{"id":"` + provOpID + `","status":"succeeded"}`)
 
@@ -321,7 +323,7 @@ func TestHandlerSecurity_InvalidWebhookReturns401WithoutDBUpdate(t *testing.T) {
 		t.Fatalf("expected 0 events on forged signature, got %d", len(events))
 	}
 	latestOp, _ := repo.GetOperation(ctx, wsID.String(), op.ID.String())
-	if latestOp.Status != deployment.StatusRunning {
+	if latestOp.Status != deployment.StatusBuilding {
 		t.Fatalf("operation status mutated on invalid webhook: %v", latestOp.Status)
 	}
 }

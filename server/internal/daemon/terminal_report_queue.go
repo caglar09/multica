@@ -50,6 +50,8 @@ type persistedTerminalTaskReport struct {
 	TaskID                string    `json:"task_id"`
 	Output                string    `json:"output,omitempty"`
 	BranchName            string    `json:"branch_name,omitempty"`
+	WorktreePath          string    `json:"worktree_path,omitempty"`
+	WorktreeRepoPath      string    `json:"worktree_repo_path,omitempty"`
 	ErrorMessage          string    `json:"error,omitempty"`
 	SessionID             string    `json:"session_id,omitempty"`
 	WorkDir               string    `json:"work_dir,omitempty"`
@@ -140,6 +142,8 @@ func persistedTerminalReport(report terminalTaskReport, createdAt time.Time) (pe
 		TaskID:                report.taskID,
 		Output:                report.output,
 		BranchName:            report.branchName,
+		WorktreePath:          report.worktreePath,
+		WorktreeRepoPath:      report.worktreeRepoPath,
 		ErrorMessage:          report.errorMessage,
 		SessionID:             report.sessionID,
 		WorkDir:               report.workDir,
@@ -171,6 +175,8 @@ func (record persistedTerminalTaskReport) terminalReport() (terminalTaskReport, 
 		taskID:                record.TaskID,
 		output:                record.Output,
 		branchName:            record.BranchName,
+		worktreePath:          record.WorktreePath,
+		worktreeRepoPath:      record.WorktreeRepoPath,
 		errorMessage:          record.ErrorMessage,
 		sessionID:             record.SessionID,
 		workDir:               record.WorkDir,

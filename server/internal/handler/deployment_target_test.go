@@ -89,7 +89,15 @@ func targetRequest(t *testing.T, method, path string, body any, workspaceID uuid
 	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(payload))
 	req = withMemberAuth(req, workspaceID.String(), role, mockDB)
-	return withChiURLParams(req, map[string]string{"id": workspaceID.String()})
+	params := map[string]string{"id": workspaceID.String()}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	for i, segment := range segments {
+		if segment == "connections" && i+1 < len(segments) {
+			params["connectionId"] = segments[i+1]
+			break
+		}
+	}
+	return withChiURLParams(req, params)
 }
 
 func TestDeploymentTargetAttachVerifiesExternalTargetAndPersistsPolicy(t *testing.T) {

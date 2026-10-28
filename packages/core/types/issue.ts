@@ -168,7 +168,7 @@ export interface IssueDuplicateOf {
   done: boolean;
 }
 
-export interface IssueDependencyIssue extends IssueDuplicateOf {}
+export type IssueDependencyIssue = IssueDuplicateOf;
 
 export interface IssueDependency {
   id: string;

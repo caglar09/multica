@@ -24,6 +24,7 @@ import {
 	Terminal,
 	Trash2,
 	UserMinus,
+	XCircle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
@@ -49,6 +50,7 @@ import {
 	useStartAutonomousProjectPlanning,
 	usePauseAutonomousProject,
 	useResumeAutonomousProject,
+	useCancelAutonomousProject,
 	useReplanAutonomousProject,
 	useRestartAutonomousWorkflow,
 	useRetryAutonomousAction,
@@ -143,6 +145,7 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
+	AlertDialogTrigger,
 } from "@multica/ui/components/ui/alert-dialog";
 import { useT } from "../../i18n";
 import { useProjectStatusLabels, useProjectPriorityLabels } from "./labels";
@@ -249,6 +252,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	const descEditorRef = useRef<ContentEditorRef>(null);
 	const isMobile = useIsMobile();
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+	const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 	const [iconPickerOpen, setIconPickerOpen] = useState(false);
 	const localProjectDirectory = useMemo(() => {
 		const directories = project?.working_directories ?? [];
@@ -293,6 +297,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	const startProjectPlanning = useStartAutonomousProjectPlanning();
 	const pauseAutonomousProject = usePauseAutonomousProject();
 	const resumeAutonomousProject = useResumeAutonomousProject();
+	const cancelAutonomousProject = useCancelAutonomousProject();
 	const replanAutonomousProject = useReplanAutonomousProject();
 	const restartAutonomousWorkflow = useRestartAutonomousWorkflow();
 	const retryAutonomousAction = useRetryAutonomousAction();
@@ -351,6 +356,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	]);
 
 	const isExecutionPaused = Boolean(autonomousSnapshot?.control.paused);
+	const isExecutionCancelled = Boolean(autonomousSnapshot?.control.cancelled_at);
 	const isExecutionActive = Boolean(
 		autonomousSnapshot?.health.active_workflows &&
 			autonomousSnapshot.health.active_workflows > 0,
@@ -390,6 +396,17 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 		replanAutonomousProject.mutate(projectId, {
 			onSuccess: () => toast.success(t(($) => $.cockpit.toast_replan_success)),
 			onError: () => toast.error(t(($) => $.cockpit.toast_replan_error)),
+		});
+	};
+
+	const handleCancelExecution = (event: React.MouseEvent<HTMLButtonElement>) => {
+		event.preventDefault();
+		cancelAutonomousProject.mutate(projectId, {
+			onSuccess: () => {
+				setCancelDialogOpen(false);
+				toast.success(t(($) => $.cockpit.toast_cancel_success));
+			},
+			onError: () => toast.error(t(($) => $.cockpit.toast_cancel_error)),
 		});
 	};
 
@@ -1193,41 +1210,82 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 									) : null}
 									{isWorkspaceAdmin && autonomousSnapshot?.enabled ? (
 										<>
-											<Button
-												variant={isExecutionPaused ? "default" : "outline"}
-												size="sm"
-												onClick={handleToggleExecution}
-												disabled={
-													pauseAutonomousProject.isPending ||
-													resumeAutonomousProject.isPending
-												}
-												aria-label={
-													isExecutionPaused
-														? t(($) => $.cockpit.resume_execution)
-														: t(($) => $.cockpit.pause_execution)
-												}
-												className="h-7 gap-1 px-2.5 text-caption"
-											>
-												{isExecutionPaused ? <Play className="size-3" /> : <Pause className="size-3" />}
-												<span className="hidden xl:inline">
-													{isExecutionPaused
-														? t(($) => $.cockpit.resume_execution)
-														: t(($) => $.cockpit.pause_execution)}
+											{isExecutionCancelled ? (
+												<span role="status" className="text-caption text-muted-foreground">
+													{t(($) => $.cockpit.cancelled_status)}
 												</span>
-											</Button>
-											<Button
-												variant="outline"
-												size="sm"
-												onClick={handleReplanExecution}
-												disabled={replanAutonomousProject.isPending}
-												aria-label={t(($) => $.cockpit.replan_project)}
-												className="h-7 gap-1 px-2.5 text-caption"
-											>
-												<RotateCcw className="size-3" />
-												<span className="hidden xl:inline">
-													{t(($) => $.cockpit.replan_project)}
-												</span>
-											</Button>
+											) : (
+												<>
+													<Button
+														variant={isExecutionPaused ? "default" : "outline"}
+														size="sm"
+														onClick={handleToggleExecution}
+														disabled={
+															pauseAutonomousProject.isPending ||
+															resumeAutonomousProject.isPending
+														}
+														aria-label={
+															isExecutionPaused
+																? t(($) => $.cockpit.resume_execution)
+																: t(($) => $.cockpit.pause_execution)
+														}
+														className="h-7 gap-1 px-2.5 text-caption"
+													>
+														{isExecutionPaused ? <Play className="size-3" /> : <Pause className="size-3" />}
+														<span className="hidden xl:inline">
+															{isExecutionPaused
+																? t(($) => $.cockpit.resume_execution)
+																: t(($) => $.cockpit.pause_execution)}
+														</span>
+													</Button>
+													<Button
+														variant="outline"
+														size="sm"
+														onClick={handleReplanExecution}
+														disabled={replanAutonomousProject.isPending}
+														aria-label={t(($) => $.cockpit.replan_project)}
+														className="h-7 gap-1 px-2.5 text-caption"
+													>
+														<RotateCcw className="size-3" />
+														<span className="hidden xl:inline">{t(($) => $.cockpit.replan_project)}</span>
+													</Button>
+													<AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+								<AlertDialogTrigger
+									render={
+										<Button
+											variant="destructive"
+											size="sm"
+											aria-label={t(($) => $.cockpit.cancel_execution)}
+											className="h-7 gap-1 px-2.5 text-caption"
+										>
+											<XCircle className="size-3" />
+											<span className="hidden xl:inline">{t(($) => $.cockpit.cancel_execution)}</span>
+										</Button>
+									}
+								/>
+														<AlertDialogContent>
+															<AlertDialogHeader>
+																<AlertDialogTitle>{t(($) => $.cockpit.cancel_dialog_title)}</AlertDialogTitle>
+										<AlertDialogDescription>
+											{t(($) => $.cockpit.cancel_dialog_description)}
+										</AlertDialogDescription>
+															</AlertDialogHeader>
+															<AlertDialogFooter>
+																<AlertDialogCancel disabled={cancelAutonomousProject.isPending}>
+																	{t(($) => $.cockpit.cancel_dialog_keep)}
+																</AlertDialogCancel>
+																<AlertDialogAction
+																	onClick={handleCancelExecution}
+																	disabled={cancelAutonomousProject.isPending}
+																	className="bg-destructive text-white hover:bg-destructive/90"
+																>
+																	{t(($) => $.cockpit.cancel_dialog_confirm)}
+																</AlertDialogAction>
+															</AlertDialogFooter>
+														</AlertDialogContent>
+													</AlertDialog>
+												</>
+											)}
 										</>
 									) : null}
 									{autonomousSnapshot?.enabled ? (
@@ -1413,7 +1471,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 										mode="urgent"
 										scrollable={false}
 										idPrefix="header-work-waiting"
-										canControl={isWorkspaceAdmin}
+										canControl={isWorkspaceAdmin && !isExecutionCancelled}
 										onRestartWorkflow={handleRestartWorkflow}
 										onResumeExecution={handleResumeExecution}
 										onReplan={handleReplanExecution}
@@ -1425,7 +1483,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 										<DecisionGateWidget
 											snapshot={autonomousSnapshot}
 											changeRequests={leaderChanges.data?.items}
-											canControl={isWorkspaceAdmin}
+											canControl={isWorkspaceAdmin && !isExecutionCancelled}
 											onApproveChange={(id) =>
 												approveLeaderChange.mutate({ projectId, changeRequestId: id })
 											}
@@ -1449,7 +1507,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 								<ProjectCockpitView
 									project={project}
 									snapshot={autonomousSnapshot}
-									canControl={isWorkspaceAdmin}
+									canControl={isWorkspaceAdmin && !isExecutionCancelled}
 									onNavigateTab={handleContentViewChange}
 									onOpenLeaderChat={handleOpenLeaderChat}
 									onConfirmTeam={handleConfirmTeam}
@@ -1485,7 +1543,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 							) : contentView === "brain" ? (
 								<ProjectBrainSettings
 									projectId={projectId}
-									canControl={isWorkspaceAdmin}
+									canControl={isWorkspaceAdmin && !isExecutionCancelled}
 								/>
 							) : contentView === "deployments" ? (
 								<div

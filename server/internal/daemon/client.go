@@ -625,11 +625,11 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 	}, nil)
 }
 
-func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, worktreeBaseSHA, worktreeCommitSHA string, worktreeChangedFiles []string, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
-	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, worktreeBaseSHA, worktreeCommitSHA, worktreeChangedFiles, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, defaultTerminalRetrySchedule)
+func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, worktreeBaseSHA, worktreeCommitSHA string, worktreeChangedFiles []string, worktreePath, worktreeRepoPath, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
+	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, worktreeBaseSHA, worktreeCommitSHA, worktreeChangedFiles, worktreePath, worktreeRepoPath, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, defaultTerminalRetrySchedule)
 }
 
-func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, worktreeBaseSHA, worktreeCommitSHA string, worktreeChangedFiles []string, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, schedule []time.Duration) error {
+func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, worktreeBaseSHA, worktreeCommitSHA string, worktreeChangedFiles []string, worktreePath, worktreeRepoPath, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, schedule []time.Duration) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
@@ -642,6 +642,12 @@ func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, outp
 	}
 	if len(worktreeChangedFiles) > 0 {
 		body["worktree_changed_files"] = worktreeChangedFiles
+	}
+	if worktreePath != "" {
+		body["worktree_path"] = worktreePath
+	}
+	if worktreeRepoPath != "" {
+		body["worktree_repo_path"] = worktreeRepoPath
 	}
 	if sessionID != "" {
 		body["session_id"] = sessionID

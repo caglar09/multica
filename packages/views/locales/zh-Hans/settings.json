@@ -182,7 +182,9 @@
       "quick": "智能体创建",
       "manual": "手动创建",
       "unsupported": "智能体创建时不支持此字段"
-    }
+    },
+    "device_hint": "这些偏好设置仅适用于此设备。",
+    "issue_scope": "选择每种任务创建工具栏中显示的字段。"
   },
   "shortcuts": {
     "title": "快捷键",
@@ -318,7 +320,8 @@
   },
   "chat": {
     "floating_label": "悬浮聊天窗",
-    "floating_hint": "在每个页面显示悬浮聊天按钮。"
+    "floating_hint": "在每个页面显示悬浮聊天按钮。",
+    "floating_title": "悬浮聊天窗"
   },
   "issue": {
     "opening": {
@@ -337,7 +340,11 @@
       "project": "项目",
       "due_date": "截止日期",
       "start_date": "开始日期"
-    }
+    },
+    "quick_create_title": "通过智能体创建",
+    "quick_create_description": "通过智能体创建时工具栏中显示的字段。",
+    "manual_create_title": "手动创建任务",
+    "manual_create_description": "手动创建工具栏中显示的字段。"
   },
   "mcp": {
     "description": "添加后需在智能体的 MCP 页面分配。",

@@ -1367,6 +1367,34 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceAgents(ctx, requester.WorkspaceID) },
 		},
 		{
+			name: "delete autonomous children",
+			run:  func() error { return qtx.DeleteWorkspaceAutonomousChildren(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete autonomous change requests",
+			run:  func() error { return qtx.DeleteWorkspaceAutonomousProjectChangeRequests(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete autonomous project data",
+			run:  func() error { return qtx.DeleteWorkspaceAutonomousProjectData(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete autonomous workflows and teams",
+			run:  func() error { return qtx.DeleteWorkspaceAutonomousWorkflowRunsAndTeams(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete autonomous plans",
+			run:  func() error { return qtx.DeleteWorkspaceAutonomousPlans(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete autonomous specification heads",
+			run:  func() error { return qtx.DeleteWorkspaceAutonomousSpecificationHeads(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete autonomous specification revisions",
+			run:  func() error { return qtx.DeleteWorkspaceAutonomousSpecificationRevisions(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete runtimes and projects",
 			run:  func() error { return qtx.DeleteWorkspaceRuntimesAndProjects(ctx, requester.WorkspaceID) },
 		},

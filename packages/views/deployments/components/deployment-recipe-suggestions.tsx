@@ -69,15 +69,19 @@ export function DeploymentRecipeSuggestions({
         {analysis ? (
           <div className="flex flex-col gap-2" data-testid="repository-analysis">
             <p className="text-xs text-muted-foreground">
-              Detected <strong>{analysis.recipe.name}</strong> in
-              <code className="ml-1">{analysis.rootDirectory}</code>.
+              {t(($) => $.deployments.analysis_detected, {
+                framework: analysis.recipe.name,
+                directory: analysis.rootDirectory,
+              })}
             </p>
             {analysis.environmentVariableNames.length > 0 ? (
               <p
                 className="text-xs text-muted-foreground"
                 data-testid="environment-variable-names"
               >
-                Required environment variable names: {analysis.environmentVariableNames.join(", ")}
+                {t(($) => $.deployments.analysis_environment_variables, {
+                  names: analysis.environmentVariableNames.join(", "),
+                })}
               </p>
             ) : null}
             {analysis.warnings.length > 0 ? (
@@ -87,7 +91,7 @@ export function DeploymentRecipeSuggestions({
                 data-testid="recipe-suitability-warnings"
               >
                 <span className="font-medium">
-                  Review Vercel suitability before saving.
+                  {t(($) => $.deployments.analysis_suitability_warning)}
                 </span>
                 {analysis.warnings.map((warning) => (
                   <span key={warning.code}>• {warning.message}</span>

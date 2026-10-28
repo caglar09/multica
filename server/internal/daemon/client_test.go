@@ -554,7 +554,7 @@ func TestTerminalReportsCarryRetiredSessionID(t *testing.T) {
 			name:     "complete",
 			endpoint: "/api/daemon/tasks/task-1/complete",
 			call: func(c *Client) error {
-				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "", nil, "", "/tmp/wd", false, "POISONED-S", "")
+				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "", nil, "", "", "", "/tmp/wd", false, "POISONED-S", "")
 			},
 		},
 		{
@@ -597,7 +597,7 @@ func TestTerminalReportsOmitEmptyRetiredSessionID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := NewClient(srv.URL).CompleteTask(context.Background(), "task-1", "done", "", "", "", nil, "sess-1", "/tmp/wd", false, "", ""); err != nil {
+	if err := NewClient(srv.URL).CompleteTask(context.Background(), "task-1", "done", "", "", "", nil, "", "", "sess-1", "/tmp/wd", false, "", ""); err != nil {
 		t.Fatalf("CompleteTask: %v", err)
 	}
 	if _, present := body["retired_session_id"]; present {
@@ -608,13 +608,17 @@ func TestTerminalReportsOmitEmptyRetiredSessionID(t *testing.T) {
 func TestTerminalReportsCarryDurableWorkDir(t *testing.T) {
 	const durableWorkDir = "/Users/dev/project"
 	for _, tc := range []struct {
-		name string
-		call func(*Client) error
+		name             string
+		worktreePath     string
+		worktreeRepoPath string
+		call              func(*Client) error
 	}{
 		{
-			name: "complete",
+			name:             "complete",
+			worktreePath:     "/tmp/task-worktree",
+			worktreeRepoPath: "/repo",
 			call: func(c *Client) error {
-				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "", nil, "", "/tmp/wd", false, "", durableWorkDir)
+				return c.CompleteTask(context.Background(), "task-1", "done", "task/issue-1", "base", "commit", []string{"server/main.go"}, "/tmp/task-worktree", "/repo", "session-1", "/tmp/wd", false, "", durableWorkDir)
 			},
 		},
 		{
@@ -643,6 +647,14 @@ func TestTerminalReportsCarryDurableWorkDir(t *testing.T) {
 			}
 			if got := body["durable_work_dir"]; got != durableWorkDir {
 				t.Fatalf("durable_work_dir = %v, want %q (body: %v)", got, durableWorkDir, body)
+			}
+			if tc.worktreePath != "" {
+				if got := body["worktree_path"]; got != tc.worktreePath {
+					t.Errorf("worktree_path = %v, want %q", got, tc.worktreePath)
+				}
+				if got := body["worktree_repo_path"]; got != tc.worktreeRepoPath {
+					t.Errorf("worktree_repo_path = %v, want %q", got, tc.worktreeRepoPath)
+				}
 			}
 		})
 	}

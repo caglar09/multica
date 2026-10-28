@@ -938,7 +938,8 @@
       "agent_error": "Ajan yürütme hatası",
       "codex_semantic_inactivity": "Codex anlamsal hareketsizlik zaman aşımı",
       "manual": "Kullanıcı tarafından iptal edildi",
-      "user_cancelled": "Kullanıcı tarafından iptal edildi"
+      "user_cancelled": "Kullanıcı tarafından iptal edildi",
+      "runtime_access_revoked": "Çalışma zamanı erişimi iptal edildi"
     }
   },
   "last_active": {

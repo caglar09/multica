@@ -318,6 +318,8 @@ type TaskResult struct {
 	WorktreeBaseSHA      string   `json:"worktree_base_sha,omitempty"`
 	WorktreeCommitSHA    string   `json:"worktree_commit_sha,omitempty"`
 	WorktreeChangedFiles []string `json:"worktree_changed_files,omitempty"`
+	WorktreePath         string   `json:"worktree_path,omitempty"`
+	WorktreeRepoPath     string   `json:"worktree_repo_path,omitempty"`
 	EnvType              string   `json:"env_type,omitempty"`
 	SessionID            string   `json:"session_id,omitempty"` // Claude session ID for future resumption
 	WorkDir              string   `json:"work_dir,omitempty"`   // working directory used during execution

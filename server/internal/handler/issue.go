@@ -1272,6 +1272,9 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		dependencyResponses[i] = &resp[i].IssueResponse
 	}
 	if err := h.fillIssueDependencyStates(ctx, wsUUID, dependencyResponses); err != nil {
+		if writeSearchCancellation(w, r, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to load issue dependencies")
 		return
 	}
@@ -3436,7 +3439,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			`, wsUUID, projectID).Scan(&draftStatus)
 			if draftErr == nil && (draftStatus == "awaiting_configuration" || draftStatus == "provisioning") {
 				writeJSON(w, http.StatusConflict, map[string]any{
-					"code": "autonomous_team_configuration_required",
+					"code":  "autonomous_team_configuration_required",
 					"error": "Configure the proposed Technology Team runtimes and Skills in Project > Autonomous before creating the implementation backlog.",
 				})
 				return

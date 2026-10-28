@@ -78,7 +78,6 @@ func (d *registrationPrecheckBarrier) wait(query string) {
 	case <-time.After(d.window):
 	}
 }
-
 func TestDaemonRegister_ConcurrentDifferentProvidersAndProfilesHaveOneOwner(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -463,7 +462,7 @@ func TestDaemonRegister_QoderPrefixNeedsLiveConnectionForEveryShape(t *testing.T
 	register := func(body map[string]any) int {
 		body["workspace_id"] = testWorkspaceID
 		body["daemon_id"] = daemonID
-		req := httptest.NewRequest(http.MethodPost, "/api/daemon/register", strings.NewReader(mustJSON(t, body)))
+		req := httptest.NewRequest(http.MethodPost, "/api/daemon/register", strings.NewReader(string(mustJSON(body))))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+raw)
 		w := httptest.NewRecorder()
@@ -507,13 +506,4 @@ func TestDaemonRegister_QoderPrefixNeedsLiveConnectionForEveryShape(t *testing.T
 	if code := register(map[string]any{"runtimes": []map[string]any{{"type": "qoder_cloud", "runtime_mode": "cloud", "name": "QCA", "status": "online"}}}); code != http.StatusOK {
 		t.Fatalf("connected qoder token registering its qoder_cloud runtime = %d, want 200", code)
 	}
-}
-
-func mustJSON(t *testing.T, v any) string {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
 }

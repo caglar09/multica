@@ -182,7 +182,9 @@
       "quick": "エージェントで作成",
       "manual": "手動作成",
       "unsupported": "エージェントでの作成では使用できません"
-    }
+    },
+    "device_hint": "これらの設定はこのデバイスにのみ適用されます。",
+    "issue_scope": "各タスク作成ツールバーに表示するフィールドを選択します。"
   },
   "shortcuts": {
     "title": "キーボードショートカット",
@@ -318,7 +320,8 @@
   },
   "chat": {
     "floating_label": "フローティングチャット",
-    "floating_hint": "すべてのページにフローティングチャットボタンを表示します。"
+    "floating_hint": "すべてのページにフローティングチャットボタンを表示します。",
+    "floating_title": "フローティングチャットウィンドウ"
   },
   "issue": {
     "opening": {
@@ -337,7 +340,11 @@
       "project": "プロジェクト",
       "due_date": "期限",
       "start_date": "開始日"
-    }
+    },
+    "quick_create_title": "エージェントで作成",
+    "quick_create_description": "エージェントで作成するときにツールバーに表示するフィールド。",
+    "manual_create_title": "手動でタスクを作成",
+    "manual_create_description": "手動作成ツールバーに表示するフィールド。"
   },
   "mcp": {
     "description": "追加後、エージェントの MCP タブで割り当てます。",

@@ -254,7 +254,7 @@ export function ProjectDeploymentsSection({
           className="text-sm text-muted-foreground"
           data-testid="source-revision-unavailable"
         >
-          Source revision unavailable
+          {t(($) => $.deployments.source_revision_unavailable)}
         </p>
       ) : null}
 

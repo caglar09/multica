@@ -229,8 +229,33 @@ func handlerTestRuntimeID(t *testing.T) string {
 
 func createHandlerTestAgent(t *testing.T, name string, mcpConfig []byte) string {
 	t.Helper()
+	return createHandlerTestAgentForRuntime(t, name, mcpConfig, handlerTestRuntimeID(t))
+}
 
-	agentID := dbfx.Agent(t, name, handlerTestRuntimeID(t), testutil.Cols{
+func createHandlerTestRuntime(t *testing.T, name string) string {
+	t.Helper()
+	var runtimeID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_runtime (
+			workspace_id, daemon_id, name, runtime_mode, provider, status,
+			device_info, metadata, owner_id, last_seen_at
+		)
+		VALUES ($1, NULL, $2, 'cloud', 'handler-test', 'online', $3, '{}'::jsonb, $4, now())
+		RETURNING id
+	`, testWorkspaceID, name, name+" device", testUserID).Scan(&runtimeID); err != nil {
+		t.Fatalf("insert handler test runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent WHERE runtime_id = $1`, runtimeID)
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	})
+	return runtimeID
+}
+
+func createHandlerTestAgentForRuntime(t *testing.T, name string, mcpConfig []byte, runtimeID string) string {
+	t.Helper()
+
+	agentID := dbfx.Agent(t, name, runtimeID, testutil.Cols{
 		"visibility":      "workspace",
 		"permission_mode": "public_to",
 		"instructions":    "",

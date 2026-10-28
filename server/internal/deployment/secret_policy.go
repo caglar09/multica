@@ -69,8 +69,12 @@ func MaskToken(token string) string {
 		return "***" + token[n-3:]
 	}
 
-	// For standard tokens, keep up to 10 chars of prefix (e.g. "vercel_tok_") and 4 chars of suffix
-	prefixLen := 10
+	// Keep the recognizable provider prefix, but expose only two characters for
+	// generic secrets such as numeric API keys.
+	prefixLen := 2
+	if strings.HasPrefix(token, "vercel_tok_") || strings.HasPrefix(token, "ghp_") {
+		prefixLen = 10
+	}
 	if prefixLen > n-6 {
 		prefixLen = n - 6
 	}
@@ -127,4 +131,3 @@ func InspectSecretRef(secretRef string) (keyVersion uint8, isVersioned bool, err
 	}
 	return 0, false, nil
 }
-

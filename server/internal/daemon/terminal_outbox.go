@@ -29,6 +29,8 @@ type terminalOutboxRecord struct {
 	WorktreeBaseSHA       string                 `json:"worktree_base_sha,omitempty"`
 	WorktreeCommitSHA     string                 `json:"worktree_commit_sha,omitempty"`
 	WorktreeChangedFiles  []string               `json:"worktree_changed_files,omitempty"`
+	WorktreePath          string                 `json:"worktree_path,omitempty"`
+	WorktreeRepoPath      string                 `json:"worktree_repo_path,omitempty"`
 	ErrorMessage          string                 `json:"error_message,omitempty"`
 	SessionID             string                 `json:"session_id,omitempty"`
 	WorkDir               string                 `json:"work_dir,omitempty"`
@@ -48,6 +50,7 @@ func (o *terminalOutbox) Put(report terminalTaskReport) error {
 		Kind: report.kind, TaskID: report.taskID, Output: report.output, BranchName: report.branchName,
 		WorktreeBaseSHA: report.worktreeBaseSHA, WorktreeCommitSHA: report.worktreeCommitSHA,
 		WorktreeChangedFiles: report.worktreeChangedFiles, ErrorMessage: report.errorMessage,
+		WorktreePath: report.worktreePath, WorktreeRepoPath: report.worktreeRepoPath,
 		SessionID: report.sessionID, WorkDir: report.workDir, DurableWorkDir: report.durableWorkDir,
 		FailureReason: report.failureReason, SessionRolloutMissing: report.sessionRolloutMissing,
 		RetiredSessionID: report.retiredSessionID,
@@ -113,7 +116,8 @@ func (o *terminalOutbox) Reports() ([]terminalTaskReport, error) {
 		reports = append(reports, terminalTaskReport{
 			kind: record.Kind, taskID: record.TaskID, output: record.Output, branchName: record.BranchName,
 			worktreeBaseSHA: record.WorktreeBaseSHA, worktreeCommitSHA: record.WorktreeCommitSHA,
-			worktreeChangedFiles: record.WorktreeChangedFiles, errorMessage: record.ErrorMessage,
+			worktreeChangedFiles: record.WorktreeChangedFiles, worktreePath: record.WorktreePath,
+			worktreeRepoPath: record.WorktreeRepoPath, errorMessage: record.ErrorMessage,
 			sessionID: record.SessionID, workDir: record.WorkDir, durableWorkDir: record.DurableWorkDir,
 			failureReason: record.FailureReason, sessionRolloutMissing: record.SessionRolloutMissing,
 			retiredSessionID: record.RetiredSessionID,

@@ -1,0 +1,46 @@
+{
+  "agents": {
+    "agent-1793045395996-ghkr16": {
+      "agentId": "agent-1793045395996-ghkr16",
+      "agentType": "researcher",
+      "name": "Researcher",
+      "status": "idle",
+      "health": 1,
+      "taskCount": 0,
+      "config": {},
+      "createdAt": "2026-10-26T20:10:03.390Z",
+      "domain": "architecture-discovery",
+      "model": "opus",
+      "modelRoutedBy": "router",
+      "provider": "anthropic"
+    },
+    "agent-1793045408185-aip5vf": {
+      "agentId": "agent-1793045408185-aip5vf",
+      "agentType": "architect",
+      "name": "Architect",
+      "status": "idle",
+      "health": 1,
+      "taskCount": 0,
+      "config": {},
+      "createdAt": "2026-10-26T20:10:08.199Z",
+      "domain": "architecture-synthesis",
+      "model": "sonnet",
+      "modelRoutedBy": "router"
+    },
+    "agent-1793045410062-42680v": {
+      "agentId": "agent-1793045410062-42680v",
+      "agentType": "reviewer",
+      "name": "Reviewer",
+      "status": "idle",
+      "health": 1,
+      "taskCount": 0,
+      "config": {},
+      "createdAt": "2026-10-26T20:10:10.093Z",
+      "domain": "architecture-review",
+      "model": "opus",
+      "modelRoutedBy": "router",
+      "provider": "anthropic"
+    }
+  },
+  "version": "3.0.0"
+}

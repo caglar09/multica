@@ -900,7 +900,10 @@ func (q *Queries) CancelAgentTasksByIssue(ctx context.Context, issueID pgtype.UU
 
 const cancelAgentTasksByTriggerComment = `-- name: CancelAgentTasksByTriggerComment :many
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled',
+    completed_at = now(),
+    prepare_lease_expires_at = NULL,
+    context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('comment_change_cancelled_task_id', id::text)
 WHERE (trigger_comment_id = $1 OR $1 = ANY(coalesced_comment_ids))
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
@@ -3265,7 +3268,7 @@ SELECT
     CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity'
               OR p.failure_reason IS NOT DISTINCT FROM 'agent_error.provider_quota_limit'
          THEN NULL ELSE p.session_id END,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.work_dir END,
+    p.work_dir,
     p.attempt + 1, COALESCE($3::int, p.max_attempts), p.id,
     (p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity'
      OR p.failure_reason IS NOT DISTINCT FROM 'agent_error.provider_quota_limit'),
@@ -7645,6 +7648,7 @@ WHERE id = (
           COALESCE($14::text, '') = ''
           OR t.context->>'head_sha' = $14::text
       )
+      AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($1::uuid)
     ORDER BY t.created_at DESC
     LIMIT 1
 )
@@ -7977,8 +7981,9 @@ const promoteDueDeferredTasksForRuntime = `-- name: PromoteDueDeferredTasksForRu
 WITH due AS (
     SELECT t.id,
            t.issue_id,
+           t.comment_thread_id,
            row_number() OVER (
-               PARTITION BY t.issue_id, t.agent_id
+               PARTITION BY t.issue_id, t.agent_id, t.comment_thread_id
                ORDER BY t.priority DESC, t.created_at ASC, t.id
            ) AS rn
     FROM agent_task_queue t
@@ -7996,6 +8001,7 @@ WITH due AS (
         SELECT 1 FROM agent_task_queue occupant
         WHERE occupant.issue_id = t.issue_id
           AND occupant.agent_id = t.agent_id
+          AND occupant.comment_thread_id IS NOT DISTINCT FROM t.comment_thread_id
           AND occupant.id <> t.id
           AND (
             occupant.status IN ('queued', 'dispatched')
@@ -8015,7 +8021,7 @@ type PromoteDueDeferredTasksForRuntimeParams struct {
 }
 
 // Promotion is fenced against the single queued/dispatched slot
-// idx_one_pending_task_per_issue_agent_v2 allows per (issue, agent). A deferred
+// idx_one_pending_task_per_issue_agent_thread allows per (issue, agent, thread). A deferred
 // row is NOT covered by that index, so it can legitimately coexist with a queued
 // one — a manual rerun enqueued behind a running task, plus the deferred retry
 // that task's failure armed (runtime_offline, provider_network's final attempt).
@@ -8023,8 +8029,8 @@ type PromoteDueDeferredTasksForRuntimeParams struct {
 // the claim loop promotes before it claims, that error blocked every claim on the
 // runtime — including the rerun the operator was waiting for.
 //
-// Two fences: skip a row whose (issue, agent) slot is already occupied, and
-// promote at most ONE row per (issue, agent) so a single statement cannot collide
+// Two fences: skip a row whose (issue, agent, thread) slot is already occupied, and
+// promote at most ONE row per (issue, agent, thread) so a single statement cannot collide
 // with itself. A skipped row stays deferred with fire_at in the past and is
 // promoted by a later tick once the slot frees, so nothing is lost — the human's
 // rerun simply goes first. Chat / quick-create rows (issue_id NULL) are outside
@@ -8114,8 +8120,9 @@ const promoteDueDeferredTasksForRuntimes = `-- name: PromoteDueDeferredTasksForR
 WITH due AS (
     SELECT t.id,
            t.issue_id,
+           t.comment_thread_id,
            row_number() OVER (
-               PARTITION BY t.issue_id, t.agent_id
+               PARTITION BY t.issue_id, t.agent_id, t.comment_thread_id
                ORDER BY t.priority DESC, t.created_at ASC, t.id
            ) AS rn
     FROM agent_task_queue t
@@ -8133,6 +8140,7 @@ WITH due AS (
         SELECT 1 FROM agent_task_queue occupant
         WHERE occupant.issue_id = t.issue_id
           AND occupant.agent_id = t.agent_id
+          AND occupant.comment_thread_id IS NOT DISTINCT FROM t.comment_thread_id
           AND occupant.id <> t.id
           AND (
             occupant.status IN ('queued', 'dispatched')
@@ -8753,8 +8761,10 @@ WHERE id = (
           COALESCE($4::text, '') = ''
           OR t.context->>'head_sha' = $4::text
       )
+      AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($1::uuid)
     ORDER BY t.created_at DESC
     LIMIT 1
+    FOR UPDATE
 )
 RETURNING id, coalesced_comment_ids
 `

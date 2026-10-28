@@ -262,6 +262,8 @@ type terminalTaskReport struct {
 	worktreeBaseSHA      string
 	worktreeCommitSHA    string
 	worktreeChangedFiles []string
+	worktreePath         string
+	worktreeRepoPath     string
 	errorMessage         string
 	sessionID            string
 	workDir              string
@@ -6285,6 +6287,8 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			worktreeBaseSHA:       result.WorktreeBaseSHA,
 			worktreeCommitSHA:     result.WorktreeCommitSHA,
 			worktreeChangedFiles:  append([]string(nil), result.WorktreeChangedFiles...),
+			worktreePath:          result.WorktreePath,
+			worktreeRepoPath:      result.WorktreeRepoPath,
 			sessionID:             result.SessionID,
 			workDir:               result.WorkDir,
 			durableWorkDir:        result.DurableWorkDir,
@@ -6431,7 +6435,7 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 	}
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.worktreeBaseSHA, report.worktreeCommitSHA, report.worktreeChangedFiles, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
+		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.worktreeBaseSHA, report.worktreeCommitSHA, report.worktreeChangedFiles, report.worktreePath, report.worktreeRepoPath, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
 
 	case terminalTaskReportFail:
 		return d.client.failTaskWithRetrySchedule(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
@@ -8351,6 +8355,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				taskResult.EnvRoot = env.RootDir
 			}
 			outcome, finalizeErr := env.LocalWorktree.Finalize(taskLog)
+		taskResult.WorktreePath = env.LocalWorktree.Path
+		taskResult.WorktreeRepoPath = env.LocalWorktree.GitRoot
 			if outcome.Branch != "" {
 				taskResult.BranchName = outcome.Branch
 				taskResult.WorktreeBaseSHA = outcome.BaseSHA

@@ -755,16 +755,25 @@ type WorktreeParams struct {
 	// listed as a writable root — on Linux (multica-ai/multica#2925) and on the
 	// Windows native sandbox (multica-ai/multica#6449).
 	IsolatedGitMetadata bool
-	// Fresh is accepted from checkout clients. Existing checkout handling keeps
-	// its historical reset behavior until the safer keep-or-refresh flow lands.
+	// Fresh explicitly discards uncommitted checkout changes when reusing a path.
 	Fresh bool
 }
 
+type KeptWorktreeReason string
+
+const (
+	KeptLocalWork  KeptWorktreeReason = "local_work"
+	KeptTaskBranch KeptWorktreeReason = "task_branch"
+)
+
 // WorktreeResult describes a successfully created worktree.
 type WorktreeResult struct {
-	Path              string `json:"path"`                          // absolute path to the task worktree
-	BranchName        string `json:"branch_name"`                   // git branch created for this worktree
-	CanonicalRepoPath string `json:"canonical_repo_path,omitempty"` // shared daemon-owned bare repo
+	Path              string             `json:"path"`                          // absolute path to the task worktree
+	BranchName        string             `json:"branch_name"`                   // git branch created for this worktree
+	CanonicalRepoPath string             `json:"canonical_repo_path,omitempty"` // shared daemon-owned bare repo
+	Kept              KeptWorktreeReason `json:"kept,omitempty"`
+	UncommittedFiles  int                `json:"uncommitted_files,omitempty"`
+	UnpushedCommits   int                `json:"unpushed_commits,omitempty"`
 }
 
 // CreateWorktree looks up the bare cache for a repo, fetches latest, and creates
@@ -865,6 +874,44 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	// Derive directory name from repo URL.
 	dirName := repoNameFromURL(params.RepoURL)
 	worktreePath := filepath.Join(params.WorkDir, dirName)
+	existingIsolated := isIsolatedCheckoutContext(ctx, worktreePath)
+	if isGitWorktree(worktreePath) || existingIsolated {
+		if existingIsolated {
+			if err := setIsolatedCheckoutOriginContext(ctx, worktreePath, params.RepoURL); err != nil {
+				return nil, err
+			}
+			if err := configureRepoCABundleContext(ctx, worktreePath); err != nil {
+				return nil, err
+			}
+			if isPartialCloneContext(ctx, barePath) {
+				if err := configurePromisorRemoteContext(ctx, worktreePath); err != nil {
+					return nil, err
+				}
+			}
+			if err := syncIsolatedCheckoutRefsContext(ctx, barePath, worktreePath, baseRef); err != nil {
+				return nil, err
+			}
+		}
+		state, err := inspectExistingCheckoutContext(ctx, worktreePath, baseRef)
+		if err != nil {
+			return nil, fmt.Errorf("inspect existing checkout: %w", err)
+		}
+		if !params.Fresh {
+			if isTaskBranch(state.branch, branchName) && (!params.IsolatedGitMetadata || existingIsolated) {
+				if err := isolateWorktreeIdentityContext(ctx, barePath, worktreePath); err != nil {
+					return nil, fmt.Errorf("isolate checkout Git identity: %w", err)
+				}
+				c.applyCoAuthoredBySettingContext(ctx, worktreePath, params)
+				if err := ctx.Err(); err != nil {
+					return nil, context.Cause(ctx)
+				}
+				return &WorktreeResult{Path: worktreePath, BranchName: state.branch, CanonicalRepoPath: barePath, Kept: KeptTaskBranch, UncommittedFiles: state.uncommittedFiles, UnpushedCommits: state.unpushedCommits}, nil
+			}
+			if state.uncommittedFiles > 0 || state.unpushedCommits > 0 {
+				return &WorktreeResult{Path: worktreePath, BranchName: state.branch, CanonicalRepoPath: barePath, Kept: KeptLocalWork, UncommittedFiles: state.uncommittedFiles, UnpushedCommits: state.unpushedCommits}, nil
+			}
+		}
+	}
 
 	// Once a workdir has moved to isolated metadata, keep using that safer
 	// shape even if a later task comes from an older CLI or a different runtime
@@ -878,6 +925,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 			worktreePath,
 			branchName,
 			baseRef,
+			params.Fresh,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("create isolated checkout: %w", err)
@@ -906,7 +954,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	// If worktree already exists (reused environment from a prior task),
 	// update it to the latest remote code instead of creating a new one.
 	if isGitWorktree(worktreePath) {
-		actualBranch, err := updateExistingWorktreeContext(ctx, worktreePath, branchName, baseRef)
+		actualBranch, err := updateExistingWorktreeContext(ctx, worktreePath, branchName, baseRef, params.Fresh)
 		if err != nil {
 			return nil, fmt.Errorf("update existing worktree: %w", err)
 		}
@@ -995,10 +1043,10 @@ const (
 // an agent's normal fetch / push commands still target GitHub rather than the
 // daemon-owned bare cache.
 func (c *Cache) createOrUpdateIsolatedCheckout(barePath, repoURL, checkoutPath, branchName, baseRef string) (string, error) {
-	return c.createOrUpdateIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef)
+	return c.createOrUpdateIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, false)
 }
 
-func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef string) (string, error) {
+func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef string, fresh bool) (string, error) {
 	baseCommit, err := resolveCommitContext(ctx, barePath, baseRef)
 	if err != nil {
 		return "", err
@@ -1022,7 +1070,7 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 		if err := syncIsolatedCheckoutRefsContext(ctx, barePath, checkoutPath, baseRef); err != nil {
 			return "", err
 		}
-		actualBranch, err := updateExistingWorktreeContext(ctx, checkoutPath, branchName, baseCommit)
+		actualBranch, err := updateExistingWorktreeContext(ctx, checkoutPath, branchName, baseCommit, fresh)
 		if err != nil {
 			return "", err
 		}
@@ -1037,7 +1085,15 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 	// A daemon upgrade can resume a pre-fix Codex workdir that still has a
 	// linked worktree. Remove it through Git (so the shared admin record is
 	// cleaned too), then recreate the same checkout path with local metadata.
+	preserveBranch := ""
 	if isGitWorktree(checkoutPath) {
+		state, err := inspectExistingCheckoutContext(ctx, checkoutPath, baseRef)
+		if err != nil {
+			return "", fmt.Errorf("inspect linked checkout before migration: %w", err)
+		}
+		if state.unpushedCommits > 0 && state.branch != "HEAD" {
+			preserveBranch = state.branch
+		}
 		if err := removeLinkedWorktreeContext(ctx, barePath, checkoutPath); err != nil {
 			return "", err
 		}
@@ -1048,7 +1104,7 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 		return "", fmt.Errorf("stat checkout path: %w", err)
 	}
 
-	return createIsolatedCheckoutContext(ctx, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit)
+	return createIsolatedCheckoutContext(ctx, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, preserveBranch)
 }
 
 func removeLinkedWorktree(barePath, checkoutPath string) error {
@@ -1110,11 +1166,11 @@ func localCloneArgs(goos, barePath, checkoutPath string) []string {
 	return append(args, "--origin", isolatedCacheRemoteName, barePath, checkoutPath)
 }
 
-func createIsolatedCheckout(barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit string) (_ string, retErr error) {
-	return createIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit)
+func createIsolatedCheckout(barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, preserveBranch string) (_ string, retErr error) {
+	return createIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, preserveBranch)
 }
 
-func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit string) (_ string, retErr error) {
+func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, preserveBranch string) (_ string, retErr error) {
 	if out, err := runGitCombinedOutputContext(
 		ctx,
 		localCloneArgs(runtime.GOOS, barePath, checkoutPath)...,
@@ -1153,6 +1209,15 @@ func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, check
 			return "", err
 		}
 	}
+	if err := runGitContext(ctx, "-C", checkoutPath, "cat-file", "-e", baseCommit+"^{tree}"); err != nil {
+		fetchRef := baseCommit
+		if branch, ok := strings.CutPrefix(baseRef, "refs/remotes/origin/"); ok {
+			fetchRef = "refs/heads/" + branch
+		}
+		if out, err := runGitCombinedOutputContext(ctx, "-C", checkoutPath, "fetch", "--no-tags", "origin", fetchRef); err != nil {
+			return "", fmt.Errorf("fetch missing checkout tree: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+	}
 
 	if out, err := runGitCombinedOutputContext(ctx, "-C", checkoutPath, "checkout", "--detach", baseCommit); err != nil {
 		return "", fmt.Errorf("git checkout --detach: %s: %w", strings.TrimSpace(string(out)), err)
@@ -1162,6 +1227,19 @@ func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, check
 	}
 	if err := syncIsolatedCheckoutRefsContext(ctx, barePath, checkoutPath, baseRef); err != nil {
 		return "", err
+	}
+	if preserveBranch != "" {
+		branchRef := "refs/heads/" + preserveBranch
+		if err := runGitContext(ctx, "-C", checkoutPath, "check-ref-format", branchRef); err != nil {
+			return "", fmt.Errorf("invalid branch to preserve %q: %w", preserveBranch, err)
+		}
+		commit, err := resolveCommitContext(ctx, barePath, branchRef)
+		if err != nil {
+			return "", fmt.Errorf("resolve branch to preserve %q: %w", preserveBranch, err)
+		}
+		if out, err := runGitCombinedOutputContext(ctx, "-C", checkoutPath, "update-ref", branchRef, commit); err != nil {
+			return "", fmt.Errorf("preserve branch %q: %s: %w", preserveBranch, strings.TrimSpace(string(out)), err)
+		}
 	}
 	if out, err := runGitCombinedOutputContext(ctx, "-C", checkoutPath, "config", isolatedCheckoutConfigKey, isolatedCheckoutConfigValue); err != nil {
 		return "", fmt.Errorf("mark isolated checkout: %s: %w", strings.TrimSpace(string(out)), err)
@@ -1299,7 +1377,28 @@ func deleteStaleAgentBranches(repoPath, keepBranch string) error {
 }
 
 func deleteStaleAgentBranchesContext(ctx context.Context, repoPath, keepBranch string) error {
-	return deleteLocalBranchesUnderContext(ctx, repoPath, "refs/heads/agent/", "refs/heads/"+keepBranch)
+	branches, err := runGitOutputContext(ctx, "-C", repoPath, "for-each-ref", "--format=%(refname)", "refs/heads/agent/")
+	if err != nil {
+		return fmt.Errorf("list local agent branches: %w", err)
+	}
+	keepRef := "refs/heads/" + keepBranch
+	for _, branchRef := range strings.Split(strings.TrimSpace(string(branches)), "\n") {
+		branchRef = strings.TrimSpace(branchRef)
+		if branchRef == "" || branchRef == keepRef {
+			continue
+		}
+		remoteRefs, err := runGitOutputContext(ctx, "-C", repoPath, "for-each-ref", "--contains="+branchRef, "--format=%(refname)", "refs/remotes/origin/")
+		if err != nil {
+			return fmt.Errorf("find remote branches containing %s: %w", branchRef, err)
+		}
+		if strings.TrimSpace(string(remoteRefs)) == "" {
+			continue
+		}
+		if out, err := runGitCombinedOutputContext(ctx, "-C", repoPath, "update-ref", "-d", branchRef); err != nil {
+			return fmt.Errorf("delete stale branch %s: %s: %w", branchRef, strings.TrimSpace(string(out)), err)
+		}
+	}
+	return nil
 }
 
 func deleteLocalBranchesUnder(repoPath, namespace, keepRef string) error {
@@ -1442,11 +1541,22 @@ func isGitWorktree(path string) bool {
 // the bare cache beforehand (worktrees share the same object store).
 // Returns the actual branch name used (may differ from input on collision).
 func updateExistingWorktree(worktreePath, branchName, baseRef string) (string, error) {
-	return updateExistingWorktreeContext(context.Background(), worktreePath, branchName, baseRef)
+	return updateExistingWorktreeContext(context.Background(), worktreePath, branchName, baseRef, false)
 }
 
-func updateExistingWorktreeContext(ctx context.Context, worktreePath, branchName, baseRef string) (string, error) {
-	// Discard any leftover uncommitted changes from the previous task.
+func updateExistingWorktreeContext(ctx context.Context, worktreePath, branchName, baseRef string, fresh bool) (string, error) {
+	if !fresh {
+		state, err := inspectExistingCheckoutContext(ctx, worktreePath, baseRef)
+		if err != nil {
+			return "", err
+		}
+		if state.uncommittedFiles > 0 || state.unpushedCommits > 0 {
+			return "", fmt.Errorf("refusing to replace checkout with unpreserved local work")
+		}
+	}
+
+	// A deliberate fresh checkout discards uncommitted changes after the
+	// caller has retained any unpushed branch that contains committed work.
 	if out, err := runGitCombinedOutputContext(ctx, "-C", worktreePath, "reset", "--hard"); err != nil {
 		return "", fmt.Errorf("git reset --hard: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -1475,6 +1585,69 @@ func updateExistingWorktreeContext(ctx context.Context, worktreePath, branchName
 		return "", fmt.Errorf("git checkout -b (retry): %s: %w", strings.TrimSpace(string(out2)), err2)
 	}
 	return branchName, nil
+}
+
+type existingCheckoutState struct {
+	branch           string
+	uncommittedFiles int
+	unpushedCommits  int
+}
+
+func inspectExistingCheckoutContext(ctx context.Context, checkoutPath, baseRef string) (existingCheckoutState, error) {
+	var state existingCheckoutState
+	branch, err := runGitOutputContext(ctx, "-C", checkoutPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return state, fmt.Errorf("read current branch: %w", err)
+	}
+	state.branch = strings.TrimSpace(string(branch))
+
+	status, err := runGitOutputContext(ctx, "-C", checkoutPath, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return state, fmt.Errorf("read checkout status: %w", err)
+	}
+	entries := strings.Split(string(status), "\x00")
+	for i := 0; i < len(entries); i++ {
+		entry := entries[i]
+		if entry == "" {
+			continue
+		}
+		state.uncommittedFiles++
+		if len(entry) >= 2 && (entry[0] == 'R' || entry[1] == 'R' || entry[0] == 'C' || entry[1] == 'C') {
+			i++
+		}
+	}
+
+	comparisonRef := baseRef
+	if state.branch != "" && state.branch != "HEAD" {
+		remoteBranch := "refs/remotes/origin/" + state.branch
+		if _, err := runGitOutputContext(ctx, "-C", checkoutPath, "rev-parse", "--verify", "--quiet", remoteBranch); err == nil {
+			comparisonRef = remoteBranch
+		}
+	}
+	if comparisonRef == "" {
+		return state, fmt.Errorf("no ref available to check for unpushed commits")
+	}
+	count, err := runGitOutputContext(ctx, "-C", checkoutPath, "rev-list", "--count", comparisonRef+"..HEAD")
+	if err != nil {
+		return state, fmt.Errorf("count unpushed commits against %s: %w", comparisonRef, err)
+	}
+	state.unpushedCommits, err = strconv.Atoi(strings.TrimSpace(string(count)))
+	if err != nil {
+		return state, fmt.Errorf("parse unpushed commit count %q: %w", strings.TrimSpace(string(count)), err)
+	}
+	return state, nil
+}
+
+func isTaskBranch(currentBranch, taskBranch string) bool {
+	if currentBranch == taskBranch {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(currentBranch, taskBranch+"-")
+	if !ok || suffix == "" {
+		return false
+	}
+	_, err := strconv.ParseInt(suffix, 10, 64)
+	return err == nil
 }
 
 // getRemoteDefaultBranch returns a ref path (e.g. "refs/remotes/origin/main")

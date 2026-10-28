@@ -261,7 +261,9 @@
       "quick": "Création avec un agent",
       "manual": "Création manuelle",
       "unsupported": "Indisponible lors de la création avec un agent"
-    }
+    },
+    "device_hint": "Ces préférences s’appliquent uniquement à cet appareil.",
+    "issue_scope": "Choisissez les champs affichés dans chaque barre de création de tâche."
   },
   "shortcuts": {
     "title": "Raccourcis clavier",
@@ -397,7 +399,8 @@
   },
   "chat": {
     "floating_label": "Fenêtre de discussion flottante",
-    "floating_hint": "Afficher le bouton de chat flottant sur chaque page."
+    "floating_hint": "Afficher le bouton de chat flottant sur chaque page.",
+    "floating_title": "Fenêtre de discussion flottante"
   },
   "issue": {
     "opening": {
@@ -416,7 +419,11 @@
       "project": "Projet",
       "due_date": "Date d'échéance",
       "start_date": "Date de début"
-    }
+    },
+    "quick_create_title": "Créer avec un agent",
+    "quick_create_description": "Champs affichés dans la barre lors de la création avec un agent.",
+    "manual_create_title": "Création manuelle de tâche",
+    "manual_create_description": "Champs affichés dans la barre de création manuelle."
   },
   "mcp": {
     "description": "Après l’ajout d’un serveur, assignez-le depuis l’onglet MCP d’un agent.",

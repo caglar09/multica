@@ -66,6 +66,12 @@ _features/
 # runtime
 *.pid
 
+# Ruflo local runtime state
+.swarm/
+.claude-flow/data/
+.claude-flow/logs/
+.unlazy/
+
 # platform specific
 *.dmg
 *.app

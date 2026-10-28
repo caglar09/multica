@@ -208,6 +208,8 @@
   },
   "preferences": {
     "general_title": "Genel",
+    "device_hint": "Bu tercihler yalnızca bu cihaz için geçerlidir.",
+    "issue_scope": "Her oluşturma araç çubuğunda gösterilecek alanları seçin.",
     "theme": {
       "title": "Tema",
       "light": "Açık",
@@ -1283,6 +1285,15 @@
   "desktop": {
     "tabs": {
       "updates": "Güncellemeler"
+    },
+    "tab_bar": {
+      "pin": "Sekmeyi sabitle",
+      "unpin": "Sabitlemeyi kaldır",
+      "close": "Sekmeyi kapat",
+      "close_others": "Diğer sekmeleri kapat",
+      "open_window": "Yeni pencerede aç",
+      "new": "Yeni sekme",
+      "pinned_name": "{{title}} (sabitlenmiş)"
     },
     "updates": {
       "title": "Güncellemeler",

@@ -74,6 +74,17 @@ func TestMain(m *testing.M) {
 	registerListeners(bus, hub)
 	// Same wiring as main.go: HTTP writes through the test server log activity.
 	registerActivityListeners(bus, db.New(pool))
+	for key, value := range map[string]string{
+		"ALLOW_SIGNUP":          "true",
+		"ALLOWED_EMAILS":        "",
+		"ALLOWED_EMAIL_DOMAINS": "",
+	} {
+		if err := os.Setenv(key, value); err != nil {
+			fmt.Printf("Failed to configure integration signup policy: %v\n", err)
+			pool.Close()
+			os.Exit(1)
+		}
+	}
 	router := NewRouter(pool, hub, bus, analytics.NoopClient{}, nil)
 	testServer = httptest.NewServer(router)
 

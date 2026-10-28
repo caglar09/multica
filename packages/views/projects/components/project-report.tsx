@@ -37,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@multica/ui/components/ui/select";
+import { useT } from "../../i18n";
 
 function formatDuration(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -124,15 +125,8 @@ type ExecutionGroup = {
   tasks: ProjectReportTask[];
 };
 
-const EXECUTION_GROUP_OPTIONS: Array<{ value: ExecutionGroupBy; label: string }> = [
-  { value: "task", label: "Task / issue" },
-  { value: "agent", label: "Agent" },
-  { value: "runtime", label: "CLI / runtime" },
-  { value: "status", label: "Status" },
-  { value: "stage", label: "Stage" },
-  { value: "plane", label: "Execution / control plane" },
-  { value: "category", label: "Usage category" },
-  { value: "none", label: "Ungrouped" },
+const EXECUTION_GROUP_VALUES: ExecutionGroupBy[] = [
+  "task", "agent", "runtime", "status", "stage", "plane", "category", "none",
 ];
 
 function compactList(values: string[]): string {
@@ -221,11 +215,12 @@ function latestExecutionTime(tasks: ProjectReportTask[]): string | null {
 }
 
 function ExecutionTaskRow({ task, nested = false }: { task: ProjectReportTask; nested?: boolean }) {
+  const { t } = useT("projects");
   return (
     <tr className={`align-top hover:bg-muted/20 ${nested ? "bg-muted/10" : ""}`}>
       <td className={`max-w-72 py-3 pr-4 ${nested ? "pl-10" : "pl-4"}`}>
         <p className="truncate font-medium" title={task.issue_title ?? task.id}>
-          {task.issue_title ?? "Project control-plane task"}
+          {task.issue_title ?? t(($) => $.project_report.project_control_task)}
         </p>
         <p className="mt-1 font-mono text-[11px] text-muted-foreground">{task.id.slice(0, 12)}</p>
       </td>
@@ -234,7 +229,7 @@ function ExecutionTaskRow({ task, nested = false }: { task: ProjectReportTask; n
       <td className="max-w-56 px-4 py-3">
         <p className="font-medium">{task.runtime_provider ?? "—"}</p>
         <p className="mt-1 truncate text-xs text-muted-foreground" title={task.runtime_name ?? undefined}>
-          {task.runtime_name ?? "No runtime"}{task.runtime_mode ? ` · ${task.runtime_mode}` : ""}
+          {task.runtime_name ?? t(($) => $.project_report.no_runtime)}{task.runtime_mode ? ` · ${task.runtime_mode}` : ""}
         </p>
       </td>
       <td className="max-w-48 px-4 py-3">
@@ -245,13 +240,16 @@ function ExecutionTaskRow({ task, nested = false }: { task: ProjectReportTask; n
       <td className="px-4 py-3 tabular-nums">
         <p className="font-medium">{formatTokens(task.total_tokens)}</p>
         <p className="mt-1 text-[11px] text-muted-foreground">
-          {formatTokens(task.input_tokens)} in · {formatTokens(task.output_tokens)} out
+          {t(($) => $.project_report.token_directions, {
+            input: formatTokens(task.input_tokens),
+            output: formatTokens(task.output_tokens),
+          })}
         </p>
       </td>
       <td className="px-4 py-3 tabular-nums">
         {task.cost_usd_ticks > 0 ? formatCostTicks(task.cost_usd_ticks) : "—"}
         {!task.cost_complete && task.total_tokens > 0 && (
-          <p className="mt-1 text-[11px] text-muted-foreground">partial / unpriced</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">{t(($) => $.project_report.partial_unpriced)}</p>
         )}
       </td>
       <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
@@ -270,6 +268,7 @@ function ExecutionGroupRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useT("projects");
   const tasks = group.tasks;
   const completed = tasks.filter((task) => task.status === "completed").length;
   const failed = tasks.filter((task) => task.status === "failed").length;
@@ -290,22 +289,22 @@ function ExecutionGroupRow({
           <span className="min-w-0">
             <span className="block truncate font-medium" title={group.label}>{group.label}</span>
             <span className="mt-1 block text-[11px] text-muted-foreground">
-              {tasks.length} execution{tasks.length === 1 ? "" : "s"}{rejects > 0 ? ` · ${rejects} review reject${rejects === 1 ? "" : "s"}` : ""}
+              {tasks.length} {tasks.length === 1 ? t(($) => $.project_report.execution) : t(($) => $.project_report.executions)}{rejects > 0 ? ` · ${rejects} ${rejects === 1 ? t(($) => $.project_report.review_reject) : t(($) => $.project_report.review_rejects_plural)}` : ""}
             </span>
           </span>
         </button>
       </td>
       <td className="px-4 py-3">
         <div className="flex flex-wrap gap-1">
-          {failed > 0 && <Badge variant="destructive">{failed} failed</Badge>}
-          {completed > 0 && <Badge variant="default">{completed} completed</Badge>}
-          {active > 0 && <Badge variant="secondary">{active} active</Badge>}
-          {cancelled > 0 && <Badge variant="outline">{cancelled} cancelled</Badge>}
+          {failed > 0 && <Badge variant="destructive">{t(($) => $.project_report.failed_count, { count: failed })}</Badge>}
+          {completed > 0 && <Badge variant="default">{t(($) => $.project_report.completed_count, { count: completed })}</Badge>}
+          {active > 0 && <Badge variant="secondary">{t(($) => $.project_report.active_count, { count: active })}</Badge>}
+          {cancelled > 0 && <Badge variant="outline">{t(($) => $.project_report.cancelled_count, { count: cancelled })}</Badge>}
         </div>
       </td>
       <td className="max-w-48 px-4 py-3 text-xs">{compactList(tasks.map((task) => task.agent_name))}</td>
       <td className="max-w-56 px-4 py-3 text-xs">
-        {compactList(tasks.map((task) => [task.runtime_provider, task.runtime_name].filter(Boolean).join(" · ") || "No runtime"))}
+        {compactList(tasks.map((task) => [task.runtime_provider, task.runtime_name].filter(Boolean).join(" · ") || t(($) => $.project_report.no_runtime)))}
       </td>
       <td className="max-w-48 px-4 py-3 text-xs">{compactList(tasks.flatMap((task) => task.models ? task.models.split(", ") : []))}</td>
       <td className="px-4 py-3 tabular-nums">{formatDuration(averageQueue)}</td>
@@ -313,7 +312,7 @@ function ExecutionGroupRow({
       <td className="px-4 py-3 tabular-nums font-medium">{formatTokens(totalTokens)}</td>
       <td className="px-4 py-3 tabular-nums">
         {totalCost > 0 ? formatCostTicks(totalCost) : "—"}
-        {!costComplete && totalTokens > 0 && <p className="mt-1 text-[11px] text-muted-foreground">partial / unpriced</p>}
+        {!costComplete && totalTokens > 0 && <p className="mt-1 text-[11px] text-muted-foreground">{t(($) => $.project_report.partial_unpriced)}</p>}
       </td>
       <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">{formatTime(latestExecutionTime(tasks))}</td>
     </tr>
@@ -350,6 +349,7 @@ function MetricCard({
 }
 
 function TaskStatusDetail({ task }: { task: ProjectReportTask }) {
+  const { t } = useT("projects");
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -357,7 +357,7 @@ function TaskStatusDetail({ task }: { task: ProjectReportTask }) {
         <Badge variant="outline">{stageLabel(task.stage)}</Badge>
         <Badge variant="outline">{task.category.replaceAll("_", " ")}</Badge>
         {task.review_rejects > 0 && (
-          <Badge variant="destructive">{task.review_rejects} reject</Badge>
+          <Badge variant="destructive">{t(($) => $.project_report.reject_count, { count: task.review_rejects })}</Badge>
         )}
       </div>
       {task.failure_reason && (
@@ -370,8 +370,23 @@ function TaskStatusDetail({ task }: { task: ProjectReportTask }) {
 }
 
 export function ProjectReport({ projectId }: { projectId: string }) {
+  const { t } = useT("projects");
   const wsId = useWorkspaceId();
   const { data, isLoading, isError } = useQuery(projectReportOptions(wsId, projectId));
+  const groupLabels: Record<ExecutionGroupBy, string> = {
+    task: t(($) => $.project_report.group_task_issue),
+    agent: t(($) => $.project_report.group_agent),
+    runtime: t(($) => $.project_report.group_runtime),
+    status: t(($) => $.project_report.group_status),
+    stage: t(($) => $.project_report.group_stage),
+    plane: t(($) => $.project_report.group_plane),
+    category: t(($) => $.project_report.group_category),
+    none: t(($) => $.project_report.group_none),
+  };
+  const executionGroupOptions = EXECUTION_GROUP_VALUES.map((value) => ({
+    value,
+    label: groupLabels[value],
+  }));
 
   const [executionGroupBy, setExecutionGroupBy] = useState<ExecutionGroupBy>("task");
   const [expandedExecutionGroups, setExpandedExecutionGroups] = useState<Set<string>>(
@@ -426,7 +441,7 @@ export function ProjectReport({ projectId }: { projectId: string }) {
   if (isError || !data) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
-        Project report could not be loaded.
+        {t(($) => $.project_report.load_error)}
       </div>
     );
   }
@@ -440,86 +455,86 @@ export function ProjectReport({ projectId }: { projectId: string }) {
           <div>
             <div className="flex items-center gap-2">
               <BarChart3 className="size-5 text-muted-foreground" />
-              <h2 className="text-lg font-semibold tracking-tight">Project report</h2>
+              <h2 className="text-lg font-semibold tracking-tight">{t(($) => $.project_report.title)}</h2>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              Live delivery telemetry from durable task, workflow, runtime, usage and quality-gate records.
+              {t(($) => $.project_report.description)}
             </p>
           </div>
           <p className="text-xs text-muted-foreground">
-            Snapshot {formatTime(data.generated_at)} · refreshes every 10s
+            {t(($) => $.project_report.snapshot, { time: formatTime(data.generated_at) })}
           </p>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard
-            label="Tasks"
+            label={t(($) => $.project_report.tasks)}
             value={summary.task_count.toLocaleString()}
-            detail={`${summary.completed_tasks} completed · ${summary.active_tasks} active`}
+            detail={t(($) => $.project_report.tasks_detail, { completed: summary.completed_tasks, active: summary.active_tasks })}
             icon={<Activity className="size-4" />}
           />
           <MetricCard
-            label="Elapsed"
+            label={t(($) => $.project_report.elapsed)}
             value={formatDuration(summary.elapsed_seconds)}
-            detail={`${formatDuration(summary.total_runtime_seconds)} cumulative agent time`}
+            detail={t(($) => $.project_report.cumulative_agent_time, { duration: formatDuration(summary.total_runtime_seconds) })}
             icon={<Clock3 className="size-4" />}
           />
           <MetricCard
-            label="Tokens burned"
+            label={t(($) => $.project_report.tokens_burned)}
             value={formatTokens(summary.total_tokens)}
-            detail={`${formatTokens(summary.input_tokens)} in · ${formatTokens(summary.output_tokens)} out`}
+            detail={t(($) => $.project_report.token_directions, { input: formatTokens(summary.input_tokens), output: formatTokens(summary.output_tokens) })}
             icon={<Gauge className="size-4" />}
           />
           <MetricCard
-            label="Provider cost"
+            label={t(($) => $.project_report.provider_cost)}
             value={
               summary.costed_usage_rows > 0
                 ? formatCostTicks(summary.authoritative_cost_usd_ticks)
                 : "—"
             }
-            detail={`${formatPercent(costCoverage)} of usage rows have authoritative cost`}
+            detail={t(($) => $.project_report.cost_coverage, { coverage: formatPercent(costCoverage) })}
             icon={<Coins className="size-4" />}
           />
           <MetricCard
-            label="Execution plane"
+            label={t(($) => $.project_report.execution_plane)}
             value={formatTokens(summary.execution_plane_tokens)}
-            detail={`${formatDuration(summary.execution_plane_runtime_seconds)} runtime · ${summary.execution_plane_cost_usd_ticks ? formatCostTicks(summary.execution_plane_cost_usd_ticks) : "—"} cost`}
+            detail={t(($) => $.project_report.plane_runtime_cost, { runtime: formatDuration(summary.execution_plane_runtime_seconds), cost: summary.execution_plane_cost_usd_ticks ? formatCostTicks(summary.execution_plane_cost_usd_ticks) : "—" })}
             icon={<Terminal className="size-4" />}
           />
           <MetricCard
-            label="Control plane"
+            label={t(($) => $.project_report.control_plane)}
             value={formatTokens(summary.control_plane_tokens)}
-            detail={`${formatDuration(summary.control_plane_runtime_seconds)} runtime · ${summary.control_plane_cost_usd_ticks ? formatCostTicks(summary.control_plane_cost_usd_ticks) : "—"} cost`}
+            detail={t(($) => $.project_report.plane_runtime_cost, { runtime: formatDuration(summary.control_plane_runtime_seconds), cost: summary.control_plane_cost_usd_ticks ? formatCostTicks(summary.control_plane_cost_usd_ticks) : "—" })}
             icon={<Bot className="size-4" />}
           />
           <MetricCard
-            label="Brain usage"
+            label={t(($) => $.project_report.brain_usage)}
             value={formatTokens(summary.brain_learning_tokens)}
-            detail={`${formatTokens(summary.brain_context_tokens)} context tokens injected${summary.brain_context_estimated ? " (estimated segment)" : ""}`}
+            detail={`${t(($) => $.project_report.context_tokens_injected, { tokens: formatTokens(summary.brain_context_tokens) })}${summary.brain_context_estimated ? t(($) => $.project_report.estimated_segment) : ""}`}
             icon={<Gauge className="size-4" />}
           />
           <MetricCard
-            label="Review rejects"
+            label={t(($) => $.project_report.review_rejects)}
             value={summary.review_rejects.toLocaleString()}
-            detail={`${summary.review_cycles} review cycles across ${summary.reviewed_issues} issues`}
+            detail={t(($) => $.project_report.review_cycles, { cycles: summary.review_cycles, issues: summary.reviewed_issues })}
             icon={<RotateCcw className="size-4" />}
           />
           <MetricCard
-            label="First-pass approval"
+            label={t(($) => $.project_report.first_pass_approval)}
             value={formatPercent(summary.first_pass_approval_rate)}
-            detail={`${summary.first_pass_approved_issues}/${summary.approved_issues} approved without rework`}
+            detail={t(($) => $.project_report.first_pass_approved, { approved: summary.first_pass_approved_issues, total: summary.approved_issues })}
             icon={<CheckCircle2 className="size-4" />}
           />
           <MetricCard
-            label="Failure rate"
+            label={t(($) => $.project_report.failure_rate)}
             value={formatPercent(failureRate)}
-            detail={`${summary.failed_tasks} failed · ${summary.cancelled_tasks} cancelled`}
+            detail={t(($) => $.project_report.failed_cancelled, { failed: summary.failed_tasks, cancelled: summary.cancelled_tasks })}
             icon={<XCircle className="size-4" />}
           />
           <MetricCard
-            label="Quality gates"
+            label={t(($) => $.project_report.quality_gates)}
             value={summary.quality_gate_total ? formatPercent(summary.quality_gate_pass_rate) : "—"}
-            detail={`${summary.quality_gate_passed}/${summary.quality_gate_total} required gates passed · ${summary.blocked_workflows} blocked workflows`}
+            detail={t(($) => $.project_report.quality_detail, { passed: summary.quality_gate_passed, total: summary.quality_gate_total, blocked: summary.blocked_workflows })}
             icon={<ShieldCheck className="size-4" />}
           />
         </div>
@@ -527,25 +542,25 @@ export function ProjectReport({ projectId }: { projectId: string }) {
         <div className="grid gap-4 xl:grid-cols-3">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Execution latency</CardTitle>
-              <CardDescription>Queue and run-time distribution for completed work.</CardDescription>
+              <CardTitle className="text-sm">{t(($) => $.project_report.execution_latency_title)}</CardTitle>
+              <CardDescription>{t(($) => $.project_report.execution_latency_description)}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex items-center justify-between gap-4 rounded-md border p-3">
                 <div className="flex items-center gap-2 text-sm">
-                  <TimerReset className="size-4 text-muted-foreground" /> Average queue
+                  <TimerReset className="size-4 text-muted-foreground" /> {t(($) => $.project_report.average_queue)}
                 </div>
                 <span className="font-medium">{formatDuration(summary.average_queue_seconds)}</span>
               </div>
               <div className="flex items-center justify-between gap-4 rounded-md border p-3">
                 <div className="flex items-center gap-2 text-sm">
-                  <Clock3 className="size-4 text-muted-foreground" /> Average run
+                  <Clock3 className="size-4 text-muted-foreground" /> {t(($) => $.project_report.average_run)}
                 </div>
                 <span className="font-medium">{formatDuration(summary.average_runtime_seconds)}</span>
               </div>
               <div className="flex items-center justify-between gap-4 rounded-md border p-3">
                 <div className="flex items-center gap-2 text-sm">
-                  <Gauge className="size-4 text-muted-foreground" /> P95 run
+                  <Gauge className="size-4 text-muted-foreground" /> {t(($) => $.project_report.p95_run)}
                 </div>
                 <span className="font-medium">{formatDuration(summary.p95_runtime_seconds)}</span>
               </div>
@@ -554,12 +569,12 @@ export function ProjectReport({ projectId }: { projectId: string }) {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm">CLI / runtime mix</CardTitle>
-              <CardDescription>Which execution runtime actually performed project work.</CardDescription>
+              <CardTitle className="text-sm">{t(($) => $.project_report.runtime_mix_title)}</CardTitle>
+              <CardDescription>{t(($) => $.project_report.runtime_mix_description)}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
               {data.runtimes.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No runtime-backed tasks yet.</p>
+                <p className="text-sm text-muted-foreground">{t(($) => $.project_report.no_runtime_tasks)}</p>
               ) : (
                 data.runtimes.slice(0, 8).map((runtime) => (
                   <div key={`${runtime.provider}:${runtime.runtime_name}:${runtime.runtime_mode}`} className="rounded-md border p-3">
@@ -574,8 +589,8 @@ export function ProjectReport({ projectId }: { projectId: string }) {
                         </p>
                       </div>
                       <div className="text-right text-xs">
-                        <p className="font-medium">{runtime.task_count} tasks</p>
-                        <p className="text-muted-foreground">{formatTokens(runtime.total_tokens)} tokens</p>
+                        <p className="font-medium">{runtime.task_count} {t(($) => $.project_report.task_count_suffix)}</p>
+                        <p className="text-muted-foreground">{formatTokens(runtime.total_tokens)} {t(($) => $.project_report.token_count_suffix)}</p>
                       </div>
                     </div>
                   </div>
@@ -586,8 +601,8 @@ export function ProjectReport({ projectId }: { projectId: string }) {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Recent throughput</CardTitle>
-              <CardDescription>Daily task volume with token intensity, newest first.</CardDescription>
+              <CardTitle className="text-sm">{t(($) => $.project_report.recent_throughput_title)}</CardTitle>
+              <CardDescription>{t(($) => $.project_report.recent_throughput_description)}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
               {data.daily.slice(0, 14).map((day) => (
@@ -595,7 +610,7 @@ export function ProjectReport({ projectId }: { projectId: string }) {
                   <div className="flex items-center justify-between gap-3 text-xs">
                     <span>{day.date}</span>
                     <span className="text-muted-foreground">
-                      {day.completed_tasks}/{day.task_count} done · {formatTokens(day.total_tokens)} tokens
+                      {t(($) => $.project_report.daily_summary, { completed: day.completed_tasks, total: day.task_count, tokens: formatTokens(day.total_tokens) })}
                     </span>
                   </div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-muted">
@@ -607,7 +622,7 @@ export function ProjectReport({ projectId }: { projectId: string }) {
                 </div>
               ))}
               {data.daily.length === 0 && (
-                <p className="text-sm text-muted-foreground">No completed project activity yet.</p>
+                <p className="text-sm text-muted-foreground">{t(($) => $.project_report.no_completed_activity)}</p>
               )}
             </CardContent>
           </Card>
@@ -615,24 +630,24 @@ export function ProjectReport({ projectId }: { projectId: string }) {
 
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm">Usage attribution</CardTitle>
+            <CardTitle className="text-sm">{t(($) => $.project_report.usage_title)}</CardTitle>
             <CardDescription>
-              Authoritative provider usage grouped by execution/control plane and durable accounting category.
+              {t(($) => $.project_report.usage_description)}
             </CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto p-0">
             <table className="w-full min-w-[900px] text-sm">
               <thead className="border-y bg-muted/30 text-left text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-4 py-2 font-medium">Plane</th>
-                  <th className="px-4 py-2 font-medium">Category</th>
-                  <th className="px-4 py-2 font-medium">Tasks</th>
-                  <th className="px-4 py-2 font-medium">Input</th>
-                  <th className="px-4 py-2 font-medium">Output</th>
-                  <th className="px-4 py-2 font-medium">Cache R/W</th>
-                  <th className="px-4 py-2 font-medium">Runtime</th>
-                  <th className="px-4 py-2 font-medium">Cost</th>
-                  <th className="px-4 py-2 font-medium">Brain context</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.plane)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.category)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.tasks)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.input)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.output)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.cache_rw)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.runtime)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.cost)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.brain_context)}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -649,7 +664,7 @@ export function ProjectReport({ projectId }: { projectId: string }) {
                     <td className="px-4 py-3">
                       {bucket.brain_context_tokens ? formatTokens(bucket.brain_context_tokens) : "—"}
                       {bucket.brain_context_tokens > 0 && bucket.brain_context_estimated && (
-                        <span className="ml-1 text-[11px] text-muted-foreground">est.</span>
+                        <span className="ml-1 text-[11px] text-muted-foreground">{t(($) => $.project_report.estimated)}</span>
                       )}
                     </td>
                   </tr>
@@ -657,7 +672,7 @@ export function ProjectReport({ projectId }: { projectId: string }) {
                 {data.usage.length === 0 && (
                   <tr>
                     <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
-                      No attributed project usage yet.
+                      {t(($) => $.project_report.no_attributed_usage)}
                     </td>
                   </tr>
                 )}
@@ -669,23 +684,23 @@ export function ProjectReport({ projectId }: { projectId: string }) {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-sm">
-              <Bot className="size-4 text-muted-foreground" /> Agent performance
+              <Bot className="size-4 text-muted-foreground" /> {t(($) => $.project_report.agent_performance_title)}
             </CardTitle>
             <CardDescription>
-              Work volume, failures, run time and token consumption by agent.
+              {t(($) => $.project_report.agent_performance_description)}
             </CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto p-0">
             <table className="w-full min-w-[760px] text-sm">
               <thead className="border-y bg-muted/30 text-left text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-4 py-2 font-medium">Agent</th>
-                  <th className="px-4 py-2 font-medium">Tasks</th>
-                  <th className="px-4 py-2 font-medium">Failed</th>
-                  <th className="px-4 py-2 font-medium">Avg run</th>
-                  <th className="px-4 py-2 font-medium">Total run</th>
-                  <th className="px-4 py-2 font-medium">Tokens</th>
-                  <th className="px-4 py-2 font-medium">Provider cost</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.agent)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.tasks)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.failed)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.average_run)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.total_run)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.tokens_burned)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.provider_cost)}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -703,7 +718,7 @@ export function ProjectReport({ projectId }: { projectId: string }) {
                 {data.agents.length === 0 && (
                   <tr>
                     <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
-                      No agent execution records yet.
+                      {t(($) => $.project_report.no_agent_records)}
                     </td>
                   </tr>
                 )}
@@ -717,16 +732,16 @@ export function ProjectReport({ projectId }: { projectId: string }) {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <CardTitle className="flex items-center gap-2 text-sm">
-                  <Terminal className="size-4 text-muted-foreground" /> Execution log
+                  <Terminal className="size-4 text-muted-foreground" /> {t(($) => $.project_report.execution_log_title)}
                 </CardTitle>
                 <CardDescription className="mt-1">
-                  Durable execution telemetry. Group rows aggregate executions without hiding the underlying attempts.
+                  {t(($) => $.project_report.execution_log_description)}
                 </CardDescription>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">Group by</span>
+                <span className="text-xs text-muted-foreground">{t(($) => $.project_report.group_by)}</span>
                 <Select
-                  items={EXECUTION_GROUP_OPTIONS}
+                  items={executionGroupOptions}
                   value={executionGroupBy}
                   onValueChange={(next) => {
                     if (next) changeExecutionGroup(next as ExecutionGroupBy);
@@ -734,11 +749,11 @@ export function ProjectReport({ projectId }: { projectId: string }) {
                 >
                   <SelectTrigger size="sm" className="min-w-36">
                     <SelectValue>
-                      {EXECUTION_GROUP_OPTIONS.find((item) => item.value === executionGroupBy)?.label}
+                      {executionGroupOptions.find((item) => item.value === executionGroupBy)?.label}
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent align="end">
-                    {EXECUTION_GROUP_OPTIONS.map((item) => (
+                    {executionGroupOptions.map((item) => (
                       <SelectItem key={item.value} value={item.value}>
                         {item.label}
                       </SelectItem>
@@ -748,26 +763,26 @@ export function ProjectReport({ projectId }: { projectId: string }) {
               </div>
             </div>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span>{data.tasks.length} execution records</span>
-              {executionGroupBy !== "none" && <span>{groupedExecutions.length} groups</span>}
-              <span>{summary.usage_accounted_tasks} tasks have durable project usage attribution.</span>
-              <span>Review rejects come from structured <code>review.changes_requested</code> verdict events.</span>
+              <span>{t(($) => $.project_report.execution_records, { count: data.tasks.length })}</span>
+              {executionGroupBy !== "none" && <span>{t(($) => $.project_report.groups, { count: groupedExecutions.length })}</span>}
+              <span>{t(($) => $.project_report.usage_attribution_note, { count: summary.usage_accounted_tasks })}</span>
+              <span>{t(($) => $.project_report.review_reject_note, { event: "review.changes_requested" })}</span>
             </div>
           </CardHeader>
           <CardContent className="overflow-x-auto p-0">
             <table className="w-full min-w-[1320px] text-sm">
               <thead className="border-y bg-muted/30 text-left text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-4 py-2 font-medium">{executionGroupBy === "none" ? "Issue / task" : "Group"}</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2 font-medium">Agent</th>
-                  <th className="px-4 py-2 font-medium">CLI / runtime</th>
-                  <th className="px-4 py-2 font-medium">Model</th>
-                  <th className="px-4 py-2 font-medium">Queue</th>
-                  <th className="px-4 py-2 font-medium">Run</th>
-                  <th className="px-4 py-2 font-medium">Tokens</th>
-                  <th className="px-4 py-2 font-medium">Cost</th>
-                  <th className="px-4 py-2 font-medium">Completed</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => executionGroupBy === "none" ? $.project_report.issue_task : $.project_report.group)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.status)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.agent)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.cli_runtime)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.model)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.queue)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.run)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.tokens_burned)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.cost)}</th>
+                  <th className="px-4 py-2 font-medium">{t(($) => $.project_report.completed)}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -793,7 +808,7 @@ export function ProjectReport({ projectId }: { projectId: string }) {
                 {data.tasks.length === 0 && (
                   <tr>
                     <td colSpan={10} className="px-4 py-10 text-center text-muted-foreground">
-                      No task execution records for this project yet.
+                      {t(($) => $.project_report.no_task_records)}
                     </td>
                   </tr>
                 )}
@@ -802,7 +817,7 @@ export function ProjectReport({ projectId }: { projectId: string }) {
           </CardContent>
           {data.task_truncated && (
             <div className="border-t px-4 py-3 text-xs text-muted-foreground">
-              Showing the newest {data.task_limit} task records out of {summary.task_count}. Summary metrics include the full project.
+              {t(($) => $.project_report.truncated_records, { limit: data.task_limit, total: summary.task_count })}
             </div>
           )}
         </Card>

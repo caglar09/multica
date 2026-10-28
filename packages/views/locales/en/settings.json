@@ -183,7 +183,9 @@
       "quick": "Create with agent",
       "manual": "Manual create",
       "unsupported": "Not available when creating with an agent"
-    }
+    },
+    "device_hint": "These preferences apply to this device only.",
+    "issue_scope": "Choose which fields appear on each issue creation toolbar."
   },
   "shortcuts": {
     "title": "Keyboard Shortcuts",
@@ -319,7 +321,8 @@
   },
   "chat": {
     "floating_label": "Floating chat window",
-    "floating_hint": "Show the floating chat button on every page."
+    "floating_hint": "Show the floating chat button on every page.",
+    "floating_title": "Floating chat window"
   },
   "issue": {
     "opening": {
@@ -338,7 +341,11 @@
       "project": "Project",
       "due_date": "Due date",
       "start_date": "Start date"
-    }
+    },
+    "quick_create_title": "Create with agent",
+    "quick_create_description": "Fields shown on the toolbar when creating with an agent.",
+    "manual_create_title": "Manual issue creation",
+    "manual_create_description": "Fields shown on the manual creation toolbar."
   },
   "mcp": {
     "description": "After adding a server, assign it from an agent's MCP tab.",

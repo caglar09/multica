@@ -644,6 +644,15 @@ describe("TabBar locale", () => {
       newTab: "Nouvel onglet",
       pinned: "Issues (épinglé)",
     },
+    tr: {
+      pin: "Sekmeyi sabitle",
+      unpin: "Sabitlemeyi kaldır",
+      close: "Sekmeyi kapat",
+      closeOthers: "Diğer sekmeleri kapat",
+      openWindow: "Yeni pencerede aç",
+      newTab: "Yeni sekme",
+      pinned: "Issues (sabitlenmiş)",
+    },
   } as const satisfies Record<
     Exclude<SupportedLocale, "en">,
     {

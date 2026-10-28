@@ -532,7 +532,7 @@ func jsonHasKey(raw json.RawMessage, wanted string) bool {
 }
 
 func (h *Handler) ListDeploymentConnections(w http.ResponseWriter, r *http.Request) {
-	workspaceID, ok := h.deploymentWorkspace(w, r, true)
+	workspaceID, ok := h.deploymentWorkspace(w, r, false)
 	if !ok {
 		return
 	}
@@ -626,7 +626,7 @@ func (h *Handler) CreateDeploymentConnection(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) GetDeploymentConnection(w http.ResponseWriter, r *http.Request) {
-	workspaceID, ok := h.deploymentWorkspace(w, r, true)
+	workspaceID, ok := h.deploymentWorkspace(w, r, false)
 	if !ok {
 		return
 	}
@@ -693,7 +693,7 @@ func (h *Handler) DeleteDeploymentConnection(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) ListDeploymentProviderTargets(w http.ResponseWriter, r *http.Request) {
-	workspaceID, ok := h.deploymentWorkspace(w, r, true)
+	workspaceID, ok := h.deploymentWorkspace(w, r, false)
 	if !ok {
 		return
 	}
@@ -1592,16 +1592,7 @@ func (h *Handler) HandleDeploymentWebhook(w http.ResponseWriter, r *http.Request
 		Repository: h.deploymentRepository(),
 		Providers:  h.deploymentRegistry(),
 		Find: func(ctx context.Context, wsID, providerName, provOpID string) (deployment.Operation, error) {
-			ops, err := h.deploymentRepository().ListOperations(ctx, wsID, "")
-			if err != nil {
-				return deployment.Operation{}, err
-			}
-			for _, op := range ops {
-				if op.ProviderOperationID != nil && *op.ProviderOperationID == provOpID {
-					return op, nil
-				}
-			}
-			return deployment.Operation{}, deployment.ErrNotFound
+			return h.deploymentRepository().GetOperationByProviderOperation(ctx, wsID, provOpID)
 		},
 	}
 
