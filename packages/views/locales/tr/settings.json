@@ -258,7 +258,8 @@
     "running_agent_reply": {
       "title": "Çalışan bir ajana yanıt verirken",
       "hint": "Yalnızca varsayılanı belirler. Göndermeden önce her mesaj için değiştirebilirsiniz.",
-      "steer": "Mevcut çalıştırmaya ekle"
+      "steer": "Mevcut çalıştırmaya ekle",
+      "after_run": "Bu çalıştırma bittikten sonra başlat"
     },
     "issue_fields_title": "Görev oluştururken gösterilen alanlar",
     "issue_fields": {
