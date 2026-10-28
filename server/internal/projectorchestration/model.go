@@ -11,20 +11,20 @@ const CurrentPlanVersion = 1
 type NodeKind string
 
 const (
-	NodeResearch      NodeKind = "research"
-	NodeProduct       NodeKind = "product"
-	NodeArchitecture  NodeKind = "architecture"
-	NodeDesign        NodeKind = "design"
+	NodeResearch       NodeKind = "research"
+	NodeProduct        NodeKind = "product"
+	NodeArchitecture   NodeKind = "architecture"
+	NodeDesign         NodeKind = "design"
 	NodeImplementation NodeKind = "implementation"
-	NodeMigration     NodeKind = "migration"
-	NodeIntegration   NodeKind = "integration"
-	NodeReview        NodeKind = "review"
-	NodeQA            NodeKind = "qa"
-	NodeSecurity      NodeKind = "security"
-	NodeRelease       NodeKind = "release"
-	NodeDeploy        NodeKind = "deploy"
-	NodeObserve       NodeKind = "observe"
-	NodeIncident      NodeKind = "incident"
+	NodeMigration      NodeKind = "migration"
+	NodeIntegration    NodeKind = "integration"
+	NodeReview         NodeKind = "review"
+	NodeQA             NodeKind = "qa"
+	NodeSecurity       NodeKind = "security"
+	NodeRelease        NodeKind = "release"
+	NodeDeploy         NodeKind = "deploy"
+	NodeObserve        NodeKind = "observe"
+	NodeIncident       NodeKind = "incident"
 )
 
 type RiskLevel string
@@ -62,10 +62,10 @@ const (
 )
 
 type ApprovalPolicy struct {
-	DatabaseMigration   bool `json:"database_migration"`
-	ProductionDeploy    bool `json:"production_deploy"`
-	MajorDependency     bool `json:"major_dependency"`
-	CriticalRisk        bool `json:"critical_risk"`
+	DatabaseMigration bool `json:"database_migration"`
+	ProductionDeploy  bool `json:"production_deploy"`
+	MajorDependency   bool `json:"major_dependency"`
+	CriticalRisk      bool `json:"critical_risk"`
 }
 
 type BudgetPolicy struct {
@@ -77,23 +77,27 @@ type BudgetPolicy struct {
 }
 
 type Policy struct {
-	Autonomy       AutonomyLevel  `json:"autonomy"`
-	Runtime        RuntimePolicy  `json:"runtime_policy"`
+	Autonomy        AutonomyLevel  `json:"autonomy"`
+	Runtime         RuntimePolicy  `json:"runtime_policy"`
 	SkillsAutomatic bool           `json:"skills_automatic"`
-	Approvals      ApprovalPolicy `json:"approvals"`
-	Budget         BudgetPolicy   `json:"budget"`
+	Approvals       ApprovalPolicy `json:"approvals"`
+	Budget          BudgetPolicy   `json:"budget"`
 }
 
 type Specification struct {
-	Summary                   string   `json:"summary"`
-	Requirements              []string `json:"requirements"`
-	NonFunctionalRequirements []string `json:"non_functional_requirements"`
-	Constraints               []string `json:"constraints"`
-	DefinitionOfDone          []string `json:"definition_of_done"`
+	Summary                   string                     `json:"summary"`
+	Requirements              []string                   `json:"requirements"`
+	NonFunctionalRequirements []string                   `json:"non_functional_requirements"`
+	Constraints               []string                   `json:"constraints"`
+	DefinitionOfDone          []string                   `json:"definition_of_done"`
+	RequirementDetails        []SpecificationRequirement `json:"requirement_details,omitempty"`
+	NonGoals                  []string                   `json:"non_goals,omitempty"`
+	AcceptanceExpectations    []string                   `json:"acceptance_expectations,omitempty"`
 }
 
 type NodeSpec struct {
 	Key                  string    `json:"key"`
+	RequirementIDs       []string  `json:"requirement_ids,omitempty"`
 	Kind                 NodeKind  `json:"kind"`
 	Title                string    `json:"title"`
 	Description          string    `json:"description"`
@@ -113,12 +117,13 @@ type EdgeSpec struct {
 }
 
 type Plan struct {
-	Version       int           `json:"version"`
-	Goal          string        `json:"goal"`
-	Specification Specification `json:"specification"`
-	Policy        Policy        `json:"policy"`
-	Nodes         []NodeSpec    `json:"nodes"`
-	Edges         []EdgeSpec    `json:"edges"`
+	Version                 int           `json:"version"`
+	Goal                    string        `json:"goal"`
+	Specification           Specification `json:"specification"`
+	Policy                  Policy        `json:"policy"`
+	Nodes                   []NodeSpec    `json:"nodes"`
+	Edges                   []EdgeSpec    `json:"edges"`
+	SpecificationRevisionID string        `json:"specification_revision_id,omitempty"`
 }
 
 type StoredPlan struct {
@@ -136,25 +141,25 @@ type StoredPlan struct {
 }
 
 type NodeState struct {
-	ID                  string
-	PlanID              string
-	Key                 string
-	Kind                NodeKind
-	Status              string
-	Priority            int
-	Risk                RiskLevel
-	RequiredRoleFamily  string
+	ID                   string
+	PlanID               string
+	Key                  string
+	Kind                 NodeKind
+	Status               string
+	Priority             int
+	Risk                 RiskLevel
+	RequiredRoleFamily   string
 	RequiredCapabilities []string
-	AcceptanceCriteria  []string
-	AssignedRole        string
-	AssignedAgentID     string
-	MaterializedIssueID string
-	Attempt             int
-	MaxAttempts         int
-	BlockedReason       string
-	ReadyAt             *time.Time
-	StartedAt           *time.Time
-	CompletedAt         *time.Time
+	AcceptanceCriteria   []string
+	AssignedRole         string
+	AssignedAgentID      string
+	MaterializedIssueID  string
+	Attempt              int
+	MaxAttempts          int
+	BlockedReason        string
+	ReadyAt              *time.Time
+	StartedAt            *time.Time
+	CompletedAt          *time.Time
 }
 
 type ReadyNode struct {

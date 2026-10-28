@@ -25,6 +25,91 @@ describe("ApiClient status reorder", () => {
   });
 });
 
+describe("ApiClient autonomous project cancellation", () => {
+  it("posts the cancellation request and fails closed on a malformed response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      cancelled: "yes",
+      cancelled_issues: "many",
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    const result = await client.cancelProjectAutonomous("project-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/projects/project-1/autonomous/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result).toEqual({ cancelled: false });
+  });
+});
+
+describe("ApiClient autonomous project control snapshot", () => {
+  it("normalizes cancellation state from older and malformed responses", async () => {
+    const responseForControl = (control: unknown) => new Response(
+      JSON.stringify({ enabled: true, control }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(responseForControl({ paused: true }))
+      .mockResolvedValueOnce(responseForControl({ paused: "true", cancelled_at: 42 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    const legacy = await client.getProjectAutonomous("project-1");
+    const malformed = await client.getProjectAutonomous("project-2");
+
+    expect(legacy.control).toMatchObject({ paused: true, cancelled_at: null });
+    expect(malformed.control).toMatchObject({ paused: false, cancelled_at: null });
+  });
+
+  it("parses the displayed plan digest and binds approval to that digest", async () => {
+    const digest = "sha256:9b2f9f2f";
+    const response = (payload: unknown) => new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({
+        enabled: true,
+        plan: {
+          id: "plan-1",
+          revision: 3,
+          goal: "Ship the feature",
+          status: "awaiting_approval",
+          plan_digest: digest,
+          nodes: [],
+          edges: [],
+        },
+      }))
+      .mockResolvedValueOnce(response({
+        approved: true,
+        plan_digest: digest,
+        status: "active",
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    const snapshot = await client.getProjectAutonomous("project-1");
+    expect(snapshot.plan?.plan_digest).toBe(digest);
+    expect(snapshot.plan?.status).toBe("awaiting_approval");
+
+    const approval = await client.approveProjectAutonomousPlan("project-1", digest);
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.test/api/projects/project-1/autonomous/plan/approve",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ plan_digest: digest }),
+      }),
+    );
+    expect(approval).toEqual({ approved: true, plan_digest: digest, status: "active" });
+  });
+});
+
 describe("ApiClient agent conversation-starter compatibility", () => {
   const prompt = {
     label: "Review a PR",

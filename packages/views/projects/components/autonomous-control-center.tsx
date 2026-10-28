@@ -44,6 +44,7 @@ import {
   useResumeAutonomousProject,
   useRetryAutonomousAction,
   useUpdateAutonomousBrain,
+  useApproveAutonomousProjectPlan,
   useResolveAutonomousEscalation,
   projectLeaderChatOptions,
   projectLeaderChangesOptions,
@@ -74,6 +75,7 @@ import { useNavigation } from "../../navigation";
 import { CreateSkillDialog } from "../../skills/components/create-skill-dialog";
 import { useT } from "../../i18n";
 import { ProjectManagerHub } from "./project-manager-hub";
+import { AutonomousPlanApprovalCard } from "./autonomous-plan-approval-card";
 
 function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -1502,6 +1504,7 @@ export function AutonomousControlCenter({
   const retryAction = useRetryAutonomousAction();
   const rerunIssue = useRerunAutonomousIssue();
   const resolveEscalation = useResolveAutonomousEscalation();
+  const approvePlan = useApproveAutonomousProjectPlan();
   const updateBrain = useUpdateAutonomousBrain();
   const leaderChat = useQuery({
     ...projectLeaderChatOptions(wsId, projectId),
@@ -1616,6 +1619,20 @@ export function AutonomousControlCenter({
       onError: (error) =>
         toast.error(clientErrorMessage(error) ?? "Could not request team replan"),
     });
+  };
+
+  const handleApprovePlan = () => {
+    const plan = data.plan;
+    if (!plan?.plan_digest || plan.status !== "awaiting_approval") return;
+    approvePlan.mutate(
+      { projectId, planDigest: plan.plan_digest },
+      {
+        onSuccess: () =>
+          toast.success(t(($) => $.plan_approval.approve_success)),
+        onError: () =>
+          toast.error(t(($) => $.plan_approval.approve_error)),
+      },
+    );
   };
 
   const handleRestartWorkflow = () => {
@@ -2129,6 +2146,29 @@ export function AutonomousControlCenter({
           <TabsContent value="plan" className="space-y-4">
             {data.plan ? (
               <>
+                {data.plan.plan_digest ||
+                data.plan.status === "awaiting_approval" ? (
+                  <AutonomousPlanApprovalCard
+                    plan={data.plan}
+                    canControl={canControl}
+                    isPending={approvePlan.isPending}
+                    onApprove={handleApprovePlan}
+                    labels={{
+                      title: t(($) => $.plan_approval.title),
+                      pendingDescription: t(
+                        ($) => $.plan_approval.pending_description,
+                      ),
+                      approvedDescription: t(
+                        ($) => $.plan_approval.approved_description,
+                      ),
+                      digest: t(($) => $.plan_approval.digest),
+                      digestMissing: t(($) => $.plan_approval.digest_missing),
+                      adminOnly: t(($) => $.plan_approval.admin_only),
+                      approve: t(($) => $.plan_approval.approve),
+                    }}
+                  />
+                ) : null}
+
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <MetricCard
                     title="Plan revision"

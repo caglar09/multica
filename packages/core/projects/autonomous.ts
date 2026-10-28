@@ -86,10 +86,31 @@ export function useResumeAutonomousProject() {
   );
 }
 
+export function useCancelAutonomousProject() {
+  return useAutonomousControlMutation((projectId) =>
+    api.cancelProjectAutonomous(projectId),
+  );
+}
+
 export function useReplanAutonomousProject() {
   return useAutonomousControlMutation((projectId) =>
     api.replanProjectAutonomous(projectId),
   );
+}
+
+export function useApproveAutonomousProjectPlan() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({ projectId, planDigest }: { projectId: string; planDigest: string }) =>
+      api.approveProjectAutonomousPlan(projectId, planDigest),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({
+        queryKey: autonomousProjectKeys.detail(wsId, vars.projectId),
+      });
+    },
+  });
 }
 
 export function useRestartAutonomousWorkflow() {

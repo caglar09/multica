@@ -28,7 +28,7 @@ var validDependencies = map[DependencyType]struct{}{
 var validArtifactTypes = map[string]struct{}{
 	"product_spec": {}, "architecture": {}, "api_contract": {}, "data_model": {},
 	"test_plan": {}, "implementation_handoff": {}, "review": {}, "security_review": {},
-	"qa_report": {}, "integration_report": {}, "release_manifest": {},
+	"qa_report": {}, "qa_handoff": {}, "integration_report": {}, "release_manifest": {},
 	"deployment_record": {}, "incident_report": {}, "postmortem": {}, "generic": {},
 }
 
@@ -168,6 +168,9 @@ func ValidatePlan(plan Plan, maxNodes int) error {
 	if err := validateLifecycle(plan); err != nil {
 		return err
 	}
+	if err := ValidateRequirementCoverage(plan); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidPlan, err)
+	}
 	return nil
 }
 
@@ -248,16 +251,16 @@ func EnsureLifecycle(plan Plan) Plan {
 				return
 			}
 			gate := NodeSpec{
-				Key: key,
-				Kind: kind,
-				Title: title + ": " + source.Title,
-				Description: "Backend-synthesized mandatory lifecycle gate for " + source.Key + ".",
-				Priority: source.Priority,
-				RequiredRoleFamily: family,
+				Key:                  key,
+				Kind:                 kind,
+				Title:                title + ": " + source.Title,
+				Description:          "Backend-synthesized mandatory lifecycle gate for " + source.Key + ".",
+				Priority:             source.Priority,
+				RequiredRoleFamily:   family,
 				RequiredCapabilities: []string{suffix},
-				AcceptanceCriteria: []string{criteria},
-				Risk: risk,
-				MaxAttempts: 3,
+				AcceptanceCriteria:   []string{criteria},
+				Risk:                 risk,
+				MaxAttempts:          3,
 			}
 			plan.Nodes = append(plan.Nodes, gate)
 			plan.Edges = append(plan.Edges, EdgeSpec{

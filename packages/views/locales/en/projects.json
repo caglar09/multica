@@ -259,6 +259,12 @@
     "pause_execution": "Pause Loop",
     "resume_execution": "Resume Loop",
     "replan_project": "Replan",
+    "cancel_execution": "Cancel execution",
+    "cancelled_status": "Permanently cancelled",
+    "cancel_dialog_title": "Cancel autonomous execution permanently?",
+    "cancel_dialog_description": "This stops active project tasks. Execution cannot be resumed or replanned afterward.",
+    "cancel_dialog_keep": "Keep running",
+    "cancel_dialog_confirm": "Cancel project permanently",
     "ask_pm": "Ask Project Manager",
     "health_running": "Autonomous Loop Active",
     "health_paused": "Execution Paused",
@@ -312,6 +318,8 @@
     "toast_pause_error": "Failed to pause execution",
     "toast_replan_success": "Replan requested successfully",
     "toast_replan_error": "Failed to request replan",
+    "toast_cancel_success": "Autonomous execution cancelled permanently",
+    "toast_cancel_error": "Failed to cancel autonomous execution",
     "bootstrapping_title": "Autonomous Squad Proposal",
     "bootstrapping_desc": "The planner has formulated a specialized squad for this project. Review and confirm to provision agents.",
     "bootstrapping_confirm_button": "Confirm & Launch Squad",
@@ -404,7 +412,10 @@
     "brain_settings_title": "Brain settings",
     "brain_settings_description": "Change the runtime and learning behavior when needed.",
     "toast_planning_started": "Approved task planning started",
-    "toast_planning_start_failed": "Failed to start approved task planning"
+    "toast_planning_start_failed": "Failed to start approved task planning",
+    "owner_unassigned": "Unassigned",
+    "pending_actions": "pending",
+    "failed_actions": "failed"
   },
   "deployments": {
     "title": "Deployments",
@@ -504,5 +515,16 @@
     "default_provider_name": "Vercel",
     "unlink_target": "Unlink target",
     "unlink_target_confirm": "Unlink this deployment target?"
+  },
+  "plan_approval": {
+    "title": "Plan approval",
+    "pending_description": "Review this exact plan revision before work starts.",
+    "approved_description": "This plan revision has an approval record.",
+    "digest": "Plan digest",
+    "digest_missing": "This plan has no digest and cannot be approved.",
+    "admin_only": "Only a workspace admin can approve this plan.",
+    "approve": "Approve this revision",
+    "approve_success": "Plan approved; eligible work can begin.",
+    "approve_error": "Could not approve this plan."
   }
 }

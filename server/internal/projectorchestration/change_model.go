@@ -63,6 +63,11 @@ type ProjectSpecification struct {
 	AcceptanceExpectations    []string                   `json:"acceptance_expectations"`
 }
 
+var (
+	ErrUncoveredRequirement       = errors.New("project plan has an uncovered specification requirement")
+	ErrInvalidRequirementCoverage = errors.New("invalid project plan requirement coverage")
+)
+
 func ValidateProjectSpecification(spec ProjectSpecification) error {
 	if strings.TrimSpace(spec.Goal) == "" {
 		return errors.New("project specification goal is required")
@@ -78,6 +83,9 @@ func ValidateProjectSpecification(spec ProjectSpecification) error {
 		id := strings.TrimSpace(req.ID)
 		if id == "" || strings.TrimSpace(req.Text) == "" || strings.TrimSpace(req.Rationale) == "" || strings.TrimSpace(req.Source) == "" {
 			return fmt.Errorf("project specification requirement %d requires id, text, rationale and source", i)
+		}
+		if id != req.ID {
+			return fmt.Errorf("project specification requirement %d has a non-canonical ID", i)
 		}
 		if _, ok := seen[id]; ok {
 			return fmt.Errorf("duplicate project specification requirement id %q", id)
@@ -98,12 +106,119 @@ func (s ProjectSpecification) LegacySpecification() Specification {
 		}
 	}
 	return Specification{
-		Summary: s.Summary,
-		Requirements: requirements,
+		Summary:                   s.Summary,
+		Requirements:              requirements,
 		NonFunctionalRequirements: append([]string(nil), s.NonFunctionalRequirements...),
-		Constraints: append([]string(nil), s.Constraints...),
-		DefinitionOfDone: append([]string(nil), s.DefinitionOfDone...),
+		Constraints:               append([]string(nil), s.Constraints...),
+		DefinitionOfDone:          append([]string(nil), s.DefinitionOfDone...),
+		RequirementDetails:        append([]SpecificationRequirement(nil), s.Requirements...),
+		NonGoals:                  append([]string(nil), s.NonGoals...),
+		AcceptanceExpectations:    append([]string(nil), s.AcceptanceExpectations...),
 	}
+}
+
+// ProjectSpecificationFromPlan converts an initial planner result into the
+// authoritative rich specification used by subsequent revisions. It refuses
+// to invent requirement identities when an older plan has only legacy text.
+func ProjectSpecificationFromPlan(plan Plan) (ProjectSpecification, error) {
+	spec := ProjectSpecification{
+		Goal:                      plan.Goal,
+		Summary:                   plan.Specification.Summary,
+		Requirements:              append([]SpecificationRequirement(nil), plan.Specification.RequirementDetails...),
+		NonFunctionalRequirements: append([]string(nil), plan.Specification.NonFunctionalRequirements...),
+		Constraints:               append([]string(nil), plan.Specification.Constraints...),
+		NonGoals:                  append([]string(nil), plan.Specification.NonGoals...),
+		DefinitionOfDone:          append([]string(nil), plan.Specification.DefinitionOfDone...),
+		AcceptanceExpectations:    append([]string(nil), plan.Specification.AcceptanceExpectations...),
+	}
+	if err := ValidateProjectSpecification(spec); err != nil {
+		return ProjectSpecification{}, err
+	}
+	if err := ValidateRequirementCoverage(plan); err != nil {
+		return ProjectSpecification{}, err
+	}
+	return spec, nil
+}
+
+// ValidateRequirementCoverage requires every rich specification requirement
+// to have implementation work and a separate review or QA node. Legacy plans
+// without requirement IDs remain readable; new plans receive the authoritative
+// rich specification before this check runs.
+func ValidateRequirementCoverage(plan Plan) error {
+	requirements := plan.Specification.RequirementDetails
+	if len(requirements) == 0 {
+		for _, node := range plan.Nodes {
+			if len(node.RequirementIDs) > 0 {
+				return fmt.Errorf("%w: node %q maps requirements without a rich specification", ErrInvalidRequirementCoverage, node.Key)
+			}
+		}
+		return nil
+	}
+
+	type coverage struct {
+		implementation bool
+		verification   bool
+	}
+
+	covered := make(map[string]coverage, len(requirements))
+	for i, requirement := range requirements {
+		id := strings.TrimSpace(requirement.ID)
+		if id == "" || id != requirement.ID {
+			return fmt.Errorf("%w: requirement %d has an empty or non-canonical ID", ErrInvalidRequirementCoverage, i)
+		}
+		if _, exists := covered[id]; exists {
+			return fmt.Errorf("%w: duplicate requirement ID %q", ErrInvalidRequirementCoverage, id)
+		}
+		if strings.TrimSpace(requirement.Text) == "" {
+			return fmt.Errorf("%w: requirement %q has no text", ErrInvalidRequirementCoverage, id)
+		}
+		covered[id] = coverage{}
+	}
+
+	if len(plan.Specification.Requirements) != len(requirements) {
+		return fmt.Errorf("%w: legacy requirement text does not match rich requirement details", ErrInvalidRequirementCoverage)
+	}
+	for i, requirement := range requirements {
+		if strings.TrimSpace(plan.Specification.Requirements[i]) != strings.TrimSpace(requirement.Text) {
+			return fmt.Errorf("%w: requirement text mismatch for %q", ErrInvalidRequirementCoverage, requirement.ID)
+		}
+	}
+
+	for _, node := range plan.Nodes {
+		seenNodeRequirements := make(map[string]struct{}, len(node.RequirementIDs))
+		for _, rawID := range node.RequirementIDs {
+			id := strings.TrimSpace(rawID)
+			if id == "" || id != rawID {
+				return fmt.Errorf("%w: node %q has an empty or non-canonical requirement ID", ErrInvalidRequirementCoverage, node.Key)
+			}
+			state, exists := covered[id]
+			if !exists {
+				return fmt.Errorf("%w: node %q references unknown requirement %q", ErrInvalidRequirementCoverage, node.Key, id)
+			}
+			if _, exists := seenNodeRequirements[id]; exists {
+				return fmt.Errorf("%w: node %q repeats requirement ID %q", ErrInvalidRequirementCoverage, node.Key, id)
+			}
+			seenNodeRequirements[id] = struct{}{}
+			switch node.Kind {
+			case NodeImplementation, NodeMigration:
+				state.implementation = true
+			case NodeReview, NodeQA:
+				state.verification = true
+			}
+			covered[id] = state
+		}
+	}
+
+	for _, requirement := range requirements {
+		state := covered[requirement.ID]
+		if !state.implementation {
+			return fmt.Errorf("%w: requirement %q has no implementation node", ErrUncoveredRequirement, requirement.ID)
+		}
+		if !state.verification {
+			return fmt.Errorf("%w: requirement %q has no independent review or QA node", ErrUncoveredRequirement, requirement.ID)
+		}
+	}
+	return nil
 }
 
 type PlanMutationOperationType string
@@ -151,7 +266,7 @@ func ApplyPlanMutation(current Plan, currentNodes []LogicalPlanNode, operations 
 		return PlanMutationResult{}, errors.New("plan mutation requires at least one operation")
 	}
 	plan := current
-	plan.Nodes = append([]NodeSpec(nil), current.Nodes...)
+	plan.Nodes = cloneNodeSpecs(current.Nodes)
 	plan.Edges = append([]EdgeSpec(nil), current.Edges...)
 	byID := map[string]LogicalPlanNode{}
 	byKey := map[string]string{}
@@ -161,6 +276,11 @@ func ApplyPlanMutation(current Plan, currentNodes []LogicalPlanNode, operations 
 		}
 		byID[node.LogicalNodeID] = node
 		byKey[node.Spec.Key] = node.LogicalNodeID
+		if idx := planNodeIndex(plan.Nodes, node.Spec.Key); idx >= 0 {
+			// The logical-node query is the source of truth for persisted metadata
+			// that may not yet be present in an older plan JSON snapshot.
+			plan.Nodes[idx] = cloneNodeSpec(node.Spec)
+		}
 	}
 	var removed []LogicalPlanNode
 	reset := map[string]struct{}{}
@@ -173,7 +293,7 @@ func ApplyPlanMutation(current Plan, currentNodes []LogicalPlanNode, operations 
 			if _, exists := byKey[op.Node.Key]; exists {
 				return PlanMutationResult{}, fmt.Errorf("ADD_NODE key %q already exists", op.Node.Key)
 			}
-			spec := *op.Node
+			spec := cloneNodeSpec(*op.Node)
 			id := uuid.NewString()
 			plan.Nodes = append(plan.Nodes, spec)
 			byID[id] = LogicalPlanNode{LogicalNodeID: id, Spec: spec, Status: "pending"}
@@ -194,47 +314,69 @@ func ApplyPlanMutation(current Plan, currentNodes []LogicalPlanNode, operations 
 				return PlanMutationResult{}, fmt.Errorf("UPDATE_NODE current key %q not found", prior.Spec.Key)
 			}
 			oldKey := prior.Spec.Key
-			prior.Spec = *op.Node
+			prior.Spec = cloneNodeSpec(*op.Node)
 			plan.Nodes[idx] = prior.Spec
 			if oldKey != prior.Spec.Key {
 				for j := range plan.Edges {
-					if plan.Edges[j].From == oldKey { plan.Edges[j].From = prior.Spec.Key }
-					if plan.Edges[j].To == oldKey { plan.Edges[j].To = prior.Spec.Key }
+					if plan.Edges[j].From == oldKey {
+						plan.Edges[j].From = prior.Spec.Key
+					}
+					if plan.Edges[j].To == oldKey {
+						plan.Edges[j].To = prior.Spec.Key
+					}
 				}
 				delete(byKey, oldKey)
 			}
 			byID[prior.LogicalNodeID] = prior
 			byKey[prior.Spec.Key] = prior.LogicalNodeID
-			if op.ResetExecution { reset[prior.LogicalNodeID] = struct{}{} }
+			if op.ResetExecution {
+				reset[prior.LogicalNodeID] = struct{}{}
+			}
 		case MutationRemoveNode:
 			prior, ok := byID[op.TargetLogicalNodeID]
 			if !ok || strings.TrimSpace(op.TargetLogicalNodeID) == "" {
 				return PlanMutationResult{}, fmt.Errorf("REMOVE_NODE target %q is unknown", op.TargetLogicalNodeID)
 			}
 			idx := planNodeIndex(plan.Nodes, prior.Spec.Key)
-			if idx < 0 { return PlanMutationResult{}, fmt.Errorf("REMOVE_NODE current key %q not found", prior.Spec.Key) }
+			if idx < 0 {
+				return PlanMutationResult{}, fmt.Errorf("REMOVE_NODE current key %q not found", prior.Spec.Key)
+			}
 			plan.Nodes = append(plan.Nodes[:idx], plan.Nodes[idx+1:]...)
 			edges := plan.Edges[:0]
 			for _, edge := range plan.Edges {
-				if edge.From != prior.Spec.Key && edge.To != prior.Spec.Key { edges = append(edges, edge) }
+				if edge.From != prior.Spec.Key && edge.To != prior.Spec.Key {
+					edges = append(edges, edge)
+				}
 			}
 			plan.Edges = edges
 			removed = append(removed, prior)
 			delete(byID, prior.LogicalNodeID)
 			delete(byKey, prior.Spec.Key)
 		case MutationAddEdge:
-			if op.Edge == nil { return PlanMutationResult{}, fmt.Errorf("operation %d ADD_EDGE requires edge", i) }
-			if planEdgeIndex(plan.Edges, *op.Edge) >= 0 { return PlanMutationResult{}, fmt.Errorf("ADD_EDGE %s -> %s already exists", op.Edge.From, op.Edge.To) }
+			if op.Edge == nil {
+				return PlanMutationResult{}, fmt.Errorf("operation %d ADD_EDGE requires edge", i)
+			}
+			if planEdgeIndex(plan.Edges, *op.Edge) >= 0 {
+				return PlanMutationResult{}, fmt.Errorf("ADD_EDGE %s -> %s already exists", op.Edge.From, op.Edge.To)
+			}
 			plan.Edges = append(plan.Edges, *op.Edge)
 		case MutationRemoveEdge:
-			if op.Edge == nil { return PlanMutationResult{}, fmt.Errorf("operation %d REMOVE_EDGE requires edge", i) }
+			if op.Edge == nil {
+				return PlanMutationResult{}, fmt.Errorf("operation %d REMOVE_EDGE requires edge", i)
+			}
 			idx := planEdgeIndex(plan.Edges, *op.Edge)
-			if idx < 0 { return PlanMutationResult{}, fmt.Errorf("REMOVE_EDGE %s -> %s not found", op.Edge.From, op.Edge.To) }
+			if idx < 0 {
+				return PlanMutationResult{}, fmt.Errorf("REMOVE_EDGE %s -> %s not found", op.Edge.From, op.Edge.To)
+			}
 			plan.Edges = append(plan.Edges[:idx], plan.Edges[idx+1:]...)
 		case MutationReplaceDependency:
-			if op.Replacement == nil { return PlanMutationResult{}, fmt.Errorf("operation %d REPLACE_DEPENDENCY requires replacement", i) }
+			if op.Replacement == nil {
+				return PlanMutationResult{}, fmt.Errorf("operation %d REPLACE_DEPENDENCY requires replacement", i)
+			}
 			idx := planEdgeIndex(plan.Edges, op.Replacement.Old)
-			if idx < 0 { return PlanMutationResult{}, fmt.Errorf("REPLACE_DEPENDENCY old edge %s -> %s not found", op.Replacement.Old.From, op.Replacement.Old.To) }
+			if idx < 0 {
+				return PlanMutationResult{}, fmt.Errorf("REPLACE_DEPENDENCY old edge %s -> %s not found", op.Replacement.Old.From, op.Replacement.Old.To)
+			}
 			plan.Edges[idx] = op.Replacement.New
 		default:
 			return PlanMutationResult{}, fmt.Errorf("unsupported plan mutation operation %q", op.Operation)
@@ -246,8 +388,13 @@ func ApplyPlanMutation(current Plan, currentNodes []LogicalPlanNode, operations 
 	if err := ValidatePlan(plan, DefaultMaxNodes); err != nil {
 		return PlanMutationResult{}, fmt.Errorf("validate mutated plan: %w", err)
 	}
+	if err := ValidateRequirementCoverage(plan); err != nil {
+		return PlanMutationResult{}, fmt.Errorf("validate mutated plan traceability: %w", err)
+	}
 	for _, spec := range plan.Nodes {
-		if _, exists := byKey[spec.Key]; exists { continue }
+		if _, exists := byKey[spec.Key]; exists {
+			continue
+		}
 		id := uuid.NewString()
 		byID[id] = LogicalPlanNode{LogicalNodeID: id, Spec: spec, Status: "pending"}
 		byKey[spec.Key] = id
@@ -260,19 +407,42 @@ func ApplyPlanMutation(current Plan, currentNodes []LogicalPlanNode, operations 
 		nodes = append(nodes, node)
 	}
 	resetIDs := make([]string, 0, len(reset))
-	for id := range reset { resetIDs = append(resetIDs, id) }
+	for id := range reset {
+		resetIDs = append(resetIDs, id)
+	}
 	sort.Strings(resetIDs)
 	return PlanMutationResult{Plan: plan, Nodes: nodes, Removed: removed, ResetLogicalIDs: resetIDs}, nil
 }
 
+func cloneNodeSpec(node NodeSpec) NodeSpec {
+	node.RequirementIDs = append([]string(nil), node.RequirementIDs...)
+	node.RequiredCapabilities = append([]string(nil), node.RequiredCapabilities...)
+	node.AcceptanceCriteria = append([]string(nil), node.AcceptanceCriteria...)
+	return node
+}
+
+func cloneNodeSpecs(nodes []NodeSpec) []NodeSpec {
+	cloned := make([]NodeSpec, len(nodes))
+	for i, node := range nodes {
+		cloned[i] = cloneNodeSpec(node)
+	}
+	return cloned
+}
+
 func planNodeIndex(nodes []NodeSpec, key string) int {
-	for i := range nodes { if nodes[i].Key == key { return i } }
+	for i := range nodes {
+		if nodes[i].Key == key {
+			return i
+		}
+	}
 	return -1
 }
 
 func planEdgeIndex(edges []EdgeSpec, target EdgeSpec) int {
 	for i := range edges {
-		if edges[i].From == target.From && edges[i].To == target.To && edges[i].Type == target.Type && edges[i].RequiredArtifactType == target.RequiredArtifactType { return i }
+		if edges[i].From == target.From && edges[i].To == target.To && edges[i].Type == target.Type && edges[i].RequiredArtifactType == target.RequiredArtifactType {
+			return i
+		}
 	}
 	return -1
 }
@@ -280,31 +450,37 @@ func planEdgeIndex(edges []EdgeSpec, target EdgeSpec) int {
 type ChangeImpactLevel string
 
 const (
-	ImpactLow ChangeImpactLevel = "LOW"
-	ImpactMedium ChangeImpactLevel = "MEDIUM"
-	ImpactHigh ChangeImpactLevel = "HIGH"
+	ImpactLow         ChangeImpactLevel = "LOW"
+	ImpactMedium      ChangeImpactLevel = "MEDIUM"
+	ImpactHigh        ChangeImpactLevel = "HIGH"
 	ImpactDestructive ChangeImpactLevel = "DESTRUCTIVE"
 )
 
 type ChangeImpact struct {
-	Level ChangeImpactLevel `json:"level"`
-	RequiresApproval bool `json:"requires_approval"`
-	AutoApplyAllowed bool `json:"auto_apply_allowed"`
-	RunningLogicalNodeIDs []string `json:"running_logical_node_ids,omitempty"`
-	CompletedLogicalNodeIDs []string `json:"completed_logical_node_ids,omitempty"`
-	ArtifactImpact bool `json:"artifact_impact"`
-	TeamImpact bool `json:"team_impact"`
-	ArchitectureImpact bool `json:"architecture_impact"`
-	Reasons []string `json:"reasons"`
+	Level                   ChangeImpactLevel `json:"level"`
+	RequiresApproval        bool              `json:"requires_approval"`
+	AutoApplyAllowed        bool              `json:"auto_apply_allowed"`
+	RunningLogicalNodeIDs   []string          `json:"running_logical_node_ids,omitempty"`
+	CompletedLogicalNodeIDs []string          `json:"completed_logical_node_ids,omitempty"`
+	ArtifactImpact          bool              `json:"artifact_impact"`
+	TeamImpact              bool              `json:"team_impact"`
+	ArchitectureImpact      bool              `json:"architecture_impact"`
+	Reasons                 []string          `json:"reasons"`
 }
 
 func AnalyzeChangeImpact(kind ChangeRequestType, operations []PlanMutationOperation, current []LogicalPlanNode, policy Policy) ChangeImpact {
 	impact := ChangeImpact{Level: ImpactLow}
 	byID := make(map[string]LogicalPlanNode, len(current))
-	for _, node := range current { byID[node.LogicalNodeID] = node }
+	for _, node := range current {
+		byID[node.LogicalNodeID] = node
+	}
 	raise := func(level ChangeImpactLevel, reason string) {
-		if impactRank(level) > impactRank(impact.Level) { impact.Level = level }
-		if strings.TrimSpace(reason) != "" { impact.Reasons = append(impact.Reasons, reason) }
+		if impactRank(level) > impactRank(impact.Level) {
+			impact.Level = level
+		}
+		if strings.TrimSpace(reason) != "" {
+			impact.Reasons = append(impact.Reasons, reason)
+		}
 	}
 	switch kind {
 	case ChangeArchitecture:
@@ -325,10 +501,14 @@ func AnalyzeChangeImpact(kind ChangeRequestType, operations []PlanMutationOperat
 				impact.RequiresApproval = true
 				impact.ArchitectureImpact = op.Node.Kind == NodeArchitecture || op.Node.Kind == NodeMigration
 				raise(ImpactHigh, "architecture, database or production lifecycle work requires approval")
-			} else { raise(ImpactMedium, "plan gains executable work") }
+			} else {
+				raise(ImpactMedium, "plan gains executable work")
+			}
 		}
 		node, ok := byID[op.TargetLogicalNodeID]
-		if !ok { continue }
+		if !ok {
+			continue
+		}
 		if (node.Status == "running" || node.Status == "verification") && (op.Operation == MutationRemoveNode || op.ResetExecution) {
 			impact.RunningLogicalNodeIDs = append(impact.RunningLogicalNodeIDs, node.LogicalNodeID)
 			impact.RequiresApproval = true
@@ -337,7 +517,11 @@ func AnalyzeChangeImpact(kind ChangeRequestType, operations []PlanMutationOperat
 		if node.Status == "completed" && (op.Operation == MutationRemoveNode || op.ResetExecution) {
 			impact.CompletedLogicalNodeIDs = append(impact.CompletedLogicalNodeIDs, node.LogicalNodeID)
 			impact.ArtifactImpact, impact.RequiresApproval = true, true
-			if architectureOrProductionNode(node.Spec.Kind) { raise(ImpactDestructive, "change invalidates completed architecture/database/production work") } else { raise(ImpactHigh, "change invalidates completed work and its artifacts") }
+			if architectureOrProductionNode(node.Spec.Kind) {
+				raise(ImpactDestructive, "change invalidates completed architecture/database/production work")
+			} else {
+				raise(ImpactHigh, "change invalidates completed work and its artifacts")
+			}
 		}
 		if architectureOrProductionNode(node.Spec.Kind) && (op.Operation == MutationRemoveNode || op.Operation == MutationUpdateNode) {
 			impact.RequiresApproval, impact.ArchitectureImpact = true, true
@@ -345,27 +529,45 @@ func AnalyzeChangeImpact(kind ChangeRequestType, operations []PlanMutationOperat
 		}
 	}
 	impact.AutoApplyAllowed = impact.Level == ImpactLow && !impact.RequiresApproval && policy.Autonomy == AutonomyClosedLoop
-	if len(impact.Reasons) == 0 { impact.Reasons = []string{"localized change has no running/completed/architecture policy impact"} }
+	if len(impact.Reasons) == 0 {
+		impact.Reasons = []string{"localized change has no running/completed/architecture policy impact"}
+	}
 	return impact
 }
 
 func architectureOrProductionNode(kind NodeKind) bool {
-	switch kind { case NodeArchitecture, NodeMigration, NodeDeploy, NodeRelease: return true; default: return false }
+	switch kind {
+	case NodeArchitecture, NodeMigration, NodeDeploy, NodeRelease:
+		return true
+	default:
+		return false
+	}
 }
 
 func impactRank(level ChangeImpactLevel) int {
-	switch level { case ImpactLow: return 1; case ImpactMedium: return 2; case ImpactHigh: return 3; case ImpactDestructive: return 4; default: return 0 }
+	switch level {
+	case ImpactLow:
+		return 1
+	case ImpactMedium:
+		return 2
+	case ImpactHigh:
+		return 3
+	case ImpactDestructive:
+		return 4
+	default:
+		return 0
+	}
 }
 
 func CanTransitionChangeRequest(from, to ChangeRequestState) bool {
 	allowed := map[ChangeRequestState]map[ChangeRequestState]struct{}{
-		ChangeReceived: {ChangeAnalyzing: {}, ChangeRejected: {}, ChangeFailed: {}},
-		ChangeAnalyzing: {ChangeProposalReady: {}, ChangeApprovalRequired: {}, ChangeRejected: {}, ChangeFailed: {}},
-		ChangeProposalReady: {ChangeApproved: {}, ChangeApplying: {}, ChangeApprovalRequired: {}, ChangeRejected: {}, ChangeFailed: {}},
+		ChangeReceived:         {ChangeAnalyzing: {}, ChangeRejected: {}, ChangeFailed: {}},
+		ChangeAnalyzing:        {ChangeProposalReady: {}, ChangeApprovalRequired: {}, ChangeRejected: {}, ChangeFailed: {}},
+		ChangeProposalReady:    {ChangeApproved: {}, ChangeApplying: {}, ChangeApprovalRequired: {}, ChangeRejected: {}, ChangeFailed: {}},
 		ChangeApprovalRequired: {ChangeApproved: {}, ChangeRejected: {}, ChangeFailed: {}},
-		ChangeApproved: {ChangeApplying: {}, ChangeRejected: {}, ChangeFailed: {}},
-		ChangeApplying: {ChangeApplied: {}, ChangeFailed: {}},
-		ChangeFailed: {ChangeAnalyzing: {}, ChangeRejected: {}},
+		ChangeApproved:         {ChangeApplying: {}, ChangeRejected: {}, ChangeFailed: {}},
+		ChangeApplying:         {ChangeApplied: {}, ChangeFailed: {}},
+		ChangeFailed:           {ChangeAnalyzing: {}, ChangeRejected: {}},
 	}
 	_, ok := allowed[from][to]
 	return ok

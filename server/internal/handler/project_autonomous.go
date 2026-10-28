@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -24,6 +26,7 @@ import (
 type AutonomousControlResponse struct {
 	Paused            bool    `json:"paused"`
 	PausedAt          *string `json:"paused_at"`
+	CancelledAt       *string `json:"cancelled_at"`
 	ReplanRequestedAt *string `json:"replan_requested_at"`
 	ReplanCompletedAt *string `json:"replan_completed_at"`
 	LastError         *string `json:"last_error"`
@@ -226,6 +229,7 @@ type AutonomousProjectPlanNodeResponse struct {
 	IssueStatus         *string         `json:"issue_status"`
 	WorkflowState       *string         `json:"workflow_state"`
 	AcceptanceCriteria  json.RawMessage `json:"acceptance_criteria"`
+	RequirementIDs      json.RawMessage `json:"requirement_ids"`
 	UpdatedAt           string          `json:"updated_at"`
 }
 
@@ -244,6 +248,9 @@ type AutonomousProjectPlanResponse struct {
 	PlannerModel  *string                             `json:"planner_model"`
 	Specification json.RawMessage                     `json:"specification"`
 	Policy        json.RawMessage                     `json:"policy"`
+	PlanDigest    string                              `json:"plan_digest"`
+	ApprovedAt    *string                             `json:"approved_at"`
+	ApprovedBy    *string                             `json:"approved_by"`
 	Nodes         []AutonomousProjectPlanNodeResponse `json:"nodes"`
 	Edges         []AutonomousProjectPlanEdgeResponse `json:"edges"`
 	UpdatedAt     string                              `json:"updated_at"`
@@ -344,20 +351,21 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		Health:       AutonomousProjectHealthResponse{Status: "idle"},
 	}
 
-	var pausedAt, replanRequestedAt, replanCompletedAt pgtype.Timestamptz
+	var pausedAt, cancelledAt, replanRequestedAt, replanCompletedAt pgtype.Timestamptz
 	var lastError pgtype.Text
 	err = h.DB.QueryRow(r.Context(), `
-		SELECT paused, paused_at, replan_requested_at, replan_completed_at, last_error
+		SELECT paused, paused_at, cancelled_at, replan_requested_at, replan_completed_at, last_error
 		FROM autonomous_project_control
 		WHERE workspace_id = $1 AND project_id = $2
 	`, workspaceID, projectID).Scan(
-		&resp.Control.Paused, &pausedAt, &replanRequestedAt, &replanCompletedAt, &lastError,
+		&resp.Control.Paused, &pausedAt, &cancelledAt, &replanRequestedAt, &replanCompletedAt, &lastError,
 	)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to load autonomous project control")
 		return
 	}
 	resp.Control.PausedAt = nullableTimestampString(pausedAt)
+	resp.Control.CancelledAt = nullableTimestampString(cancelledAt)
 	resp.Control.ReplanRequestedAt = nullableTimestampString(replanRequestedAt)
 	resp.Control.ReplanCompletedAt = nullableTimestampString(replanCompletedAt)
 	resp.Control.LastError = nullableTextString(lastError)
@@ -659,17 +667,21 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 	var projectPlan AutonomousProjectPlanResponse
 	var projectPlanModel pgtype.Text
 	var specJSON, policyJSON []byte
+	var planDigest string
+	var planApprovedAt pgtype.Timestamptz
+	var planApprovedBy pgtype.Text
 	var projectPlanUpdatedAt time.Time
 	planErr := h.DB.QueryRow(r.Context(), `
 		SELECT id, revision, goal, status, planner_name, planner_model,
-		       specification, policy, updated_at
+		       specification, policy, plan_digest, approved_at, approved_by, updated_at
 		FROM autonomous_project_plan
 		WHERE workspace_id = $1 AND project_id = $2
 		ORDER BY revision DESC
 		LIMIT 1
 	`, workspaceID, projectID).Scan(
 		&projectPlanID, &projectPlan.Revision, &projectPlan.Goal, &projectPlan.Status,
-		&projectPlan.PlannerName, &projectPlanModel, &specJSON, &policyJSON, &projectPlanUpdatedAt,
+		&projectPlan.PlannerName, &projectPlanModel, &specJSON, &policyJSON, &planDigest,
+		&planApprovedAt, &planApprovedBy, &projectPlanUpdatedAt,
 	)
 	if planErr == nil {
 		resp.Enabled = true
@@ -677,6 +689,9 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		projectPlan.PlannerModel = nullableTextString(projectPlanModel)
 		projectPlan.Specification = append(json.RawMessage(nil), specJSON...)
 		projectPlan.Policy = append(json.RawMessage(nil), policyJSON...)
+		projectPlan.PlanDigest = planDigest
+		projectPlan.ApprovedAt = nullableTimestampString(planApprovedAt)
+		projectPlan.ApprovedBy = nullableTextString(planApprovedBy)
 		projectPlan.UpdatedAt = projectPlanUpdatedAt.UTC().Format(time.RFC3339Nano)
 		projectPlan.Nodes = []AutonomousProjectPlanNodeResponse{}
 		projectPlan.Edges = []AutonomousProjectPlanEdgeResponse{}
@@ -686,7 +701,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 			       n.required_role_family, n.assigned_role, n.assigned_agent_id,
 			       n.materialized_issue_id, n.attempt, n.max_attempts,
 			       n.blocked_category, n.blocked_reason, i.status, wr.state,
-			       n.acceptance_criteria, n.updated_at
+			       n.acceptance_criteria, n.requirement_ids, n.updated_at
 			FROM autonomous_project_plan_node n
 			LEFT JOIN issue i ON i.id = n.materialized_issue_id
 			LEFT JOIN autonomous_workflow_run wr
@@ -705,13 +720,13 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 			var node AutonomousProjectPlanNodeResponse
 			var nodeID, agentID, issueID pgtype.UUID
 			var family, assignedRole, blockedCategory, blockedReason, issueStatus, workflowState pgtype.Text
-			var criteria []byte
+			var criteria, requirementIDs []byte
 			var updatedAt time.Time
 			if err := nodeRows.Scan(
 				&nodeID, &node.Key, &node.Kind, &node.Title, &node.Status, &node.Priority, &node.Risk,
 				&family, &assignedRole, &agentID, &issueID, &node.Attempt, &node.MaxAttempts,
 				&blockedCategory, &blockedReason, &issueStatus, &workflowState,
-				&criteria, &updatedAt,
+				&criteria, &requirementIDs, &updatedAt,
 			); err != nil {
 				nodeRows.Close()
 				writeError(w, http.StatusInternalServerError, "failed to decode autonomous project plan node")
@@ -727,6 +742,7 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 			node.IssueStatus = nullableTextString(issueStatus)
 			node.WorkflowState = nullableTextString(workflowState)
 			node.AcceptanceCriteria = append(json.RawMessage(nil), criteria...)
+			node.RequirementIDs = append(json.RawMessage(nil), requirementIDs...)
 			node.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
 			projectPlan.Nodes = append(projectPlan.Nodes, node)
 		}
@@ -1862,6 +1878,52 @@ func (h *Handler) PauseProjectAutonomous(w http.ResponseWriter, r *http.Request)
 	h.setProjectAutonomousPaused(w, r, true)
 }
 
+func (h *Handler) CancelProjectAutonomous(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	userUUID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	tag, err := h.DB.Exec(r.Context(), `
+		INSERT INTO autonomous_project_control (project_id, workspace_id, cancelled_at, cancelled_by, updated_at)
+		VALUES ($1, $2, now(), $3, now())
+		ON CONFLICT (project_id) DO UPDATE
+		SET workspace_id=EXCLUDED.workspace_id,
+		    cancelled_at=COALESCE(autonomous_project_control.cancelled_at, now()),
+		    cancelled_by=COALESCE(autonomous_project_control.cancelled_by, EXCLUDED.cancelled_by),
+		    updated_at=now()
+	`, projectID, workspaceID, userUUID)
+	if err != nil {
+		slog.Error("autonomous project terminal cancellation failed",
+			"workspace_id", uuidToString(workspaceID), "project_id", uuidToString(projectID), "error", err)
+		writeErrorCode(w, http.StatusInternalServerError, "autonomous_control_persist_failed", "autonomous project cancellation could not be persisted")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusConflict, "autonomous project control changed concurrently; refresh and try again")
+		return
+	}
+	err = h.cancelProjectAutonomousTasks(r.Context(), workspaceID, projectID)
+	if err != nil {
+		slog.Error("autonomous project cancellation failed to stop every task",
+			"workspace_id", uuidToString(workspaceID), "project_id", uuidToString(projectID), "error", err)
+		writeErrorCode(w, http.StatusInternalServerError, "autonomous_task_cancellation_failed", "project is cancelled, but some active tasks could not be cancelled; retry the cancellation")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true})
+}
+
 func (h *Handler) ResumeProjectAutonomous(w http.ResponseWriter, r *http.Request) {
 	h.setProjectAutonomousPaused(w, r, false)
 }
@@ -1895,6 +1957,7 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 		    paused_at = CASE WHEN EXCLUDED.paused THEN now() ELSE NULL END,
 		    paused_by = CASE WHEN EXCLUDED.paused THEN EXCLUDED.paused_by ELSE NULL END,
 		    updated_at = now()
+		WHERE autonomous_project_control.cancelled_at IS NULL
 	`, projectID, workspaceID, paused, userUUID)
 	if err != nil {
 		slog.Error("autonomous project control update failed",
@@ -1920,7 +1983,79 @@ func (h *Handler) setProjectAutonomousPaused(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusConflict, "autonomous project control changed concurrently; refresh and try again")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"paused": paused})
+	if paused {
+		err := h.cancelProjectAutonomousTasks(r.Context(), workspaceID, projectID)
+		if err != nil {
+			slog.Error("autonomous project pause failed to cancel tasks",
+				"workspace_id", uuidToString(workspaceID), "project_id", uuidToString(projectID), "error", err)
+			writeErrorCode(w, http.StatusInternalServerError, "autonomous_task_cancellation_failed", "project is paused, but some active tasks could not be cancelled; retry the pause")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"paused": true})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"paused": false})
+}
+
+func (h *Handler) cancelProjectAutonomousTasks(ctx context.Context, workspaceID, projectID pgtype.UUID) error {
+	rows, err := h.DB.Query(ctx, `
+		SELECT DISTINCT n.materialized_issue_id
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id=n.plan_id
+		WHERE n.workspace_id=$1 AND p.project_id=$2
+		  AND n.materialized_issue_id IS NOT NULL
+	`, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("list project issues for task cancellation: %w", err)
+	}
+	var issueIDs []pgtype.UUID
+	for rows.Next() {
+		var issueID pgtype.UUID
+		if err := rows.Scan(&issueID); err != nil {
+			rows.Close()
+			return fmt.Errorf("read project issue for task cancellation: %w", err)
+		}
+		issueIDs = append(issueIDs, issueID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("finish reading project issues for task cancellation: %w", err)
+	}
+	rows.Close()
+
+	var cancellationErrors []error
+	for _, issueID := range issueIDs {
+		if h.TaskService == nil {
+			cancellationErrors = append(cancellationErrors, errors.New("task service is unavailable"))
+			continue
+		}
+		if err := h.TaskService.CancelTasksForIssue(ctx, issueID); err != nil {
+			cancellationErrors = append(cancellationErrors, fmt.Errorf("cancel tasks for issue %s: %w", uuidToString(issueID), err))
+			continue
+		}
+	}
+	return errors.Join(cancellationErrors...)
+}
+
+func (h *Handler) rejectTerminalProjectCancellation(w http.ResponseWriter, ctx context.Context, workspaceID, projectID pgtype.UUID) bool {
+	var cancelled bool
+	err := h.DB.QueryRow(ctx, `
+		SELECT cancelled_at IS NOT NULL
+		FROM autonomous_project_control
+		WHERE workspace_id=$1 AND project_id=$2
+	`, workspaceID, projectID).Scan(&cancelled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read autonomous project control")
+		return true
+	}
+	if cancelled {
+		writeErrorCode(w, http.StatusConflict, "autonomous_project_cancelled", "autonomous project execution has been permanently cancelled")
+		return true
+	}
+	return false
 }
 
 func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Request) {
@@ -1941,6 +2076,9 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 		WorkspaceID: workspaceID,
 	}); err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if h.rejectTerminalProjectCancellation(w, r.Context(), workspaceID, projectID) {
 		return
 	}
 
@@ -2121,6 +2259,12 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 		WHERE workspace_id = $1
 		  AND project_id = $2
 		  AND status = 'awaiting_configuration'
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_control c
+			WHERE c.workspace_id = $1
+			  AND c.project_id = autonomous_project_team_draft.project_id
+			  AND c.cancelled_at IS NOT NULL
+		  )
 	`, workspaceID, projectID, selectionsJSON, userUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to confirm autonomous team configuration")
@@ -2153,6 +2297,9 @@ func (h *Handler) StartProjectAutonomousPlanning(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
+	if h.rejectTerminalProjectCancellation(w, r.Context(), workspaceID, projectID) {
+		return
+	}
 
 	tag, err := h.DB.Exec(r.Context(), `
 		UPDATE autonomous_project_team_draft
@@ -2164,6 +2311,12 @@ func (h *Handler) StartProjectAutonomousPlanning(w http.ResponseWriter, r *http.
 		  AND status = 'applied'
 		  AND confirmed_at IS NOT NULL
 		  AND continuation_started_at IS NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_control c
+			WHERE c.workspace_id = $1
+			  AND c.project_id = autonomous_project_team_draft.project_id
+			  AND c.cancelled_at IS NOT NULL
+		  )
 	`, workspaceID, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start project task planning")
@@ -2193,7 +2346,10 @@ func (h *Handler) ReplanProjectAutonomous(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
-	_, err := h.DB.Exec(r.Context(), `
+	if h.rejectTerminalProjectCancellation(w, r.Context(), workspaceID, projectID) {
+		return
+	}
+	tag, err := h.DB.Exec(r.Context(), `
 		INSERT INTO autonomous_project_control (
 			project_id, workspace_id, replan_requested_at, replan_requested_by,
 			replan_completed_at, last_error, updated_at
@@ -2206,9 +2362,14 @@ func (h *Handler) ReplanProjectAutonomous(w http.ResponseWriter, r *http.Request
 		    replan_completed_at = NULL,
 		    last_error = NULL,
 		    updated_at = now()
+		WHERE autonomous_project_control.cancelled_at IS NULL
 	`, projectID, workspaceID, userUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to request autonomous team replan")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeErrorCode(w, http.StatusConflict, "autonomous_project_cancelled", "autonomous project execution has been permanently cancelled")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"requested": true})
@@ -2231,6 +2392,9 @@ func (h *Handler) RestartProjectAutonomousWorkflow(w http.ResponseWriter, r *htt
 		WorkspaceID: workspaceID,
 	}); err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if h.rejectTerminalProjectCancellation(w, r.Context(), workspaceID, projectID) {
 		return
 	}
 	if h.AutonomousWorkflowRestart == nil {
@@ -2314,6 +2478,13 @@ func (h *Handler) RetryProjectAutonomousAction(w http.ResponseWriter, r *http.Re
 	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
 		return
 	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if h.rejectTerminalProjectCancellation(w, r.Context(), workspaceID, projectID) {
+		return
+	}
 	tag, err := h.DB.Exec(r.Context(), `
 		UPDATE autonomous_workflow_action a
 		SET status = 'pending',
@@ -2329,12 +2500,19 @@ func (h *Handler) RetryProjectAutonomousAction(w http.ResponseWriter, r *http.Re
 		  AND wr.project_id = $2
 		  AND wr.workspace_id = $3
 		  AND a.status = 'failed'
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_control c
+			WHERE c.workspace_id = $3 AND c.project_id = $2 AND c.cancelled_at IS NOT NULL
+		  )
 	`, actionID, projectID, workspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to retry autonomous action")
 		return
 	}
 	if tag.RowsAffected() == 0 {
+		if h.rejectTerminalProjectCancellation(w, r.Context(), workspaceID, projectID) {
+			return
+		}
 		writeError(w, http.StatusNotFound, "failed autonomous action not found")
 		return
 	}
@@ -2397,6 +2575,66 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "decision": req.Decision})
+}
+
+func (h *Handler) ApproveProjectAutonomousPlan(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	userID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	var req struct {
+		PlanDigest string `json:"plan_digest"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid plan approval request")
+		return
+	}
+	if len(req.PlanDigest) != 64 || strings.ToLower(req.PlanDigest) != req.PlanDigest {
+		writeError(w, http.StatusBadRequest, "plan_digest must be a lowercase SHA-256 digest")
+		return
+	}
+	if _, err := hex.DecodeString(req.PlanDigest); err != nil {
+		writeError(w, http.StatusBadRequest, "plan_digest must be a lowercase SHA-256 digest")
+		return
+	}
+	if h.TxStarter == nil {
+		writeError(w, http.StatusServiceUnavailable, "plan approval is unavailable")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to begin plan approval")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	approved, err := projectorchestration.ApprovePlanTx(
+		r.Context(), tx, workspaceID, projectID, req.PlanDigest, uuidToString(userID),
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to approve autonomous project plan")
+		return
+	}
+	if !approved {
+		writeError(w, http.StatusConflict, "plan changed or is no longer awaiting this digest")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit plan approval")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approved": true, "plan_digest": req.PlanDigest, "status": "active"})
 }
 
 type projectLeaderChatResponse struct {

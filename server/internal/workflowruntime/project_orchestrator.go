@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -23,6 +24,13 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+const (
+	projectPlanningDeadline = 5 * time.Minute
+	// The extra minute leaves time to persist completion or retry state after timeout.
+	projectPlanningLease      = 6 * time.Minute
+	projectPlanningClaimLimit = 1
+)
+
 func (r *Runtime) processProjectBootstrap(ctx context.Context) error {
 	if r == nil || r.team == nil {
 		return nil
@@ -34,6 +42,12 @@ func (r *Runtime) processProjectBootstrap(ctx context.Context) error {
 		  AND (
 			b.status = 'ready'
 			OR (b.status = 'started' AND b.updated_at < now() - interval '30 seconds')
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_control c
+			WHERE c.workspace_id = b.workspace_id
+			  AND c.project_id = b.project_id
+			  AND c.cancelled_at IS NOT NULL
 		  )
 		  AND NOT EXISTS (
 			SELECT 1
@@ -75,15 +89,23 @@ func (r *Runtime) processProjectBootstrap(ctx context.Context) error {
 	rows.Close()
 
 	for _, item := range items {
-		if _, err := r.pool.Exec(ctx, `
+		tag, err := r.pool.Exec(ctx, `
 			UPDATE autonomous_project_bootstrap
 			SET status = 'started', updated_at = now()
 			WHERE workspace_id = $1
 			  AND project_id = $2
 			  AND autonomy_mode = 'autonomous'
 			  AND status IN ('ready', 'started')
-		`, item.workspaceID, item.projectID); err != nil {
+			  AND NOT EXISTS (
+				SELECT 1 FROM autonomous_project_control c
+				WHERE c.workspace_id = $1 AND c.project_id = $2 AND c.cancelled_at IS NOT NULL
+			  )
+		`, item.workspaceID, item.projectID)
+		if err != nil {
 			return fmt.Errorf("mark project bootstrap started: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			continue
 		}
 		if _, err := r.team.PrepareProject(ctx, item.workspaceID, item.projectID); err != nil {
 			message := err.Error()
@@ -126,6 +148,12 @@ func (r *Runtime) processAutomaticTeamConfiguration(ctx context.Context) error {
 		 AND a.system_key = $1
 		 AND a.archived_at IS NULL
 		WHERE d.status = 'awaiting_configuration'
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_control c
+			WHERE c.workspace_id = d.workspace_id
+			  AND c.project_id = d.project_id
+			  AND c.cancelled_at IS NOT NULL
+		  )
 		ORDER BY d.updated_at ASC
 		LIMIT 10
 	`, service.MikaSystemKey)
@@ -159,6 +187,10 @@ func (r *Runtime) processAutomaticTeamConfiguration(ctx context.Context) error {
 			WHERE workspace_id = $1
 			  AND project_id = $2
 			  AND status = 'awaiting_configuration'
+			  AND NOT EXISTS (
+				SELECT 1 FROM autonomous_project_control c
+				WHERE c.workspace_id = $1 AND c.project_id = $2 AND c.cancelled_at IS NOT NULL
+			  )
 		`, item.workspaceID, item.projectID, item.ownerID)
 		if err != nil {
 			return fmt.Errorf("auto-configure autonomous team draft: %w", err)
@@ -178,23 +210,52 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 		return nil
 	}
 
+	if err := r.recoverExpiredProjectPlanningLeases(ctx); err != nil {
+		return err
+	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT d.project_id, d.workspace_id, d.confirmed_by, d.confirmed_at
-		FROM autonomous_project_team_draft d
-		WHERE d.status = 'applied'
-		  AND d.confirmed_at IS NOT NULL
-		  AND d.continuation_started_at IS NOT NULL
-		  AND d.continuation_completed_at IS NULL
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM autonomous_project_plan p
-			WHERE p.workspace_id = d.workspace_id
-			  AND p.project_id = d.project_id
-			  AND p.status IN ('active', 'completed')
-		  )
-		ORDER BY d.confirmed_at ASC
-		LIMIT 5
-	`)
+		WITH candidates AS (
+			SELECT d.project_id, d.workspace_id, d.confirmed_by, d.confirmed_at
+			FROM autonomous_project_team_draft d
+			WHERE d.status = 'applied'
+			  AND d.confirmed_at IS NOT NULL
+			  AND d.continuation_started_at IS NOT NULL
+			  AND d.continuation_completed_at IS NULL
+			  AND d.planning_attempts < 3
+			  AND (d.next_planning_retry_at IS NULL OR d.next_planning_retry_at <= now())
+			  AND (d.planning_lease_until IS NULL OR d.planning_lease_until <= now())
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM autonomous_project_plan p
+				WHERE p.workspace_id = d.workspace_id
+				  AND p.project_id = d.project_id
+				  AND p.status IN ('active', 'completed')
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM autonomous_project_control c
+				WHERE c.workspace_id = d.workspace_id
+				  AND c.project_id = d.project_id
+				  AND c.cancelled_at IS NOT NULL
+			  )
+			ORDER BY d.confirmed_at ASC
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		), claimed AS (
+			UPDATE autonomous_project_team_draft d
+			SET planning_lease_owner = gen_random_uuid()::text,
+			    planning_lease_until = now() + ($1::double precision * interval '1 second'),
+			    planning_attempts = d.planning_attempts + 1,
+			    updated_at = now()
+			FROM candidates c
+			WHERE d.project_id = c.project_id AND d.workspace_id = c.workspace_id
+			RETURNING d.project_id, d.workspace_id, d.confirmed_by, d.confirmed_at,
+			          d.planning_attempts, d.planning_lease_owner
+		)
+		SELECT project_id, workspace_id, confirmed_by, confirmed_at,
+		       planning_attempts, planning_lease_owner
+		FROM claimed
+	`, projectPlanningLease.Seconds(), projectPlanningClaimLimit)
 	if err != nil {
 		return fmt.Errorf("query projects requiring durable planning: %w", err)
 	}
@@ -203,11 +264,13 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 		workspaceID pgtype.UUID
 		confirmedBy pgtype.UUID
 		confirmedAt time.Time
+		attempts    int32
+		leaseOwner  string
 	}
-	items := make([]candidate, 0, 5)
+	items := make([]candidate, 0, 1)
 	for rows.Next() {
 		var item candidate
-		if err := rows.Scan(&item.projectID, &item.workspaceID, &item.confirmedBy, &item.confirmedAt); err != nil {
+		if err := rows.Scan(&item.projectID, &item.workspaceID, &item.confirmedBy, &item.confirmedAt, &item.attempts, &item.leaseOwner); err != nil {
 			rows.Close()
 			return err
 		}
@@ -220,40 +283,192 @@ func (r *Runtime) processProjectPlanning(ctx context.Context) error {
 	rows.Close()
 
 	for _, item := range items {
-		planCtx, cancel := context.WithCancel(ctx)
+		planCtx, cancel := context.WithTimeout(ctx, projectPlanningDeadline)
 		err := r.planProjectRevision(planCtx, item.workspaceID, item.projectID, item.confirmedAt.UTC().Format(time.RFC3339Nano))
 		cancel()
 		if err != nil {
-			message := err.Error()
-			if len(message) > 2000 {
-				message = message[:2000]
+			if updateErr := r.recordProjectPlanningFailure(ctx, item.projectID, item.workspaceID, item.attempts, item.leaseOwner, err); updateErr != nil {
+				return updateErr
 			}
-			_, _ = r.pool.Exec(ctx, `
-				INSERT INTO autonomous_project_control (project_id, workspace_id, last_error, updated_at)
-				VALUES ($1, $2, $3, now())
-				ON CONFLICT (project_id) DO UPDATE
-				SET last_error = EXCLUDED.last_error, updated_at = now()
-				WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
-			`, item.projectID, item.workspaceID, "Project planning failed: "+message)
 			continue
 		}
-		_, _ = r.pool.Exec(ctx, `
+		tag, err := r.pool.Exec(ctx, `
 			UPDATE autonomous_project_team_draft
-			SET continuation_completed_at = now(), updated_at = now()
+			SET continuation_completed_at = now(), planning_lease_owner=NULL,
+			    planning_lease_until=NULL, next_planning_retry_at=NULL, updated_at = now()
 			WHERE workspace_id = $1
 			  AND project_id = $2
 			  AND continuation_started_at IS NOT NULL
 			  AND continuation_completed_at IS NULL
-		`, item.workspaceID, item.projectID)
-		_, _ = r.pool.Exec(ctx, `
+			  AND planning_lease_owner = $3
+		`, item.workspaceID, item.projectID, item.leaseOwner)
+		if err != nil {
+			return fmt.Errorf("complete durable project planning lease: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("complete durable project planning lease: lease lost for project %s", util.UUIDToString(item.projectID))
+		}
+		if _, err := r.pool.Exec(ctx, `
 			INSERT INTO autonomous_project_control (project_id, workspace_id, last_error, updated_at)
 			VALUES ($1, $2, NULL, now())
 			ON CONFLICT (project_id) DO UPDATE
 			SET last_error = NULL, updated_at = now()
 			WHERE autonomous_project_control.workspace_id = EXCLUDED.workspace_id
-		`, item.projectID, item.workspaceID)
+		`, item.projectID, item.workspaceID); err != nil {
+			return fmt.Errorf("clear completed project planning error: %w", err)
+		}
 	}
 	return nil
+}
+
+func (r *Runtime) recoverExpiredProjectPlanningLeases(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx, `
+		WITH expired AS (
+			UPDATE autonomous_project_team_draft d
+			SET status = CASE
+			        WHEN EXISTS (
+				        SELECT 1 FROM autonomous_project_plan p
+				        WHERE p.workspace_id=d.workspace_id AND p.project_id=d.project_id
+				          AND p.status IN ('active','completed')
+			        ) THEN d.status
+			        WHEN d.planning_attempts >= 3 THEN 'planning_failed'
+			        ELSE d.status
+			    END,
+			    continuation_completed_at = CASE
+			        WHEN EXISTS (
+				        SELECT 1 FROM autonomous_project_plan p
+				        WHERE p.workspace_id=d.workspace_id AND p.project_id=d.project_id
+				          AND p.status IN ('active','completed')
+			        ) THEN COALESCE(d.continuation_completed_at, now())
+			        ELSE d.continuation_completed_at
+			    END,
+			    planning_lease_owner=NULL, planning_lease_until=NULL,
+			    next_planning_retry_at = CASE
+			        WHEN EXISTS (
+				        SELECT 1 FROM autonomous_project_plan p
+				        WHERE p.workspace_id=d.workspace_id AND p.project_id=d.project_id
+				          AND p.status IN ('active','completed')
+			        ) OR d.planning_attempts >= 3 THEN NULL
+			        ELSE now() + (
+				        30 * power(2, LEAST(d.planning_attempts,10)) + floor(random()*30)
+			        ) * interval '1 second'
+			    END,
+			    updated_at=now()
+			WHERE d.status='applied' AND d.continuation_completed_at IS NULL
+		  AND d.planning_lease_until <= now()
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_control c
+			WHERE c.workspace_id=d.workspace_id AND c.project_id=d.project_id
+			  AND c.cancelled_at IS NOT NULL
+		  )
+			RETURNING d.project_id, d.workspace_id, d.planning_attempts, d.status,
+			          d.continuation_completed_at
+		), controls AS (
+			INSERT INTO autonomous_project_control (project_id, workspace_id, last_error, updated_at)
+			SELECT project_id, workspace_id,
+			       CASE WHEN status='planning_failed'
+			            THEN 'Project planning lease expired after 3 attempts'
+			            ELSE 'Project planning lease expired before the attempt completed; retry scheduled'
+			       END, now()
+			FROM expired WHERE continuation_completed_at IS NULL
+			ON CONFLICT (project_id) DO UPDATE
+			SET last_error=EXCLUDED.last_error, updated_at=now()
+			WHERE autonomous_project_control.workspace_id=EXCLUDED.workspace_id
+		)
+		INSERT INTO autonomous_project_escalation (
+			workspace_id, project_id, category, severity, summary, context
+		)
+		SELECT e.workspace_id, e.project_id, 'technical_failure', 'high',
+		       'Project planning lease expired after 3 attempts',
+		       jsonb_build_object('scope','project_planning','attempts',e.planning_attempts)
+		FROM expired e
+		WHERE e.status='planning_failed'
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_escalation x
+			WHERE x.workspace_id=e.workspace_id AND x.project_id=e.project_id
+			  AND x.status IN ('open','acknowledged')
+			  AND x.context ->> 'scope'='project_planning'
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("recover expired project planning leases: %w", err)
+	}
+	return nil
+}
+
+func (r *Runtime) recordProjectPlanningFailure(ctx context.Context, projectID, workspaceID pgtype.UUID, attempts int32, leaseOwner string, cause error) error {
+	message := cause.Error()
+	if len(message) > 2000 {
+		message = message[:2000]
+	}
+	terminal := attempts >= 3
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin project planning failure update: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	status := "applied"
+	if terminal {
+		status = "planning_failed"
+	}
+	var delaySeconds float64
+	if !terminal {
+		delaySeconds = projectPlanningRetryDelay(attempts).Seconds()
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_team_draft
+		SET status=$4, planning_lease_owner=NULL, planning_lease_until=NULL,
+		    next_planning_retry_at=CASE WHEN $5 THEN NULL ELSE now()+($6 * interval '1 second') END,
+		    updated_at=now()
+		WHERE workspace_id=$1 AND project_id=$2 AND planning_lease_owner=$3
+	`, workspaceID, projectID, leaseOwner, status, terminal, delaySeconds)
+	if err != nil {
+		return fmt.Errorf("persist project planning failure: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("persist project planning failure: lease lost for project %s", util.UUIDToString(projectID))
+	}
+	lastError := "Project planning failed: " + message
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO autonomous_project_control (project_id, workspace_id, last_error, updated_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (project_id) DO UPDATE
+		SET last_error=EXCLUDED.last_error, updated_at=now()
+		WHERE autonomous_project_control.workspace_id=EXCLUDED.workspace_id
+	`, projectID, workspaceID, lastError); err != nil {
+		return fmt.Errorf("persist project planning error: %w", err)
+	}
+	if terminal {
+		contextJSON, _ := json.Marshal(map[string]any{"scope": "project_planning", "attempts": attempts, "error": message})
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO autonomous_project_escalation (
+				workspace_id, project_id, category, severity, summary, context
+			)
+			SELECT $1, $2, 'technical_failure', 'high', $3, $4
+			WHERE NOT EXISTS (
+				SELECT 1 FROM autonomous_project_escalation
+				WHERE workspace_id=$1 AND project_id=$2
+				  AND status IN ('open','acknowledged')
+				  AND context ->> 'scope'='project_planning'
+			)
+		`, workspaceID, projectID, "Project planning failed after 3 attempts", contextJSON); err != nil {
+			return fmt.Errorf("open project planning escalation: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit project planning failure: %w", err)
+	}
+	return nil
+}
+
+func projectPlanningRetryDelay(attempts int32) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	if attempts > 10 {
+		attempts = 10
+	}
+	return time.Duration(30*(1<<attempts)+rand.Intn(30)) * time.Second
 }
 
 func (r *Runtime) refreshRepositoryIntelligence(
@@ -423,11 +638,73 @@ func (r *Runtime) loadProjectPlanningBootstrap(
 	return brief, contextItems, resources, requested, nil
 }
 
+func (r *Runtime) projectAutonomousCancelled(ctx context.Context, workspaceID, projectID pgtype.UUID) (bool, error) {
+	var cancelled bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT cancelled_at IS NOT NULL
+		FROM autonomous_project_control
+		WHERE workspace_id=$1 AND project_id=$2
+	`, workspaceID, projectID).Scan(&cancelled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return cancelled, err
+}
+
+func (r *Runtime) watchProjectAutonomousCancellation(ctx context.Context, workspaceID, projectID pgtype.UUID) (context.Context, context.CancelFunc) {
+	planCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-planCtx.Done():
+				return
+			case <-ticker.C:
+				checkCtx, stop := context.WithTimeout(planCtx, 2*time.Second)
+				cancelled, err := r.projectAutonomousCancelled(checkCtx, workspaceID, projectID)
+				stop()
+				if err != nil {
+					slog.Warn("project planning cancellation watch failed",
+						"project_id", util.UUIDToString(projectID), "error", err)
+					cancel()
+					return
+				}
+				if cancelled {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return planCtx, cancel
+}
+
 func (r *Runtime) planProjectRevision(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
 	sourceRevision string,
-) error {
+) (retErr error) {
+	cancelled, err := r.projectAutonomousCancelled(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("check project cancellation before planning: %w", err)
+	}
+	if cancelled {
+		return nil
+	}
+	ctx, stopWatching := r.watchProjectAutonomousCancellation(ctx, workspaceID, projectID)
+	defer stopWatching()
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		checkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		cancelled, checkErr := r.projectAutonomousCancelled(checkCtx, workspaceID, projectID)
+		if checkErr == nil && cancelled {
+			retErr = nil
+		}
+	}()
 	project, err := r.taskSvc.Queries.GetProjectInWorkspace(ctx, dbGetProjectParams(projectID, workspaceID))
 	if err != nil {
 		return fmt.Errorf("load project for durable planning: %w", err)
@@ -462,6 +739,14 @@ func (r *Runtime) planProjectRevision(
 		current := stored.Plan
 		currentPlan = &current
 	}
+	var projectSpecification *projectorchestration.ProjectSpecification
+	specificationRevisionID := ""
+	if revision, exists, loadErr := r.projectStore.LoadLatestSpecification(ctx, workspaceID, projectID); loadErr != nil {
+		return fmt.Errorf("load authoritative project specification: %w", loadErr)
+	} else if exists {
+		projectSpecification = &revision.Specification
+		specificationRevisionID = revision.ID
+	}
 	if err := r.refreshRepositoryIntelligence(ctx, workspaceID, projectID); err != nil {
 		slog.Warn("repository intelligence refresh failed; planning without fresh snapshot",
 			"project_id", util.UUIDToString(projectID),
@@ -473,31 +758,54 @@ func (r *Runtime) planProjectRevision(
 		return fmt.Errorf("load autonomous project bootstrap context: %w", err)
 	}
 	plan, execution, err := r.projectPlanner.Plan(ctx, projectorchestration.PlanningInput{
-		WorkspaceID:        workspaceID,
-		ProjectID:          projectID,
-		ProjectTitle:       project.Title,
-		ProjectDescription: description,
-		BootstrapBrief:     brief,
-		Context:            planningContext,
-		Resources:          resources,
-		Team:               roles,
-		CurrentPlan:        currentPlan,
-		Policy:             requestedPolicy,
+		WorkspaceID:             workspaceID,
+		ProjectID:               projectID,
+		ProjectTitle:            project.Title,
+		ProjectDescription:      description,
+		BootstrapBrief:          brief,
+		ProjectSpecification:    projectSpecification,
+		SpecificationRevisionID: specificationRevisionID,
+		Context:                 planningContext,
+		Resources:               resources,
+		Team:                    roles,
+		CurrentPlan:             currentPlan,
+		Policy:                  requestedPolicy,
 	})
 	if err != nil {
 		return err
+	}
+	if projectSpecification == nil {
+		specification, err := projectorchestration.ProjectSpecificationFromPlan(plan)
+		if err != nil {
+			return fmt.Errorf("initial plan cannot establish a versioned project specification: %w", err)
+		}
+		revision, err := r.projectStore.CreateSpecificationRevision(ctx, workspaceID, projectID, "project_bootstrap", sourceRevision, specification, true)
+		if err != nil {
+			return fmt.Errorf("persist initial project specification: %w", err)
+		}
+		plan.SpecificationRevisionID = revision.ID
 	}
 	_, err = r.projectStore.PersistPlan(
 		ctx, workspaceID, projectID, sourceRevision,
 		execution.Provider, execution.Model, plan,
 	)
+	if errors.Is(err, projectorchestration.ErrProjectAutonomousCancelled) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	// Replanning is a state migration, not just a new DAG insert. Retire any
 	// materialized issues that belonged only to superseded revisions so the
 	// board cannot retain backlog work that the current scheduler can never own.
-	return r.reconcileSupersededProjectIssues(ctx, workspaceID, projectID)
+	if err := r.reconcileSupersededProjectIssues(ctx, workspaceID, projectID); err != nil {
+		slog.Warn("project plan persisted but issue projections need reconciliation",
+			"workspace_id", util.UUIDToString(workspaceID),
+			"project_id", util.UUIDToString(projectID),
+			"error", err,
+		)
+	}
+	return nil
 }
 
 func dbGetProjectParams(projectID, workspaceID pgtype.UUID) db.GetProjectInWorkspaceParams {
@@ -1253,7 +1561,17 @@ func (r *Runtime) processProjectSchedulingForProject(
 		return fmt.Errorf("list project ready nodes: %w", err)
 	}
 	for _, node := range ready {
+		paused, err := r.isProjectPaused(ctx, workspaceID, projectID)
+		if err != nil {
+			return fmt.Errorf("recheck project pause state before dispatch: %w", err)
+		}
+		if paused {
+			break
+		}
 		if err := r.startReadyProjectNode(ctx, workspaceID, projectID, node); err != nil {
+			if errors.Is(err, service.ErrProjectAutonomousPaused) || errors.Is(err, service.ErrProjectAutonomousCancelled) {
+				break
+			}
 			if escalationErr := r.openProjectEscalation(ctx, workspaceID, projectID, node, err); escalationErr != nil {
 				slog.Warn("project scheduler escalation failed", "project_id", util.UUIDToString(projectID), "node", node.Key, "error", escalationErr)
 			}
@@ -2728,6 +3046,8 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 
 	valid := len(task.Result) > 0
 	validationError := ""
+	var changeSet *projectorchestration.TaskCommit
+	changeSetMetadataError := ""
 	if !valid {
 		validationError = "task result is empty"
 	} else if reviewerTask {
@@ -2735,10 +3055,25 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			valid = false
 			validationError = parseErr.Error()
 		}
+	} else if projectorchestration.NodeKind(kind) == projectorchestration.NodeQA {
+		if !structuredQAHandoff(task.Result) {
+			valid = false
+			validationError = "qa_handoff must contain a passing verdict and completed acceptance evidence"
+		}
 	} else if projectNodeUsesIssueWorkflow(projectorchestration.NodeKind(kind)) {
 		if _, parseErr := parseImplementationHandoff(task.Result); parseErr != nil {
 			valid = false
 			validationError = parseErr.Error()
+		}
+	}
+	if valid && !reviewerTask && kind == "implementation" {
+		changeSet, err = taskCommitFromResult(task.Result, issue.WorkspaceID, issue.ProjectID, planID, nodeID, issue.ID, task.ID, task.AgentID)
+		if err != nil {
+			changeSetMetadataError = err.Error()
+		}
+		if changeSetMetadataError != "" {
+			valid = false
+			validationError = changeSetMetadataError
 		}
 	}
 
@@ -2779,10 +3114,55 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 		"Task result: "+issue.Title, content, task.AgentID, status, valid,
 		validationError, specRevision, util.UUIDToString(task.ID)).Scan(&artifactID)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if changeSet != nil {
+			if err := projectorchestration.RecordTaskCommit(ctx, tx, *changeSet); err != nil {
+				return false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return false, err
+			}
+			return r.finalizeProjectChangeSetQuality(ctx, task, issue, artifactType, artifactPayload, true)
+		}
+		if changeSetMetadataError != "" {
+			if err := tx.Commit(ctx); err != nil {
+				return false, err
+			}
+			return r.blockProjectChangeSetEvidence(ctx, task, issue, planID, nodeID, nodeKey, validationError)
+		}
+		if projectorchestration.NodeKind(kind) == projectorchestration.NodeQA {
+			var existingID pgtype.UUID
+			var existingStatus string
+			var existingValid bool
+			err := tx.QueryRow(ctx, `
+				SELECT id, status, valid
+				FROM autonomous_project_artifact
+				WHERE workspace_id=$1 AND project_id=$2 AND plan_id=$3 AND node_id=$4
+				  AND artifact_type='qa_handoff' AND content ->> 'task_id'=$5
+				ORDER BY created_at DESC
+				LIMIT 1
+			`, issue.WorkspaceID, issue.ProjectID, planID, nodeID, util.UUIDToString(task.ID)).Scan(&existingID, &existingStatus, &existingValid)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return false, tx.Commit(ctx)
+			}
+			if err != nil {
+				return false, fmt.Errorf("load existing QA handoff artifact: %w", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return false, err
+			}
+			artifactPayload["artifact_id"] = util.UUIDToString(existingID)
+			artifactPayload["valid"] = existingValid && existingStatus == "active"
+			return r.finalizeProjectChangeSetQuality(ctx, task, issue, artifactType, artifactPayload, false)
+		}
 		return false, tx.Commit(ctx)
 	}
 	if err != nil {
 		return false, fmt.Errorf("record project task artifact: %w", err)
+	}
+	if changeSet != nil {
+		if err := projectorchestration.RecordTaskCommit(ctx, tx, *changeSet); err != nil {
+			return false, err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_artifact
@@ -2797,7 +3177,10 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 	}
 
 	if !valid {
-		if !projectNodeUsesIssueWorkflow(projectorchestration.NodeKind(kind)) {
+		if changeSetMetadataError != "" {
+			return r.blockProjectChangeSetEvidence(ctx, task, issue, planID, nodeID, nodeKey, validationError)
+		}
+		if !projectNodeUsesIssueWorkflow(projectorchestration.NodeKind(kind)) || projectorchestration.NodeKind(kind) == projectorchestration.NodeQA {
 			if r.projectStore != nil {
 				_ = r.projectStore.SetNodeBlocked(ctx, issue.WorkspaceID, issue.ProjectID, nodeKey, "quality_policy", validationError)
 			}
@@ -2842,9 +3225,95 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			return false, fmt.Errorf("record project brain artifact knowledge: %w", err)
 		}
 	}
+	artifactPayload["artifact_id"] = util.UUIDToString(artifactID)
+	artifactPayload["valid"] = valid
 
-	return r.runTaskQualityIfRequired(ctx, task, issue, artifactType, artifactPayload)
+	return r.finalizeProjectChangeSetQuality(ctx, task, issue, artifactType, artifactPayload, changeSet != nil)
 }
+
+func (r *Runtime) finalizeProjectChangeSetQuality(ctx context.Context, task db.AgentTaskQueue, issue db.Issue, artifactType string, artifact map[string]any, hasChangeSet bool) (bool, error) {
+	blocked, err := r.runTaskQualityIfRequired(ctx, task, issue, artifactType, artifact)
+	if err != nil {
+		return blocked, err
+	}
+	if hasChangeSet && !blocked {
+		q, err := r.loadNodeQualityByIssue(ctx, issue.WorkspaceID, issue.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("load project quality evidence for change set: %w", err)
+		}
+		ready, err := r.hasCurrentDeterministicQualityEvidence(ctx, q, util.UUIDToString(task.ID))
+		if err != nil {
+			return false, err
+		}
+		if !ready {
+			return false, nil
+		}
+		if _, err := r.pool.Exec(ctx, `
+			UPDATE autonomous_project_change_set
+			SET merge_status='ready', ready_at=now(), updated_at=now()
+			WHERE source_task_id=$1 AND merge_status='changes_requested'
+		`, task.ID); err != nil {
+			return false, fmt.Errorf("mark project change set ready after quality gates: %w", err)
+		}
+	}
+	return blocked, nil
+}
+
+func (r *Runtime) blockProjectChangeSetEvidence(ctx context.Context, task db.AgentTaskQueue, issue db.Issue, planID, nodeID pgtype.UUID, nodeKey, message string) (bool, error) {
+	if r.projectStore != nil {
+		_ = r.projectStore.SetNodeBlocked(ctx, issue.WorkspaceID, issue.ProjectID, nodeKey, "contract_violation", message)
+	}
+	_, _ = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked)
+	contextJSON, _ := json.Marshal(map[string]any{
+		"node_id": util.UUIDToString(nodeID), "issue_id": util.UUIDToString(issue.ID),
+		"task_id": util.UUIDToString(task.ID), "error": message,
+	})
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_escalation (
+			workspace_id, project_id, plan_id, node_id, category, severity, summary, context
+		) VALUES ($1,$2,$3,$4,'contract_violation','high',$5,$6)
+	`, issue.WorkspaceID, issue.ProjectID, planID, nodeID,
+		"Daemon commit evidence is incomplete: "+issue.Title, contextJSON); err != nil {
+		return true, fmt.Errorf("record missing project change set evidence: %w", err)
+	}
+	return true, nil
+}
+
+func taskCommitFromResult(result []byte, workspaceID, projectID, planID, nodeID, issueID, taskID, agentID pgtype.UUID) (*projectorchestration.TaskCommit, error) {
+	var evidence struct {
+		BranchName           string   `json:"branch_name"`
+		WorktreeBaseSHA      string   `json:"worktree_base_sha"`
+		WorktreeCommitSHA    string   `json:"worktree_commit_sha"`
+		WorktreeChangedFiles []string `json:"worktree_changed_files"`
+		WorktreePath         string   `json:"worktree_path"`
+		WorktreeRepoPath     string   `json:"worktree_repo_path"`
+	}
+	if err := json.Unmarshal(result, &evidence); err != nil {
+		return nil, fmt.Errorf("decode daemon worktree evidence: %w", err)
+	}
+	hasWorktreeEvidence := evidence.BranchName != "" || evidence.WorktreeBaseSHA != "" ||
+		evidence.WorktreeCommitSHA != "" || len(evidence.WorktreeChangedFiles) > 0 ||
+		evidence.WorktreePath != "" || evidence.WorktreeRepoPath != ""
+	if !hasWorktreeEvidence {
+		return nil, fmt.Errorf("implementation completion did not include daemon-observed worktree commit evidence")
+	}
+	if strings.TrimSpace(evidence.BranchName) == "" || strings.TrimSpace(evidence.WorktreeBaseSHA) == "" ||
+		strings.TrimSpace(evidence.WorktreeCommitSHA) == "" || strings.TrimSpace(evidence.WorktreePath) == "" ||
+		strings.TrimSpace(evidence.WorktreeRepoPath) == "" || len(evidence.WorktreeChangedFiles) == 0 {
+		return nil, fmt.Errorf("daemon worktree evidence is incomplete; commit, branch, paths, and changed files are required")
+	}
+	return &projectorchestration.TaskCommit{
+		WorkspaceID: workspaceID, ProjectID: projectID, PlanID: planID, NodeID: nodeID,
+		IssueID: issueID, TaskID: taskID, AgentID: agentID, BaseSHA: evidence.WorktreeBaseSHA,
+		CommitSHA: evidence.WorktreeCommitSHA, BranchName: evidence.BranchName,
+		Worktree: evidence.WorktreePath, RepoPath: evidence.WorktreeRepoPath,
+		ChangedFiles: evidence.WorktreeChangedFiles,
+	}, nil
+}
+
 func projectArtifactType(kind projectorchestration.NodeKind) string {
 	switch kind {
 	case projectorchestration.NodeProduct:
@@ -2854,7 +3323,7 @@ func projectArtifactType(kind projectorchestration.NodeKind) string {
 	case projectorchestration.NodeReview:
 		return "review"
 	case projectorchestration.NodeQA:
-		return "qa_report"
+		return "qa_handoff"
 	case projectorchestration.NodeSecurity:
 		return "security_review"
 	case projectorchestration.NodeIntegration:

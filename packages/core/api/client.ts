@@ -110,6 +110,8 @@ import type {
   StartMikaOnboardingResponse,
   CancelTaskResponse,
   Project,
+  AutonomousProjectPlanSnapshot,
+  ApproveAutonomousProjectPlanResponse,
   AutonomousProjectSnapshot,
   ProjectLeaderChat,
   ProjectLeaderChangeRequest,
@@ -284,6 +286,10 @@ import {
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
+  ApproveAutonomousProjectPlanResponseSchema,
+  AutonomousProjectControlSchema,
+  AutonomousProjectPlanSnapshotSchema,
+  CancelProjectAutonomousResponseSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
@@ -306,6 +312,9 @@ import {
   AgentBuilderSessionSchema,
   AgentBuilderSessionListSchema,
   EMPTY_AGENT_BUILDER_SESSION_LIST,
+  EMPTY_APPROVE_AUTONOMOUS_PROJECT_PLAN_RESPONSE,
+  EMPTY_AUTONOMOUS_PROJECT_CONTROL,
+  EMPTY_CANCEL_PROJECT_AUTONOMOUS_RESPONSE,
   agentBuilderRuntimeSwitchFallback,
   DashboardAgentRunTimeListSchema,
   DashboardRunTimeDailyListSchema,
@@ -4185,7 +4194,42 @@ export class ApiClient {
   }
 
   async getProjectAutonomous(id: string): Promise<AutonomousProjectSnapshot> {
-    return this.fetch(`/api/projects/${id}/autonomous`);
+    const endpoint = `/api/projects/${id}/autonomous`;
+    const snapshot = await this.fetch<AutonomousProjectSnapshot>(endpoint);
+    return {
+      ...snapshot,
+      control: parseWithFallback(
+        snapshot?.control,
+        AutonomousProjectControlSchema,
+        EMPTY_AUTONOMOUS_PROJECT_CONTROL,
+        { endpoint },
+      ),
+      plan: snapshot?.plan == null
+        ? null
+        : parseWithFallback<AutonomousProjectPlanSnapshot | null>(
+            snapshot.plan,
+            AutonomousProjectPlanSnapshotSchema,
+            null,
+            { endpoint: `${endpoint} plan` },
+          ),
+    };
+  }
+
+  async approveProjectAutonomousPlan(
+    id: string,
+    planDigest: string,
+  ): Promise<ApproveAutonomousProjectPlanResponse> {
+    const endpoint = `POST /api/projects/{id}/autonomous/plan/approve`;
+    const raw = await this.fetch<unknown>(`/api/projects/${id}/autonomous/plan/approve`, {
+      method: "POST",
+      body: JSON.stringify({ plan_digest: planDigest }),
+    });
+    return parseWithFallback(
+      raw,
+      ApproveAutonomousProjectPlanResponseSchema,
+      EMPTY_APPROVE_AUTONOMOUS_PROJECT_PLAN_RESPONSE,
+      { endpoint },
+    );
   }
 
   async getProjectLeaderChat(id: string): Promise<ProjectLeaderChat> {
@@ -4213,6 +4257,19 @@ export class ApiClient {
 
   async pauseProjectAutonomous(id: string): Promise<{ paused: boolean }> {
     return this.fetch(`/api/projects/${id}/autonomous/pause`, { method: "POST" });
+  }
+
+  async cancelProjectAutonomous(id: string): Promise<{ cancelled: boolean }> {
+    const raw = await this.fetch<unknown>(
+      `/api/projects/${id}/autonomous/cancel`,
+      { method: "POST" },
+    );
+    return parseWithFallback(
+      raw,
+      CancelProjectAutonomousResponseSchema,
+      EMPTY_CANCEL_PROJECT_AUTONOMOUS_RESPONSE,
+      { endpoint: "POST /api/projects/{id}/autonomous/cancel" },
+    );
   }
 
   async resumeProjectAutonomous(id: string): Promise<{ paused: boolean }> {

@@ -107,6 +107,14 @@ func (r *Runtime) ensureNodeQualityPolicy(ctx context.Context, workspaceID, proj
 		`, q.WorkspaceID, q.ProjectID, q.PlanID, q.NodeID, req.GateType, evidence); err != nil {
 			return fmt.Errorf("seed quality gate %s: %w", req.GateType, err)
 		}
+		if _, err := r.pool.Exec(ctx, `
+			UPDATE autonomous_project_quality_gate_run
+			SET evidence=jsonb_set(evidence, '{deterministic}', to_jsonb($5::boolean), TRUE)
+			WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3 AND gate_type=$4
+			  AND required=TRUE AND evidence ->> 'policy_requirement' = 'true'
+		`, q.WorkspaceID, q.ProjectID, q.NodeID, req.GateType, req.Deterministic); err != nil {
+			return fmt.Errorf("refresh quality gate %s policy: %w", req.GateType, err)
+		}
 	}
 	return nil
 }
@@ -125,6 +133,9 @@ func (r *Runtime) requiredGate(ctx context.Context, q nodeQualityContext, gateTy
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, nil
 	}
+	if q.Kind == projectorchestration.NodeQA && gateType == "acceptance" {
+		return true, false, err
+	}
 	return true, deterministic, err
 }
 
@@ -138,10 +149,15 @@ func (r *Runtime) recordPolicyGate(ctx context.Context, q nodeQualityContext, ga
 		UPDATE autonomous_project_quality_gate_run
 		SET status=$5,
 		    evidence=evidence || $6::jsonb,
+		    executed_command=NULLIF($6::jsonb #>> '{runner_evidence,executed_command}',''),
+		    exit_code=CASE WHEN $6::jsonb #>> '{runner_evidence,exit_code}' ~ '^-?[0-9]+$' THEN ($6::jsonb #>> '{runner_evidence,exit_code}')::integer ELSE NULL END,
+		    worktree_path=NULLIF($6::jsonb #>> '{runner_evidence,worktree_path}',''),
+		    commit_sha=NULLIF($6::jsonb #>> '{runner_evidence,commit_sha}',''),
+		    runner_type=NULLIF($6::jsonb #>> '{runner_evidence,runner_type}',''),
 		    attempt=attempt+1,
 		    last_error=NULLIF($7,''),
 		    started_at=COALESCE(started_at,now()),
-		    completed_at=CASE WHEN $5 IN ('passed','failed','skipped') THEN now() ELSE completed_at END,
+		    completed_at=CASE WHEN $5 IN ('passed','failed','blocked','unavailable','inconclusive','waived','skipped') THEN now() ELSE completed_at END,
 		    updated_at=now()
 		WHERE id = (
 			SELECT id FROM autonomous_project_quality_gate_run
@@ -175,7 +191,7 @@ func (r *Runtime) passSemanticGate(ctx context.Context, q nodeQualityContext, ga
 	return r.recordPolicyGate(ctx, q, gateType, "passed", "", evidence)
 }
 
-func (r *Runtime) runDeterministicGate(ctx context.Context, q nodeQualityContext, gateType string, artifact map[string]any) error {
+func (r *Runtime) runDeterministicGate(ctx context.Context, q nodeQualityContext, taskID, gateType string, artifact map[string]any) error {
 	required, deterministic, err := r.requiredGate(ctx, q, gateType)
 	if err != nil || !required {
 		return err
@@ -183,29 +199,104 @@ func (r *Runtime) runDeterministicGate(ctx context.Context, q nodeQualityContext
 	if !deterministic {
 		return r.passSemanticGate(ctx, q, gateType, artifact)
 	}
-	if r.qualityGateRunner == nil {
-		gateErr := fmt.Sprintf("%v: %s", projectorchestration.ErrQualityGateUnavailable, gateType)
-		_ = r.recordPolicyGate(ctx, q, gateType, "failed", gateErr, map[string]any{"mode": "missing_runner"})
-		return fmt.Errorf("%w: gate=%s autonomy=%s", projectorchestration.ErrQualityGateUnavailable, gateType, q.Policy.Autonomy)
+	taskUUID, err := util.ParseUUID(taskID)
+	if err != nil {
+		gateErr := fmt.Errorf("invalid quality gate task identity: %w", err)
+		return r.recordUnavailableTaskQualityGate(ctx, q, gateType, taskID, gateErr)
 	}
-	result, runErr := r.qualityGateRunner.Run(ctx, projectorchestration.QualityGateRequest{
+	var worktreePath, repoPath, commitSHA string
+	if err := r.pool.QueryRow(ctx, `
+		SELECT worktree_path, repo_path, commit_sha
+		FROM autonomous_project_change_set
+		WHERE workspace_id=$1 AND project_id=$2 AND plan_id=$3
+		  AND node_id=$4 AND issue_id=$5 AND source_task_id=$6
+	`, q.WorkspaceID, q.ProjectID, q.PlanID, q.NodeID, q.IssueID, taskUUID).Scan(&worktreePath, &repoPath, &commitSHA); err != nil {
+		gateErr := fmt.Errorf("load recorded task commit for quality gate: %w", err)
+		return r.recordUnavailableTaskQualityGate(ctx, q, gateType, taskID, gateErr)
+	}
+	request := projectorchestration.QualityGateRequest{
 		WorkspaceID: q.WorkspaceID, ProjectID: q.ProjectID, PlanID: q.PlanID,
-		NodeID: q.NodeID, IssueID: q.IssueID, GateType: gateType, Artifact: artifact,
-	})
-	evidence := map[string]any{"mode": "deterministic_runner", "runner_evidence": result.Evidence}
+		NodeID: q.NodeID, IssueID: q.IssueID, TaskID: taskUUID, GateType: gateType,
+		WorktreePath: worktreePath, RepoPath: repoPath, CommitSHA: commitSHA,
+		Artifact: withoutAgentTestClaims(artifact),
+	}
+	result, status, runErr := evaluateQualityGate(ctx, r.qualityGateRunner, request)
+	mode := "deterministic_runner"
+	if r.qualityGateRunner == nil {
+		mode = "missing_runner"
+	}
+	evidence := map[string]any{"mode": mode, "runner_evidence": result.Evidence, "source_task_id": taskID}
 	if runErr != nil {
-		_ = r.recordPolicyGate(ctx, q, gateType, "failed", runErr.Error(), evidence)
+		message := runErr.Error()
+		if r.qualityGateRunner == nil {
+			message = fmt.Sprintf("%v: %s", projectorchestration.ErrQualityGateUnavailable, gateType)
+			runErr = fmt.Errorf("%w: gate=%s autonomy=%s", projectorchestration.ErrQualityGateUnavailable, gateType, q.Policy.Autonomy)
+		}
+		if recordErr := r.recordPolicyGate(ctx, q, gateType, status, message, evidence); recordErr != nil {
+			return errors.Join(runErr, fmt.Errorf("record deterministic quality gate %s: %w", gateType, recordErr))
+		}
 		return runErr
 	}
-	if !result.Passed {
-		msg := strings.TrimSpace(result.Error)
-		if msg == "" {
-			msg = "deterministic quality gate failed"
-		}
-		_ = r.recordPolicyGate(ctx, q, gateType, "failed", msg, evidence)
-		return errors.New(msg)
+	return r.recordPolicyGate(ctx, q, gateType, status, "", evidence)
+}
+
+func (r *Runtime) recordUnavailableTaskQualityGate(ctx context.Context, q nodeQualityContext, gateType, taskID string, gateErr error) error {
+	evidence := map[string]any{"mode": "missing_task_commit", "source_task_id": taskID}
+	if recordErr := r.recordPolicyGate(ctx, q, gateType, "unavailable", gateErr.Error(), evidence); recordErr != nil {
+		return errors.Join(gateErr, fmt.Errorf("record unavailable task quality gate %s: %w", gateType, recordErr))
 	}
-	return r.recordPolicyGate(ctx, q, gateType, "passed", "", evidence)
+	return gateErr
+}
+
+func evaluateQualityGate(
+	ctx context.Context,
+	runner projectorchestration.QualityGateRunner,
+	request projectorchestration.QualityGateRequest,
+) (projectorchestration.QualityGateResult, string, error) {
+	if runner == nil {
+		return projectorchestration.QualityGateResult{}, "unavailable", projectorchestration.ErrQualityGateUnavailable
+	}
+	result, err := runner.Run(ctx, request)
+	if err != nil {
+		return result, "unavailable", err
+	}
+	if result.Passed {
+		if err := projectorchestration.ValidateQualityGatePass(request, result); err != nil {
+			result.Passed = false
+			result.Error = err.Error()
+			return result, "unavailable", err
+		}
+		return result, "passed", nil
+	}
+	message := strings.TrimSpace(result.Error)
+	if message == "" {
+		message = "deterministic quality gate failed"
+	}
+	return result, "failed", errors.New(message)
+}
+
+func withoutAgentTestClaims(artifact map[string]any) map[string]any {
+	if artifact == nil {
+		return nil
+	}
+	cleaned := make(map[string]any, len(artifact))
+	for key, value := range artifact {
+		if key != "tests" {
+			cleaned[key] = value
+		}
+	}
+	result, ok := artifact["result"].(map[string]any)
+	if !ok {
+		return cleaned
+	}
+	cleanedResult := make(map[string]any, len(result))
+	for key, value := range result {
+		if key != "tests" {
+			cleanedResult[key] = value
+		}
+	}
+	cleaned["result"] = cleanedResult
+	return cleaned
 }
 
 func (r *Runtime) blockForQualityFailure(ctx context.Context, q nodeQualityContext, gateType string, cause error) error {
@@ -247,45 +338,72 @@ func (r *Runtime) runTaskQualityIfRequired(ctx context.Context, task db.AgentTas
 
 func (r *Runtime) applyTaskQualityEvidence(ctx context.Context, q nodeQualityContext, taskID, artifactType string, artifact map[string]any) (bool, error) {
 	for _, requirement := range projectorchestration.RequiredQualityGates(q.Policy, q.Kind, q.Risk) {
+		if requirement.Deterministic && artifactType == "review" {
+			continue
+		}
+		qaArtifactID := ""
+		if !requirement.Deterministic {
+			if requirement.GateType == "review" && artifactType == "review" && reviewApproved(artifact) {
+				// The structured review handoff is evaluated below.
+			} else if q.Kind == projectorchestration.NodeQA && requirement.GateType == "acceptance" {
+				var valid bool
+				var artifactErr error
+				qaArtifactID, valid, artifactErr = r.hasDurableQAHandoffArtifact(ctx, q, taskID, artifactType, artifact)
+				if artifactErr != nil {
+					return false, fmt.Errorf("validate durable QA handoff artifact: %w", artifactErr)
+				}
+				if !valid {
+					gateErr := errors.New("acceptance requires a valid durable qa_handoff artifact")
+					if err := r.blockForQualityFailure(ctx, q, requirement.GateType, gateErr); err != nil {
+						return true, err
+					}
+					return true, nil
+				}
+			} else {
+				continue
+			}
+		}
 		var status string
+		var sourceTaskID string
+		var qaHandoffArtifactID string
 		err := r.pool.QueryRow(ctx, `
-			SELECT status
+			SELECT status, COALESCE(evidence ->> 'source_task_id', ''), COALESCE(evidence ->> 'qa_handoff_artifact_id', '')
 			FROM autonomous_project_quality_gate_run
 			WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
 			  AND gate_type=$4 AND required=TRUE
 			  AND evidence ->> 'policy_requirement' = 'true'
 			ORDER BY created_at DESC
 			LIMIT 1
-		`, q.WorkspaceID, q.ProjectID, q.NodeID, requirement.GateType).Scan(&status)
-		if errors.Is(err, pgx.ErrNoRows) || status == "passed" {
+		`, q.WorkspaceID, q.ProjectID, q.NodeID, requirement.GateType).Scan(&status, &sourceTaskID, &qaHandoffArtifactID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			if requirement.Deterministic {
+				gateErr := fmt.Errorf("required quality gate %s was not seeded", requirement.GateType)
+				if err := r.blockForQualityFailure(ctx, q, requirement.GateType, gateErr); err != nil {
+					return true, err
+				}
+				return true, nil
+			}
 			continue
 		}
 		if err != nil {
 			return false, err
 		}
+		if status == "passed" && sourceTaskID == taskID &&
+			(q.Kind != projectorchestration.NodeQA || requirement.GateType != "acceptance" || qaHandoffArtifactID == qaArtifactID) {
+			continue
+		}
 
 		var gateErr error
 		if requirement.Deterministic {
-			if artifactType == "review" {
-				continue
-			}
-			if r.qualityGateRunner != nil {
-				gateErr = r.runDeterministicGate(ctx, q, requirement.GateType, artifact)
-			} else if testCount, passed := structuredTestsPassed(requirement.GateType, artifact); passed {
-				gateErr = r.recordPolicyGate(ctx, q, requirement.GateType, "passed", "", map[string]any{
-					"mode": "structured_test_evidence", "task_id": taskID,
-					"artifact_type": artifactType, "reported_test_count": testCount,
-				})
-			} else {
-				gateErr = fmt.Errorf("%w: gate=%s has no all-passing structured test evidence", projectorchestration.ErrQualityGateUnavailable, requirement.GateType)
-			}
+			gateErr = r.runDeterministicGate(ctx, q, taskID, requirement.GateType, artifact)
 		} else {
-			if requirement.GateType != "review" || artifactType != "review" || !reviewApproved(artifact) {
-				continue
-			}
-			gateErr = r.passSemanticGate(ctx, q, requirement.GateType, map[string]any{
+			evidence := map[string]any{
 				"task_id": taskID, "artifact_type": artifactType,
-			})
+			}
+			if qaArtifactID != "" {
+				evidence["qa_handoff_artifact_id"] = qaArtifactID
+			}
+			gateErr = r.passSemanticGate(ctx, q, requirement.GateType, evidence)
 		}
 		if gateErr == nil {
 			continue
@@ -296,6 +414,57 @@ func (r *Runtime) applyTaskQualityEvidence(ctx context.Context, q nodeQualityCon
 		return true, nil
 	}
 	return false, nil
+}
+
+type taskQualityEvidence struct {
+	Status       string
+	SourceTaskID string
+}
+
+func hasCurrentDeterministicQualityEvidence(
+	requirements []projectorchestration.QualityRequirement,
+	evidence map[string]taskQualityEvidence,
+	taskID string,
+) bool {
+	required := false
+	for _, requirement := range requirements {
+		if !requirement.Deterministic {
+			continue
+		}
+		required = true
+		gate, ok := evidence[requirement.GateType]
+		if !ok || gate.Status != "passed" || gate.SourceTaskID != taskID {
+			return false
+		}
+	}
+	return required
+}
+
+func (r *Runtime) hasCurrentDeterministicQualityEvidence(ctx context.Context, q nodeQualityContext, taskID string) (bool, error) {
+	requirements := projectorchestration.RequiredQualityGates(q.Policy, q.Kind, q.Risk)
+	evidence := make(map[string]taskQualityEvidence, len(requirements))
+	for _, requirement := range requirements {
+		if !requirement.Deterministic {
+			continue
+		}
+		var gate taskQualityEvidence
+		err := r.pool.QueryRow(ctx, `
+			SELECT status, COALESCE(evidence ->> 'source_task_id', '')
+			FROM autonomous_project_quality_gate_run
+			WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
+			  AND gate_type=$4 AND required=TRUE
+			  AND evidence ->> 'policy_requirement' = 'true'
+			ORDER BY created_at DESC LIMIT 1
+		`, q.WorkspaceID, q.ProjectID, q.NodeID, requirement.GateType).Scan(&gate.Status, &gate.SourceTaskID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("read deterministic quality evidence for %s: %w", requirement.GateType, err)
+		}
+		evidence[requirement.GateType] = gate
+	}
+	return hasCurrentDeterministicQualityEvidence(requirements, evidence, taskID), nil
 }
 
 func structuredTestsPassed(gateType string, artifact map[string]any) (int, bool) {
@@ -331,6 +500,76 @@ func structuredQAHandoff(content []byte) bool {
 	}
 	_, passed := structuredTestsPassed("acceptance", map[string]any{"result": result})
 	return passed
+}
+
+func validatedQAHandoffArtifactID(artifactType string, artifact map[string]any) (string, bool) {
+	if artifactType != "qa_handoff" {
+		return "", false
+	}
+	valid, ok := artifact["valid"].(bool)
+	if !ok || !valid {
+		return "", false
+	}
+	artifactID, ok := artifact["artifact_id"].(string)
+	if !ok || strings.TrimSpace(artifactID) == "" {
+		return "", false
+	}
+	if _, err := util.ParseUUID(artifactID); err != nil {
+		return "", false
+	}
+	agentID, ok := artifact["agent_id"].(string)
+	if !ok || strings.TrimSpace(agentID) == "" {
+		return "", false
+	}
+	if _, err := util.ParseUUID(agentID); err != nil {
+		return "", false
+	}
+	result, ok := artifact["result"]
+	if !ok {
+		return "", false
+	}
+	content, err := json.Marshal(result)
+	if err != nil || !structuredQAHandoff(content) {
+		return "", false
+	}
+	return artifactID, true
+}
+
+func (r *Runtime) hasDurableQAHandoffArtifact(
+	ctx context.Context,
+	q nodeQualityContext,
+	taskID, artifactType string,
+	artifact map[string]any,
+) (string, bool, error) {
+	artifactID, valid := validatedQAHandoffArtifactID(artifactType, artifact)
+	if !valid {
+		return "", false, nil
+	}
+	resultJSON, err := json.Marshal(artifact["result"])
+	if err != nil {
+		return "", false, nil
+	}
+	agentID, ok := artifact["agent_id"].(string)
+	if !ok {
+		return "", false, nil
+	}
+	var durable bool
+	err = r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM autonomous_project_artifact
+			WHERE id=$1::uuid AND workspace_id=$2 AND project_id=$3
+			  AND plan_id=$4 AND node_id=$5
+			  AND artifact_type='qa_handoff' AND status='active'
+			  AND valid=TRUE AND immutable=TRUE AND producer_agent_id=$8::uuid
+			  AND content ->> 'task_id'=$6 AND content ->> 'issue_id'=$7
+			  AND content -> 'result'=$9::jsonb
+		)
+	`, artifactID, q.WorkspaceID, q.ProjectID, q.PlanID, q.NodeID, taskID,
+		util.UUIDToString(q.IssueID), agentID, string(resultJSON)).Scan(&durable)
+	if err != nil {
+		return "", false, err
+	}
+	return artifactID, durable, nil
 }
 
 func nonBlockingTestFailure(test map[string]any, findings []any) bool {

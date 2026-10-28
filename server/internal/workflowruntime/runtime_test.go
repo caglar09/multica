@@ -26,6 +26,7 @@ func TestSoftwareDevelopmentWorkflowDefinition(t *testing.T) {
 
 	wantTransitions := map[string]string{
 		"in_progress/workflow.started":           "in_progress",
+		"in_progress/workflow.review_requested":  "in_review",
 		"in_progress/implementation.completed":   "in_review",
 		"in_progress/implementation.failed":      "blocked",
 		"in_progress/issue.completed":            "done",

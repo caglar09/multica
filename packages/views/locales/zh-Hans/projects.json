@@ -257,6 +257,12 @@
     "pause_execution": "暂停循环",
     "resume_execution": "恢复循环",
     "replan_project": "重新规划",
+    "cancel_execution": "终止自主执行",
+    "cancelled_status": "已永久终止",
+    "cancel_dialog_title": "要永久终止自主执行吗？",
+    "cancel_dialog_description": "这会停止正在执行的项目任务，之后无法恢复或重新规划。",
+    "cancel_dialog_keep": "继续执行",
+    "cancel_dialog_confirm": "永久终止项目",
     "ask_pm": "咨询项目经理",
     "health_running": "自主循环执行中",
     "health_paused": "执行已暂停",
@@ -310,6 +316,8 @@
     "toast_pause_error": "暂停执行失败",
     "toast_replan_success": "重新规划请求已提交",
     "toast_replan_error": "重新规划请求失败",
+    "toast_cancel_success": "自主执行已永久终止",
+    "toast_cancel_error": "无法终止自主执行",
     "bootstrapping_title": "自主团队提案",
     "bootstrapping_desc": "项目规划者已为此项目制定了专业团队方案。请审查分配并确认以配置 Agent。",
     "bootstrapping_confirm_button": "确认并启动团队",
@@ -502,5 +510,16 @@
     "default_provider_name": "Vercel",
     "unlink_target": "解除目标连接",
     "unlink_target_confirm": "要解除此部署目标的连接吗？"
+  },
+  "plan_approval": {
+    "title": "计划审批",
+    "pending_description": "开始执行前，请先检查此计划版本。",
+    "approved_description": "此计划版本已有审批记录。",
+    "digest": "计划摘要",
+    "digest_missing": "此计划没有摘要，无法审批。",
+    "admin_only": "只有工作区管理员可以审批此计划。",
+    "approve": "审批此版本",
+    "approve_success": "计划已审批；符合条件的工作现在可以开始。",
+    "approve_error": "无法审批此计划。"
   }
 }

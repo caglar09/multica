@@ -525,7 +525,7 @@ func (r *Runtime) executeQualityGateJob(ctx context.Context, job controlPlaneJob
 	if !deterministic {
 		return nil, errors.New("semantic quality gate was incorrectly queued as deterministic work")
 	}
-	if err := r.runDeterministicGate(ctx, q, payload.GateType, payload.Artifact); err != nil {
+	if err := r.runDeterministicGate(ctx, q, payload.TaskID, payload.GateType, payload.Artifact); err != nil {
 		return nil, err
 	}
 	if err := r.handleTaskCompleted(ctx, events.Event{

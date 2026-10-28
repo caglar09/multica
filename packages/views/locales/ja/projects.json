@@ -257,6 +257,12 @@
     "pause_execution": "ループを一時停止",
     "resume_execution": "ループを再開",
     "replan_project": "再計画",
+    "cancel_execution": "実行を終了",
+    "cancelled_status": "永久に終了しました",
+    "cancel_dialog_title": "自律実行を永久に終了しますか？",
+    "cancel_dialog_description": "実行中のプロジェクトタスクを停止します。終了後は再開や再計画ができません。",
+    "cancel_dialog_keep": "続行する",
+    "cancel_dialog_confirm": "プロジェクトを終了",
     "ask_pm": "プロジェクトマネージャーに質問",
     "health_running": "自律ループ実行中",
     "health_paused": "実行一時停止",
@@ -310,6 +316,8 @@
     "toast_pause_error": "実行の一時停止に失敗しました",
     "toast_replan_success": "再計画リクエストを送信しました",
     "toast_replan_error": "再計画リクエストに失敗しました",
+    "toast_cancel_success": "自律実行を終了しました",
+    "toast_cancel_error": "自律実行を終了できませんでした",
     "bootstrapping_title": "自律スクワッド提案",
     "bootstrapping_desc": "プロジェクトプランナーがこのプロジェクト専用のスクワッドを策定しました。エージェントをプロビジョニングするために割り当てを確認および承認してください。",
     "bootstrapping_confirm_button": "スクワッドを承認して開始",
@@ -502,5 +510,16 @@
     "default_provider_name": "Vercel",
     "unlink_target": "ターゲットのリンクを解除",
     "unlink_target_confirm": "このデプロイターゲットのリンクを解除しますか？"
+  },
+  "plan_approval": {
+    "title": "計画の承認",
+    "pending_description": "作業を始める前に、この計画リビジョンを確認してください。",
+    "approved_description": "この計画リビジョンには承認記録があります。",
+    "digest": "計画ダイジェスト",
+    "digest_missing": "この計画にはダイジェストがないため、承認できません。",
+    "admin_only": "この計画を承認できるのはワークスペース管理者のみです。",
+    "approve": "このリビジョンを承認",
+    "approve_success": "計画を承認しました。実行可能な作業を開始できます。",
+    "approve_error": "計画を承認できませんでした。"
   }
 }

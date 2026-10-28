@@ -257,6 +257,12 @@
     "pause_execution": "루프 일시 중지",
     "resume_execution": "루프 재개",
     "replan_project": "다시 계획",
+    "cancel_execution": "실행 종료",
+    "cancelled_status": "영구 종료됨",
+    "cancel_dialog_title": "자율 실행을 영구 종료할까요?",
+    "cancel_dialog_description": "진행 중인 프로젝트 작업을 중지합니다. 종료 후에는 재개하거나 다시 계획할 수 없습니다.",
+    "cancel_dialog_keep": "계속 실행",
+    "cancel_dialog_confirm": "프로젝트 영구 종료",
     "ask_pm": "프로젝트 매니저에게 질문",
     "health_running": "자율 루프 실행 중",
     "health_paused": "실행 일시 중지됨",
@@ -310,6 +316,8 @@
     "toast_pause_error": "실행을 일시 정지하지 못했습니다",
     "toast_replan_success": "재계획이 요청되었습니다",
     "toast_replan_error": "재계획 요청에 실패했습니다",
+    "toast_cancel_success": "자율 실행이 영구 종료되었습니다",
+    "toast_cancel_error": "자율 실행을 종료하지 못했습니다",
     "bootstrapping_title": "자율 스쿼드 제안",
     "bootstrapping_desc": "프로젝트 기획자가 이 프로젝트를 위한 전문 스쿼드를 구성했습니다. 에이전트를 프로비저닝하려면 할당을 검토하고 승인하세요.",
     "bootstrapping_confirm_button": "스쿼드 승인 및 시작",
@@ -502,5 +510,16 @@
     "default_provider_name": "Vercel",
     "unlink_target": "대상 연결 해제",
     "unlink_target_confirm": "이 배포 대상을 연결 해제할까요?"
+  },
+  "plan_approval": {
+    "title": "계획 승인",
+    "pending_description": "작업을 시작하기 전에 이 계획 리비전을 검토하세요.",
+    "approved_description": "이 계획 리비전에는 승인 기록이 있습니다.",
+    "digest": "계획 다이제스트",
+    "digest_missing": "이 계획에는 다이제스트가 없어 승인할 수 없습니다.",
+    "admin_only": "워크스페이스 관리자만 이 계획을 승인할 수 있습니다.",
+    "approve": "이 리비전 승인",
+    "approve_success": "계획이 승인되어 진행 가능한 작업을 시작할 수 있습니다.",
+    "approve_error": "계획을 승인하지 못했습니다."
   }
 }

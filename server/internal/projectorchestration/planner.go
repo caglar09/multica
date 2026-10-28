@@ -37,16 +37,18 @@ type PlanningResource struct {
 }
 
 type PlanningInput struct {
-	WorkspaceID        pgtype.UUID
-	ProjectID          pgtype.UUID
-	ProjectTitle       string
-	ProjectDescription string
-	BootstrapBrief     string
-	Context            []PlanningContextItem
-	Resources          []PlanningResource
-	Team               []TeamRole
-	CurrentPlan        *Plan
-	Policy             Policy
+	WorkspaceID             pgtype.UUID
+	ProjectID               pgtype.UUID
+	ProjectTitle            string
+	ProjectDescription      string
+	BootstrapBrief          string
+	ProjectSpecification    *ProjectSpecification
+	SpecificationRevisionID string
+	Context                 []PlanningContextItem
+	Resources               []PlanningResource
+	Team                    []TeamRole
+	CurrentPlan             *Plan
+	Policy                  Policy
 }
 
 type RuntimeExecution struct {
@@ -85,6 +87,14 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 	if p == nil || p.executor == nil {
 		return Plan{}, RuntimeExecution{}, ErrPlannerUnavailable
 	}
+	if input.ProjectSpecification != nil {
+		if strings.TrimSpace(input.SpecificationRevisionID) == "" {
+			return Plan{}, RuntimeExecution{}, errors.New("authoritative project specification revision ID is required")
+		}
+		if err := ValidateProjectSpecification(*input.ProjectSpecification); err != nil {
+			return Plan{}, RuntimeExecution{}, fmt.Errorf("validate authoritative project specification: %w", err)
+		}
+	}
 	input.Policy = effectivePlanningPolicy(p.policy, input.Policy)
 	execution, err := p.executor.ExecuteProjectPlan(ctx, input, projectPlannerSystemPrompt(), projectPlannerUserPrompt(input))
 	if err != nil {
@@ -92,6 +102,7 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 	}
 	plan, err := ParsePlan(execution.Output)
 	if err == nil {
+		plan = applyAuthoritativeSpecification(plan, input.ProjectSpecification, input.SpecificationRevisionID)
 		// Policy is backend-owned. The model may echo a policy object for schema
 		// stability, but it cannot raise autonomy, loosen approvals or budgets.
 		plan.Policy = input.Policy
@@ -99,6 +110,9 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 		plan = EnsureLifecycle(plan)
 		plan = HardenPlan(plan)
 		if err = ValidatePlan(plan, p.maxNodes); err == nil {
+			err = ValidateRequirementCoverage(plan)
+		}
+		if err == nil {
 			return plan, execution, nil
 		}
 	}
@@ -108,9 +122,12 @@ func (p *Planner) Plan(ctx context.Context, input PlanningInput) (Plan, RuntimeE
 Validation error:
 %s
 
+Planning contract and authoritative specification:
+%s
+
 Return a corrected complete ProjectPlan JSON object. Do not explain the correction.
 Original output:
-%s`, err, execution.Output)
+%s`, err, projectPlannerUserPrompt(input), execution.Output)
 	repaired, repairErr := p.executor.ExecuteProjectPlan(ctx, input, projectPlannerSystemPrompt(), repairPrompt)
 	if repairErr != nil {
 		return Plan{}, execution, fmt.Errorf("project plan invalid (%v) and repair failed: %w", err, repairErr)
@@ -119,6 +136,7 @@ Original output:
 	if parseErr != nil {
 		return Plan{}, repaired, fmt.Errorf("decode repaired project plan: %w", parseErr)
 	}
+	plan = applyAuthoritativeSpecification(plan, input.ProjectSpecification, input.SpecificationRevisionID)
 	plan.Policy = input.Policy
 	plan = HardenPlan(plan)
 	plan = EnsureLifecycle(plan)
@@ -126,7 +144,21 @@ Original output:
 	if validateErr := ValidatePlan(plan, p.maxNodes); validateErr != nil {
 		return Plan{}, repaired, fmt.Errorf("repaired project plan rejected: %w", validateErr)
 	}
+	if validateErr := ValidateRequirementCoverage(plan); validateErr != nil {
+		return Plan{}, repaired, fmt.Errorf("repaired project plan rejected: %w", validateErr)
+	}
 	return plan, repaired, nil
+}
+
+func applyAuthoritativeSpecification(plan Plan, specification *ProjectSpecification, revisionID string) Plan {
+	if specification == nil {
+		plan.SpecificationRevisionID = ""
+		return plan
+	}
+	plan.Goal = specification.Goal
+	plan.Specification = specification.LegacySpecification()
+	plan.SpecificationRevisionID = revisionID
+	return plan
 }
 
 func effectivePlanningPolicy(server Policy, requested Policy) Policy {
@@ -226,6 +258,11 @@ func projectPlannerUserPrompt(input PlanningInput) string {
 	contextJSON, _ := json.Marshal(input.Context)
 	resourcesJSON, _ := json.Marshal(input.Resources)
 	policyJSON, _ := json.Marshal(input.Policy)
+	projectSpecificationJSON := "null"
+	if input.ProjectSpecification != nil {
+		raw, _ := json.Marshal(input.ProjectSpecification)
+		projectSpecificationJSON = string(raw)
+	}
 	return fmt.Sprintf(`Design the durable execution plan for this software project.
 
 Project:
@@ -233,6 +270,9 @@ Project:
 - title: %s
 - description: %s
 - bootstrap brief: %s
+
+Authoritative versioned ProjectSpecification (preserve its goal and every field when supplied):
+%s
 
 Project Knowledge / Brain context:
 %s
@@ -256,9 +296,12 @@ Return exactly this JSON shape:
   "specification": {
     "summary": "stable product specification",
     "requirements": ["..."],
+    "requirement_details": [{"id": "stable_requirement_id", "text": "...", "rationale": "...", "source": "..."}],
     "non_functional_requirements": ["..."],
     "constraints": ["..."],
-    "definition_of_done": ["..."]
+    "non_goals": ["..."],
+    "definition_of_done": ["..."],
+    "acceptance_expectations": ["..."]
   },
   "policy": {
     "autonomy": "assisted|development|delivery|closed_loop",
@@ -281,6 +324,7 @@ Return exactly this JSON shape:
   "nodes": [
     {
       "key": "stable_snake_case_key",
+      "requirement_ids": ["stable_requirement_id"],
       "kind": "research|product|architecture|design|implementation|migration|integration|review|qa|security|release|deploy|observe|incident",
       "title": "...",
       "description": "...",
@@ -310,6 +354,7 @@ Planning rules:
 10. Keep the plan minimal: every node must contribute to the stated goal.
 11. Treat production deployment, destructive migrations, credentials and irreversible actions as approval-sensitive even under high autonomy.
 12. Every artifact edge MUST declare required_artifact_type. Allowed values: product_spec, architecture, api_contract, data_model, test_plan, implementation_handoff, review, security_review, qa_report, integration_report, release_manifest, deployment_record, incident_report, postmortem, generic. Predecessor completion alone never satisfies an artifact edge.
-`, util.UUIDToString(input.ProjectID), input.ProjectTitle, input.ProjectDescription, input.BootstrapBrief, string(contextJSON), string(resourcesJSON), string(teamJSON), current, string(policyJSON))
+13. When an authoritative ProjectSpecification is supplied, preserve it exactly; keep the legacy requirements string array and add matching requirement_details with the original IDs, rationale and source.
+14. Every requirement ID must appear on at least one implementation or migration node and on a separate, independent review or QA node. Do not invent IDs or attach unknown IDs.
+`, util.UUIDToString(input.ProjectID), input.ProjectTitle, input.ProjectDescription, input.BootstrapBrief, projectSpecificationJSON, string(contextJSON), string(resourcesJSON), string(teamJSON), current, string(policyJSON))
 }
-

@@ -165,6 +165,10 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 	if projectPolicy.Autonomy == "" {
 		projectPolicy = projectorchestration.DefaultPolicy()
 	}
+	qualityGateRunner := projectorchestration.NewWebhookQualityGateRunner(cfg.AdapterConfig)
+	if qualityGateRunner == nil {
+		qualityGateRunner = projectorchestration.NewDaemonQualityGateRunner()
+	}
 	r := &Runtime{
 		ctx:     ctx,
 		pool:    pool,
@@ -183,7 +187,7 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 		projectLeader:      NewMikaProjectLeaderExecutor(pool, taskSvc),
 		brainExecutor:      NewBrainRuntimeExecutor(pool, taskSvc),
 		repositoryAnalyzer: projectorchestration.NewWebhookRepositoryAnalyzer(cfg.AdapterConfig),
-		qualityGateRunner:  projectorchestration.NewWebhookQualityGateRunner(cfg.AdapterConfig),
+		qualityGateRunner:  qualityGateRunner,
 		deploymentAdapter:  projectorchestration.NewWebhookDeploymentAdapter(cfg.AdapterConfig),
 		observationAdapter: projectorchestration.NewWebhookObservationAdapter(cfg.AdapterConfig),
 		planningSem:        make(chan struct{}, 4),
@@ -207,6 +211,7 @@ func RegisterWithPlanner(ctx context.Context, bus *events.Bus, pool *pgxpool.Poo
 	go worker.Run(ctx)
 	go r.runReconciler(ctx)
 	go r.runBrainWorker(ctx)
+	go r.runMergeQueueWorker(ctx)
 
 	slog.Info("autonomous workflow enabled",
 		"workflow", softwareDevelopmentWorkflow,
@@ -406,7 +411,7 @@ func (r *Runtime) isProjectPaused(ctx context.Context, workspaceID, projectID pg
 	}
 	var paused bool
 	err := r.pool.QueryRow(ctx, `
-		SELECT paused
+		SELECT paused OR cancelled_at IS NOT NULL
 		FROM autonomous_project_control
 		WHERE workspace_id = $1 AND project_id = $2
 	`, workspaceID, projectID).Scan(&paused)
@@ -2244,28 +2249,39 @@ func (r *Runtime) normalizeTaskResultFromAgentComment(ctx context.Context, task 
 	if err != nil {
 		return task, err
 	}
+	quality, qualityErr := r.loadNodeQualityByIssue(ctx, issue.WorkspaceID, issue.ID)
+	if qualityErr == nil && quality.Kind == projectorchestration.NodeQA {
+		return task, nil
+	}
+	if qualityErr != nil && !errors.Is(qualityErr, pgx.ErrNoRows) {
+		return task, qualityErr
+	}
+	task.Result = normalizeTaskResultFromAgentCommentContent(task.Result, quality.Kind, content)
+	return task, nil
+}
+
+func normalizeTaskResultFromAgentCommentContent(result []byte, kind projectorchestration.NodeKind, content []byte) []byte {
+	if kind == projectorchestration.NodeQA {
+		return result
+	}
 	setCandidate := func(candidate json.RawMessage) bool {
 		if _, reviewErr := parseReviewVerdict(candidate); reviewErr == nil {
-			task.Result = candidate
+			result = candidate
 			return true
 		}
 		if _, handoffErr := parseImplementationHandoff(candidate); handoffErr == nil {
-			task.Result = candidate
+			result = candidate
 			return true
 		}
 		return false
 	}
 	if setCandidate(json.RawMessage(bytes.TrimSpace(content))) {
-		return task, nil
+		return result
 	}
-	if quality, qualityErr := r.loadNodeQualityByIssue(ctx, issue.WorkspaceID, issue.ID); qualityErr == nil && quality.Kind == projectorchestration.NodeQA && structuredQAHandoff(content) {
-		task.Result = bytes.TrimSpace(content)
-		return task, nil
-	}
-	if output, outputErr := contractTaskOutput(task.Result); outputErr == nil {
+	if output, outputErr := contractTaskOutput(result); outputErr == nil {
 		_ = setCandidate(extractEmbeddedContractJSONObject(output))
 	}
-	return task, nil
+	return result
 }
 
 func (r *Runtime) onTaskFailed(event events.Event) {

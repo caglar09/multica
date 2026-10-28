@@ -43,19 +43,39 @@ type ChangeImpactEvidence struct {
 }
 
 type QualityGateRequest struct {
-	WorkspaceID pgtype.UUID   `json:"workspace_id"`
-	ProjectID   pgtype.UUID   `json:"project_id"`
-	PlanID      pgtype.UUID   `json:"plan_id"`
-	NodeID      pgtype.UUID   `json:"node_id"`
-	IssueID     pgtype.UUID   `json:"issue_id"`
-	GateType    string        `json:"gate_type"`
-	Artifact    map[string]any `json:"artifact"`
+	WorkspaceID  pgtype.UUID    `json:"workspace_id"`
+	ProjectID    pgtype.UUID    `json:"project_id"`
+	PlanID       pgtype.UUID    `json:"plan_id"`
+	NodeID       pgtype.UUID    `json:"node_id"`
+	IssueID      pgtype.UUID    `json:"issue_id"`
+	TaskID       pgtype.UUID    `json:"task_id"`
+	GateType     string         `json:"gate_type"`
+	WorktreePath string         `json:"worktree_path"`
+	RepoPath     string         `json:"repo_path"`
+	CommitSHA    string         `json:"commit_sha"`
+	Artifact     map[string]any `json:"artifact"`
 }
 
 type QualityGateResult struct {
-	Passed   bool           `json:"passed"`
-	Evidence map[string]any `json:"evidence"`
-	Error    string         `json:"error"`
+	Passed          bool           `json:"passed"`
+	Evidence        map[string]any `json:"evidence"`
+	Error           string         `json:"error"`
+	RunnerType      string         `json:"runner_type"`
+	TaskID          string         `json:"task_id"`
+	GateType        string         `json:"gate_type"`
+	ExecutedCommand string         `json:"executed_command"`
+	ExitCode        *int           `json:"exit_code"`
+	WorktreePath    string         `json:"worktree_path"`
+	RepoPath        string         `json:"repo_path"`
+	CommitSHA       string         `json:"commit_sha"`
+	DurationMs      int64          `json:"duration_ms"`
+	Stdout          string         `json:"stdout"`
+	Stderr          string         `json:"stderr"`
+	OutputTruncated bool           `json:"output_truncated"`
+	TestCount       int            `json:"test_count"`
+	FailedCount     int            `json:"failed_count"`
+	ArtifactDigest  string         `json:"artifact_digest"`
+	Attestation     string         `json:"attestation"`
 }
 
 // QualityGateRunner is the deterministic verifier boundary for build/lint/test/

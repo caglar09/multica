@@ -8,13 +8,13 @@ const (
 )
 
 var DefaultContextSectionBudgets = map[string]int{
-	"specification":        450,
-	"policy":               250,
-	"brain":                700,
+	"specification":         450,
+	"policy":                250,
+	"brain":                 700,
 	"predecessor_artifacts": 450,
-	"structured_handoffs":  400,
-	"unresolved_findings":  300,
-	"repository_facts":     250,
+	"structured_handoffs":   400,
+	"unresolved_findings":   300,
+	"repository_facts":      250,
 }
 
 type ContextItem struct {
@@ -66,9 +66,8 @@ func ClipContextText(value string, maxTokens int) string {
 	return string(runes[:maxRunes])
 }
 
-// NewBoundedContext deterministically packs already-ranked source items into
-// fixed section budgets. It never borrows between sections: one noisy source
-// cannot starve specification, policy or findings of their reserved context.
+// NewBoundedContext gives specification unused room from other sections while
+// preserving each non-specification section's existing cap.
 func NewBoundedContext(
 	roleFamily string,
 	nodeKind NodeKind,
@@ -82,27 +81,50 @@ func NewBoundedContext(
 		"structured_handoffs", "unresolved_findings", "repository_facts",
 	}
 	pkg := ContextPackage{
-		SchemaVersion: ContextSchemaVersion,
-		TotalTokenBudget: DefaultContextBudget,
-		RoleFamily: roleFamily,
-		NodeKind: nodeKind,
-		NodeKey: nodeKey,
-		PlanRevision: planRevision,
-		BrainRevision: brainRevision,
+		SchemaVersion:      ContextSchemaVersion,
+		TotalTokenBudget:   DefaultContextBudget,
+		RoleFamily:         roleFamily,
+		NodeKind:           nodeKind,
+		NodeKey:            nodeKey,
+		PlanRevision:       planRevision,
+		BrainRevision:      brainRevision,
 		RepositoryRevision: repositoryRevision,
-		Sections: make([]ContextSection, 0, len(order)),
+		Sections:           make([]ContextSection, 0, len(order)),
+	}
+	otherSectionBudgets := make(map[string]int, len(order)-1)
+	otherSectionsReserve := 0
+	for _, name := range order[1:] {
+		budget := DefaultContextSectionBudgets[name]
+		reserve := 0
+		for _, item := range items[name] {
+			if EstimateContextTokens(item.Text) > 0 {
+				reserve = budget
+				break
+			}
+		}
+		otherSectionBudgets[name] = reserve
+		otherSectionsReserve += reserve
+	}
+	specificationBudget := DefaultContextSectionBudgets["specification"]
+	if available := pkg.TotalTokenBudget - otherSectionsReserve; available > specificationBudget {
+		specificationBudget = available
 	}
 	for _, name := range order {
 		budget := DefaultContextSectionBudgets[name]
+		if name == "specification" {
+			budget = specificationBudget
+		} else {
+			budget = otherSectionBudgets[name]
+		}
 		section := ContextSection{Name: name, TokenBudget: budget, Items: []ContextItem{}}
 		for _, item := range items[name] {
+			needed := EstimateContextTokens(item.Text)
+			if needed <= 0 {
+				continue
+			}
 			remaining := budget - section.UsedTokens
 			if remaining <= 0 {
 				section.Omitted++
-				continue
-			}
-			needed := EstimateContextTokens(item.Text)
-			if needed <= 0 {
 				continue
 			}
 			if needed > remaining {

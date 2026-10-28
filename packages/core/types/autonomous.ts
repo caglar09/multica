@@ -2,6 +2,7 @@ export type AutonomousHealthStatus = "idle" | "ready" | "running" | "paused" | "
 
 export interface AutonomousProjectControl {
   paused: boolean;
+  cancelled_at?: string | null;
   paused_at: string | null;
   replan_requested_at: string | null;
   replan_completed_at: string | null;
@@ -216,7 +217,15 @@ export interface AutonomousProjectPlanNode {
   issue_status: string | null;
   workflow_state: string | null;
   acceptance_criteria: string[];
+  requirement_ids: string[];
   updated_at: string;
+}
+
+export interface AutonomousProjectRequirement {
+  id: string;
+  text: string;
+  rationale: string;
+  source: string;
 }
 
 export interface AutonomousProjectPlanEdge {
@@ -230,20 +239,32 @@ export interface AutonomousProjectPlanSnapshot {
   revision: number;
   goal: string;
   status: string;
+  plan_digest: string;
+  approved_at: string | null;
+  approved_by: string | null;
   planner_name: string;
   planner_model: string | null;
   specification: {
     summary?: string;
     requirements?: string[];
+    requirement_details?: AutonomousProjectRequirement[];
     non_functional_requirements?: string[];
     constraints?: string[];
+    non_goals?: string[];
     definition_of_done?: string[];
+    acceptance_expectations?: string[];
     [key: string]: unknown;
   };
   policy: Record<string, unknown>;
   nodes: AutonomousProjectPlanNode[];
   edges: AutonomousProjectPlanEdge[];
   updated_at: string;
+}
+
+export interface ApproveAutonomousProjectPlanResponse {
+  approved: boolean;
+  plan_digest: string;
+  status: string;
 }
 
 export interface AutonomousQualityGate {

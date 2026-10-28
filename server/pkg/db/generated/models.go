@@ -461,6 +461,8 @@ type AutonomousProjectChangeSet struct {
 	QueuedAt             pgtype.Timestamptz `json:"queued_at"`
 	MergedAt             pgtype.Timestamptz `json:"merged_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	MergeAttempt         int32              `json:"merge_attempt"`
+	LastError            pgtype.Text        `json:"last_error"`
 }
 
 type AutonomousProjectContextCompilation struct {
@@ -492,6 +494,8 @@ type AutonomousProjectControl struct {
 	ReplanCompletedAt pgtype.Timestamptz `json:"replan_completed_at"`
 	LastError         pgtype.Text        `json:"last_error"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	CancelledAt       pgtype.Timestamptz `json:"cancelled_at"`
+	CancelledBy       pgtype.UUID        `json:"cancelled_by"`
 }
 
 type AutonomousProjectDeployment struct {
@@ -595,6 +599,9 @@ type AutonomousProjectPlan struct {
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
 	SpecificationRevisionID pgtype.UUID        `json:"specification_revision_id"`
+	PlanDigest              string             `json:"plan_digest"`
+	ApprovedAt              pgtype.Timestamptz `json:"approved_at"`
+	ApprovedBy              pgtype.Text        `json:"approved_by"`
 }
 
 type AutonomousProjectPlanEdge struct {
@@ -652,24 +659,30 @@ type AutonomousProjectPlanNode struct {
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 	BlockedCategory      pgtype.Text        `json:"blocked_category"`
 	LogicalNodeID        pgtype.UUID        `json:"logical_node_id"`
+	RequirementIds       []byte             `json:"requirement_ids"`
 }
 
 type AutonomousProjectQualityGateRun struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	ProjectID   pgtype.UUID        `json:"project_id"`
-	PlanID      pgtype.UUID        `json:"plan_id"`
-	NodeID      pgtype.UUID        `json:"node_id"`
-	GateType    string             `json:"gate_type"`
-	Status      string             `json:"status"`
-	Required    bool               `json:"required"`
-	Evidence    []byte             `json:"evidence"`
-	Attempt     int32              `json:"attempt"`
-	LastError   pgtype.Text        `json:"last_error"`
-	StartedAt   pgtype.Timestamptz `json:"started_at"`
-	CompletedAt pgtype.Timestamptz `json:"completed_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ProjectID       pgtype.UUID        `json:"project_id"`
+	PlanID          pgtype.UUID        `json:"plan_id"`
+	NodeID          pgtype.UUID        `json:"node_id"`
+	GateType        string             `json:"gate_type"`
+	Status          string             `json:"status"`
+	Required        bool               `json:"required"`
+	Evidence        []byte             `json:"evidence"`
+	Attempt         int32              `json:"attempt"`
+	LastError       pgtype.Text        `json:"last_error"`
+	StartedAt       pgtype.Timestamptz `json:"started_at"`
+	CompletedAt     pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ExecutedCommand pgtype.Text        `json:"executed_command"`
+	ExitCode        pgtype.Int4        `json:"exit_code"`
+	WorktreePath    pgtype.Text        `json:"worktree_path"`
+	CommitSha       pgtype.Text        `json:"commit_sha"`
+	RunnerType      pgtype.Text        `json:"runner_type"`
 }
 
 type AutonomousProjectReviewFinding struct {
@@ -773,6 +786,10 @@ type AutonomousProjectTeamDraft struct {
 	ContinuationTaskID      pgtype.UUID        `json:"continuation_task_id"`
 	ContinuationStartedAt   pgtype.Timestamptz `json:"continuation_started_at"`
 	ContinuationCompletedAt pgtype.Timestamptz `json:"continuation_completed_at"`
+	PlanningLeaseOwner      pgtype.Text        `json:"planning_lease_owner"`
+	PlanningLeaseUntil      pgtype.Timestamptz `json:"planning_lease_until"`
+	PlanningAttempts        int32              `json:"planning_attempts"`
+	NextPlanningRetryAt     pgtype.Timestamptz `json:"next_planning_retry_at"`
 }
 
 type AutonomousProjectTeamMember struct {

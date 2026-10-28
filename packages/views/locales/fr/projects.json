@@ -281,5 +281,16 @@
     "direction_desc": "Décroissant",
     "section_columns": "Colonnes",
     "view": "Vue"
+  },
+  "plan_approval": {
+    "title": "Approbation du plan",
+    "pending_description": "Vérifiez cette révision exacte du plan avant le début des tâches.",
+    "approved_description": "Cette révision du plan dispose d'une approbation enregistrée.",
+    "digest": "Empreinte du plan",
+    "digest_missing": "Ce plan n'a pas d'empreinte et ne peut pas être approuvé.",
+    "admin_only": "Seul un administrateur de l'espace de travail peut approuver ce plan.",
+    "approve": "Approuver cette révision",
+    "approve_success": "Plan approuvé ; les tâches admissibles peuvent commencer.",
+    "approve_error": "Impossible d'approuver ce plan."
   }
 }

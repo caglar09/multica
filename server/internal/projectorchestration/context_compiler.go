@@ -1,10 +1,12 @@
 package projectorchestration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -14,7 +16,10 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-var ErrContextPlanNotFound = errors.New("active autonomous project plan not found for workflow context")
+var (
+	ErrContextPlanNotFound           = errors.New("active autonomous project plan not found for workflow context")
+	ErrAuthoritativeContextTruncated = errors.New("authoritative context truncated")
+)
 
 type rankedContextMemory struct {
 	ID           string
@@ -26,17 +31,163 @@ type rankedContextMemory struct {
 }
 
 type contextPlanState struct {
-	PlanID       pgtype.UUID
-	PlanRevision int64
-	Goal         string
-	Specification []byte
-	Policy       []byte
-	NodeID       pgtype.UUID
-	NodeKey      string
-	NodeKind     NodeKind
-	NodeTitle    string
-	NodeDescription string
+	PlanID             pgtype.UUID
+	PlanRevision       int64
+	Goal               string
+	Specification      []byte
+	Policy             []byte
+	NodeID             pgtype.UUID
+	NodeKey            string
+	NodeKind           NodeKind
+	NodeTitle          string
+	NodeDescription    string
 	RequiredRoleFamily string
+}
+
+func authoritativeSpecificationItems(goal string, raw []byte, planID string) ([]ContextItem, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, fmt.Errorf("%w: specification section is empty", ErrAuthoritativeContextTruncated)
+	}
+
+	var specification any
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	if err := decoder.Decode(&specification); err != nil {
+		return nil, fmt.Errorf("decode project specification: %w", err)
+	}
+
+	goal = strings.TrimSpace(goal)
+	summaryParts := make([]string, 0, 3)
+	if goal != "" {
+		summaryParts = append(summaryParts, "Goal: "+goal)
+	}
+	if fields, ok := specification.(map[string]any); ok {
+		if specGoal, ok := fields["goal"].(string); ok && strings.TrimSpace(specGoal) != "" {
+			specGoal = strings.TrimSpace(specGoal)
+			if goal == "" {
+				summaryParts = append(summaryParts, "Goal: "+specGoal)
+				delete(fields, "goal")
+			} else if specGoal == goal {
+				delete(fields, "goal")
+			} else {
+				summaryParts = append(summaryParts, "Specification goal: "+specGoal)
+			}
+		}
+		if text, ok := fields["summary"].(string); ok && strings.TrimSpace(text) != "" {
+			summaryParts = append(summaryParts, "Summary: "+strings.TrimSpace(text))
+			delete(fields, "summary")
+		}
+	}
+	if len(summaryParts) == 0 {
+		return nil, fmt.Errorf("%w: specification has no goal or authored summary", ErrAuthoritativeContextTruncated)
+	}
+
+	items := []ContextItem{{
+		Source: "project_specification", Ref: planID,
+		Type: "authoritative_specification_summary", Authority: string(AuthorityAuthoritativeSpec),
+		Text: strings.Join(summaryParts, "\n"),
+	}}
+	if err := appendSpecificationDetails(&items, planID, "", specification, 0); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func appendSpecificationDetails(items *[]ContextItem, planID, path string, value any, depth int) error {
+	if depth > 64 {
+		return fmt.Errorf("%w: specification hierarchy exceeds 64 levels", ErrAuthoritativeContextTruncated)
+	}
+	appendItem := func(ref, text string) {
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		*items = append(*items, ContextItem{
+			Source: "project_specification", Ref: planID + ":" + ref,
+			Type: "authoritative_specification_detail", Authority: string(AuthorityAuthoritativeSpec),
+			Text: text,
+		})
+	}
+	displayPath := path
+	if displayPath == "" {
+		displayPath = "Specification"
+	}
+
+	switch typed := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			childPath := key
+			if path != "" {
+				childPath = path + "." + key
+			}
+			if err := appendSpecificationDetails(items, planID, childPath, typed[key], depth+1); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for index, child := range typed {
+			childPath := fmt.Sprintf("%s[%d]", path, index)
+			if path == "requirements" {
+				if requirement, ok := child.(map[string]any); ok {
+					if id, ok := requirement["id"].(string); ok && strings.TrimSpace(id) != "" {
+						childPath = "requirements[" + strings.TrimSpace(id) + "]"
+					}
+				}
+				encoded, err := json.Marshal(child)
+				if err != nil {
+					return fmt.Errorf("encode specification requirement %d: %w", index, err)
+				}
+				appendItem(childPath, childPath+": "+string(encoded))
+				continue
+			}
+			if err := appendSpecificationDetails(items, planID, childPath, child, depth+1); err != nil {
+				return err
+			}
+		}
+	case string:
+		appendItem(path, displayPath+": "+typed)
+	case json.Number, bool, float64:
+		appendItem(path, displayPath+": "+fmt.Sprint(typed))
+	case nil:
+		return nil
+	default:
+		return fmt.Errorf("unsupported project specification value at %q: %T", path, value)
+	}
+	return nil
+}
+
+func validateAuthoritativeContext(pkg ContextPackage) error {
+	seen := map[string]bool{}
+	for _, section := range pkg.Sections {
+		if section.Name != "specification" && section.Name != "policy" {
+			continue
+		}
+		seen[section.Name] = true
+		if section.Omitted > 0 {
+			return fmt.Errorf("%w: %s section was truncated (omitted items > 0)", ErrAuthoritativeContextTruncated, section.Name)
+		}
+		if len(section.Items) == 0 || section.UsedTokens == 0 {
+			return fmt.Errorf("%w: required %s section has no retained content", ErrAuthoritativeContextTruncated, section.Name)
+		}
+	}
+	for _, name := range []string{"specification", "policy"} {
+		if !seen[name] {
+			return fmt.Errorf("%w: required %s section is missing", ErrAuthoritativeContextTruncated, name)
+		}
+	}
+	return nil
+}
+
+func validateContextTokenBudget(pkg ContextPackage) error {
+	if pkg.TotalTokenBudget < 0 || pkg.UsedTokens < 0 || pkg.UsedTokens > pkg.TotalTokenBudget {
+		return fmt.Errorf("context exceeds hard token budget: used %d, total %d", pkg.UsedTokens, pkg.TotalTokenBudget)
+	}
+	return nil
 }
 
 // CompileWorkflowContext is the Phase 3 fail-closed context compiler used by
@@ -69,6 +220,12 @@ func CompileWorkflowContext(
 		if err := json.Unmarshal(existingRaw, &existing); err != nil {
 			return ContextPackage{}, fmt.Errorf("decode persisted workflow context: %w", err)
 		}
+		if err := validateAuthoritativeContext(existing); err != nil {
+			return ContextPackage{}, fmt.Errorf("validate persisted workflow context: %w", err)
+		}
+		if err := validateContextTokenBudget(existing); err != nil {
+			return ContextPackage{}, fmt.Errorf("validate persisted workflow context: %w", err)
+		}
 		if err := attachContextToHandoff(ctx, tx, workflowActionID, existing); err != nil {
 			return ContextPackage{}, err
 		}
@@ -81,6 +238,14 @@ func CompileWorkflowContext(
 	plan, err := loadContextPlanState(ctx, tx, issue)
 	if err != nil {
 		return ContextPackage{}, err
+	}
+	specificationItems, err := authoritativeSpecificationItems(plan.Goal, plan.Specification, util.UUIDToString(plan.PlanID))
+	if err != nil {
+		return ContextPackage{}, err
+	}
+	policy := strings.TrimSpace(string(plan.Policy))
+	if policy == "" || policy == "null" {
+		return ContextPackage{}, fmt.Errorf("%w: policy section is empty", ErrAuthoritativeContextTruncated)
 	}
 	roleFamily := contextRoleFamily(handoffKind, plan.RequiredRoleFamily, plan.NodeKind)
 	repositoryRevision, err := currentContextRepositoryRevision(ctx, tx, issue.WorkspaceID, issue.ProjectID)
@@ -101,22 +266,18 @@ func CompileWorkflowContext(
 	}
 
 	items := map[string][]ContextItem{
-		"specification": {},
-		"policy": {},
-		"brain": {},
+		"specification":         {},
+		"policy":                {},
+		"brain":                 {},
 		"predecessor_artifacts": {},
-		"structured_handoffs": {},
-		"unresolved_findings": {},
-		"repository_facts": {},
+		"structured_handoffs":   {},
+		"unresolved_findings":   {},
+		"repository_facts":      {},
 	}
-	items["specification"] = append(items["specification"], ContextItem{
-		Source: "project_specification", Ref: util.UUIDToString(plan.PlanID), Type: "authoritative_specification",
-		Authority: string(AuthorityAuthoritativeSpec),
-		Text: fmt.Sprintf("Goal: %s\nSpecification: %s", plan.Goal, strings.TrimSpace(string(plan.Specification))),
-	})
+	items["specification"] = append(items["specification"], specificationItems...)
 	items["policy"] = append(items["policy"], ContextItem{
 		Source: "project_policy", Ref: util.UUIDToString(plan.PlanID), Type: "policy",
-		Authority: string(AuthoritySystemDerived), Text: strings.TrimSpace(string(plan.Policy)),
+		Authority: string(AuthoritySystemDerived), Text: policy,
 	})
 
 	query := strings.TrimSpace(plan.NodeTitle)
@@ -160,8 +321,11 @@ func CompileWorkflowContext(
 		roleFamily, plan.NodeKind, plan.NodeKey, plan.PlanRevision, brainRevision,
 		repositoryRevision, items,
 	)
-	if pkg.UsedTokens > pkg.TotalTokenBudget {
-		return ContextPackage{}, fmt.Errorf("compiled context exceeds hard token budget: %d > %d", pkg.UsedTokens, pkg.TotalTokenBudget)
+	if err := validateAuthoritativeContext(pkg); err != nil {
+		return ContextPackage{}, err
+	}
+	if err := validateContextTokenBudget(pkg); err != nil {
+		return ContextPackage{}, err
 	}
 
 	snapshotID, err := ensureContextBrainSnapshot(ctx, tx, issue, plan, brainRevision)
@@ -241,11 +405,21 @@ func loadContextPlanState(ctx context.Context, tx pgx.Tx, issue db.Issue) (conte
 	out.Specification = append([]byte(nil), specification...)
 	out.Policy = append([]byte(nil), policy...)
 	out.NodeID = nodeID
-	if nodeKey.Valid { out.NodeKey = strings.TrimSpace(nodeKey.String) }
-	if nodeKind.Valid { out.NodeKind = NodeKind(strings.TrimSpace(nodeKind.String)) }
-	if nodeTitle.Valid { out.NodeTitle = strings.TrimSpace(nodeTitle.String) }
-	if nodeDescription.Valid { out.NodeDescription = strings.TrimSpace(nodeDescription.String) }
-	if requiredFamily.Valid { out.RequiredRoleFamily = strings.TrimSpace(requiredFamily.String) }
+	if nodeKey.Valid {
+		out.NodeKey = strings.TrimSpace(nodeKey.String)
+	}
+	if nodeKind.Valid {
+		out.NodeKind = NodeKind(strings.TrimSpace(nodeKind.String))
+	}
+	if nodeTitle.Valid {
+		out.NodeTitle = strings.TrimSpace(nodeTitle.String)
+	}
+	if nodeDescription.Valid {
+		out.NodeDescription = strings.TrimSpace(nodeDescription.String)
+	}
+	if requiredFamily.Valid {
+		out.RequiredRoleFamily = strings.TrimSpace(requiredFamily.String)
+	}
 	return out, nil
 }
 
@@ -278,10 +452,11 @@ func currentContextRepositoryRevision(ctx context.Context, tx pgx.Tx, workspaceI
 	var revision string
 	err := tx.QueryRow(ctx, `
 		SELECT COALESCE((
-			SELECT COALESCE(NULLIF(merged_sha,''),NULLIF(base_sha,''),'')
+			SELECT NULLIF(commit_sha,'')
 			FROM autonomous_project_change_set
 			WHERE workspace_id=$1 AND project_id=$2
-			ORDER BY (merged_at IS NOT NULL) DESC, merged_at DESC NULLS LAST, created_at DESC
+			  AND merge_status IN ('ready','changes_requested','queued','merging','merged')
+			ORDER BY created_at DESC, id DESC
 			LIMIT 1
 		),'')
 	`, workspaceID, projectID).Scan(&revision)
@@ -348,32 +523,46 @@ func recallContextMemories(ctx context.Context, tx pgx.Tx, workspaceID, projectI
 			) DESC,b.brain_revision DESC,b.id
 			LIMIT 60
 		`, workspaceID, projectID, strings.TrimSpace(search), strings.ToLower(strings.TrimSpace(role)), strings.TrimSpace(repositoryRevision))
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		defer rows.Close()
 		out := []rankedContextMemory{}
 		seen := map[string]struct{}{}
 		for rows.Next() {
 			var id pgtype.UUID
 			var m rankedContextMemory
-			if err := rows.Scan(&id,&m.CanonicalKey,&m.Type,&m.Subject,&m.Content,&m.Authority); err != nil { return nil, err }
+			if err := rows.Scan(&id, &m.CanonicalKey, &m.Type, &m.Subject, &m.Content, &m.Authority); err != nil {
+				return nil, err
+			}
 			m.ID = util.UUIDToString(id)
 			identity := m.Type + "\x00" + m.CanonicalKey
-			if m.CanonicalKey == "" { identity = m.Type + "\x00" + strings.ToLower(strings.TrimSpace(m.Subject)) }
-			if _, ok := seen[identity]; ok { continue }
+			if m.CanonicalKey == "" {
+				identity = m.Type + "\x00" + strings.ToLower(strings.TrimSpace(m.Subject))
+			}
+			if _, ok := seen[identity]; ok {
+				continue
+			}
 			seen[identity] = struct{}{}
-			out = append(out,m)
+			out = append(out, m)
 		}
 		return out, rows.Err()
 	}
 	memories, err := load(query)
-	if err != nil { return nil, err }
-	if len(memories)==0 && strings.TrimSpace(query)!="" { return load("") }
-	return memories,nil
+	if err != nil {
+		return nil, err
+	}
+	if len(memories) == 0 && strings.TrimSpace(query) != "" {
+		return load("")
+	}
+	return memories, nil
 }
 
-func contextPredecessorArtifacts(ctx context.Context, tx pgx.Tx, issue db.Issue, plan contextPlanState) ([]ContextItem,error) {
-	if plan.NodeKey=="" { return []ContextItem{},nil }
-	rows,err:=tx.Query(ctx,`
+func contextPredecessorArtifacts(ctx context.Context, tx pgx.Tx, issue db.Issue, plan contextPlanState) ([]ContextItem, error) {
+	if plan.NodeKey == "" {
+		return []ContextItem{}, nil
+	}
+	rows, err := tx.Query(ctx, `
 		SELECT DISTINCT ON (pred.node_key,a.artifact_type)
 		       a.id,pred.node_key,a.artifact_type,a.name,left(a.content::text,6000)
 		FROM autonomous_project_plan_edge e
@@ -384,21 +573,25 @@ func contextPredecessorArtifacts(ctx context.Context, tx pgx.Tx, issue db.Issue,
 		  AND (e.dependency_type<>'artifact' OR e.required_artifact_type=a.artifact_type)
 		ORDER BY pred.node_key,a.artifact_type,a.created_at DESC,a.id DESC
 		LIMIT 24
-	`,plan.PlanID,plan.NodeKey)
-	if err!=nil{return nil,err}
-	defer rows.Close()
-	out:=[]ContextItem{}
-	for rows.Next(){
-		var id pgtype.UUID
-		var nodeKey,typ,name,content string
-		if err:=rows.Scan(&id,&nodeKey,&typ,&name,&content);err!=nil{return nil,err}
-		out=append(out,ContextItem{Source:"predecessor_artifact",Ref:util.UUIDToString(id),Type:typ,Authority:string(AuthoritySystemDerived),Text:nodeKey+" / "+name+"\n"+content})
+	`, plan.PlanID, plan.NodeKey)
+	if err != nil {
+		return nil, err
 	}
-	return out,rows.Err()
+	defer rows.Close()
+	out := []ContextItem{}
+	for rows.Next() {
+		var id pgtype.UUID
+		var nodeKey, typ, name, content string
+		if err := rows.Scan(&id, &nodeKey, &typ, &name, &content); err != nil {
+			return nil, err
+		}
+		out = append(out, ContextItem{Source: "predecessor_artifact", Ref: util.UUIDToString(id), Type: typ, Authority: string(AuthoritySystemDerived), Text: nodeKey + " / " + name + "\n" + content})
+	}
+	return out, rows.Err()
 }
 
-func contextStructuredHandoffs(ctx context.Context, tx pgx.Tx, issue db.Issue, plan contextPlanState, actionID pgtype.UUID) ([]ContextItem,error){
-	rows,err:=tx.Query(ctx,`
+func contextStructuredHandoffs(ctx context.Context, tx pgx.Tx, issue db.Issue, plan contextPlanState, actionID pgtype.UUID) ([]ContextItem, error) {
+	rows, err := tx.Query(ctx, `
 		SELECT h.id,h.handoff_kind,h.summary,left((h.envelope-'context_package'-'brain_references')::text,6000)
 		FROM autonomous_project_handoff h
 		WHERE h.workspace_id=$1 AND h.project_id=$2
@@ -411,80 +604,100 @@ func contextStructuredHandoffs(ctx context.Context, tx pgx.Tx, issue db.Issue, p
 		  ))
 		ORDER BY h.created_at DESC
 		LIMIT 12
-	`,issue.WorkspaceID,issue.ProjectID,issue.ID,actionID,plan.PlanID,plan.NodeKey)
-	if err!=nil{return nil,err}
-	defer rows.Close()
-	out:=[]ContextItem{}
-	for rows.Next(){
-		var id pgtype.UUID
-		var kind,summary,envelope string
-		if err:=rows.Scan(&id,&kind,&summary,&envelope);err!=nil{return nil,err}
-		out=append(out,ContextItem{Source:"structured_handoff",Ref:util.UUIDToString(id),Type:kind,Authority:string(AuthoritySystemDerived),Text:strings.TrimSpace(summary+"\n"+envelope)})
+	`, issue.WorkspaceID, issue.ProjectID, issue.ID, actionID, plan.PlanID, plan.NodeKey)
+	if err != nil {
+		return nil, err
 	}
-	return out,rows.Err()
+	defer rows.Close()
+	out := []ContextItem{}
+	for rows.Next() {
+		var id pgtype.UUID
+		var kind, summary, envelope string
+		if err := rows.Scan(&id, &kind, &summary, &envelope); err != nil {
+			return nil, err
+		}
+		out = append(out, ContextItem{Source: "structured_handoff", Ref: util.UUIDToString(id), Type: kind, Authority: string(AuthoritySystemDerived), Text: strings.TrimSpace(summary + "\n" + envelope)})
+	}
+	return out, rows.Err()
 }
 
-func contextOpenFindings(ctx context.Context,tx pgx.Tx,issue db.Issue)([]ContextItem,error){
-	rows,err:=tx.Query(ctx,`
+func contextOpenFindings(ctx context.Context, tx pgx.Tx, issue db.Issue) ([]ContextItem, error) {
+	rows, err := tx.Query(ctx, `
 		SELECT f.id,f.finding_key,f.severity,f.category,f.description,f.evidence
 		FROM autonomous_project_review_finding f
 		WHERE f.workspace_id=$1 AND f.project_id=$2 AND f.issue_id=$3 AND f.lifecycle_status='open'
 		ORDER BY f.blocking DESC,f.created_at,f.finding_key
 		LIMIT 40
-	`,issue.WorkspaceID,issue.ProjectID,issue.ID)
-	if err!=nil{return nil,err}
-	defer rows.Close()
-	out:=[]ContextItem{}
-	for rows.Next(){
-		var id pgtype.UUID
-		var key,severity,category,description,evidence string
-		if err:=rows.Scan(&id,&key,&severity,&category,&description,&evidence);err!=nil{return nil,err}
-		out=append(out,ContextItem{Source:"review_finding",Ref:util.UUIDToString(id),Type:category,Authority:string(AuthoritySystemDerived),Text:fmt.Sprintf("%s [%s/%s] %s\nEvidence: %s",key,severity,category,description,evidence)})
+	`, issue.WorkspaceID, issue.ProjectID, issue.ID)
+	if err != nil {
+		return nil, err
 	}
-	return out,rows.Err()
+	defer rows.Close()
+	out := []ContextItem{}
+	for rows.Next() {
+		var id pgtype.UUID
+		var key, severity, category, description, evidence string
+		if err := rows.Scan(&id, &key, &severity, &category, &description, &evidence); err != nil {
+			return nil, err
+		}
+		out = append(out, ContextItem{Source: "review_finding", Ref: util.UUIDToString(id), Type: category, Authority: string(AuthoritySystemDerived), Text: fmt.Sprintf("%s [%s/%s] %s\nEvidence: %s", key, severity, category, description, evidence)})
+	}
+	return out, rows.Err()
 }
 
-func ensureContextBrainSnapshot(ctx context.Context,tx pgx.Tx,issue db.Issue,plan contextPlanState,brainRevision int64)(pgtype.UUID,error){
+func ensureContextBrainSnapshot(ctx context.Context, tx pgx.Tx, issue db.Issue, plan contextPlanState, brainRevision int64) (pgtype.UUID, error) {
 	var id pgtype.UUID
-	err:=tx.QueryRow(ctx,`
+	err := tx.QueryRow(ctx, `
 		SELECT id FROM autonomous_project_brain_snapshot
 		WHERE workspace_id=$1 AND project_id=$2 AND plan_id=$3 AND plan_revision=$4 AND brain_revision=$5
 		ORDER BY created_at DESC LIMIT 1
-	`,issue.WorkspaceID,issue.ProjectID,plan.PlanID,plan.PlanRevision,brainRevision).Scan(&id)
-	if err==nil{return id,nil}
-	if !errors.Is(err,pgx.ErrNoRows){return pgtype.UUID{},err}
+	`, issue.WorkspaceID, issue.ProjectID, plan.PlanID, plan.PlanRevision, brainRevision).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, err
+	}
 	var entryIDs []byte
-	if err:=tx.QueryRow(ctx,`
+	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(jsonb_agg(id ORDER BY brain_revision,id),'[]'::jsonb)
 		FROM autonomous_project_brain_entry
 		WHERE workspace_id=$1 AND project_id=$2 AND status='active' AND superseded_by IS NULL AND governance_state='current'
 		  AND (expires_at IS NULL OR expires_at>now())
-	`,issue.WorkspaceID,issue.ProjectID).Scan(&entryIDs);err!=nil{return pgtype.UUID{},err}
-	err=tx.QueryRow(ctx,`
+	`, issue.WorkspaceID, issue.ProjectID).Scan(&entryIDs); err != nil {
+		return pgtype.UUID{}, err
+	}
+	err = tx.QueryRow(ctx, `
 		INSERT INTO autonomous_project_brain_snapshot(workspace_id,project_id,plan_id,plan_revision,brain_revision,entry_ids)
 		VALUES($1,$2,$3,$4,$5,$6) RETURNING id
-	`,issue.WorkspaceID,issue.ProjectID,plan.PlanID,plan.PlanRevision,brainRevision,entryIDs).Scan(&id)
-	return id,err
+	`, issue.WorkspaceID, issue.ProjectID, plan.PlanID, plan.PlanRevision, brainRevision, entryIDs).Scan(&id)
+	return id, err
 }
 
-func attachContextToHandoff(ctx context.Context,tx pgx.Tx,actionID pgtype.UUID,pkg ContextPackage)error{
-	raw,err:=json.Marshal(pkg)
-	if err!=nil{return err}
-	brainTokens:=0
-	for _,section:=range pkg.Sections{
-		if section.Name=="brain" || section.Name=="repository_facts"{brainTokens+=section.UsedTokens}
+func attachContextToHandoff(ctx context.Context, tx pgx.Tx, actionID pgtype.UUID, pkg ContextPackage) error {
+	raw, err := json.Marshal(pkg)
+	if err != nil {
+		return err
 	}
-	_,err=tx.Exec(ctx,`
+	brainTokens := 0
+	for _, section := range pkg.Sections {
+		if section.Name == "brain" || section.Name == "repository_facts" {
+			brainTokens += section.UsedTokens
+		}
+	}
+	_, err = tx.Exec(ctx, `
 		UPDATE autonomous_project_handoff
 		SET envelope=jsonb_set(envelope,'{context_package}',$2::jsonb,true),
 		    brain_context_tokens=$3::bigint,
 		    brain_context_estimated=($3::bigint>0)
 		WHERE workflow_action_id=$1
-	`,actionID,raw,brainTokens)
+	`, actionID, raw, brainTokens)
 	return err
 }
 
 func nullableContextUUID(value pgtype.UUID) any {
-	if value.Valid { return value }
+	if value.Valid {
+		return value
+	}
 	return nil
 }

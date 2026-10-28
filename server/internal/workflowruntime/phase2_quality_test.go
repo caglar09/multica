@@ -1,8 +1,138 @@
 package workflowruntime
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
 
-func TestStructuredTestsPassed(t *testing.T) {
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/projectorchestration"
+)
+
+type qualityGateRunnerFunc func(context.Context, projectorchestration.QualityGateRequest) (projectorchestration.QualityGateResult, error)
+
+func (run qualityGateRunnerFunc) Run(ctx context.Context, request projectorchestration.QualityGateRequest) (projectorchestration.QualityGateResult, error) {
+	return run(ctx, request)
+}
+
+func TestQualityGate(t *testing.T) {
+	t.Run("NoRunnerIsUnavailable", func(t *testing.T) {
+		_, status, err := evaluateQualityGate(context.Background(), nil, projectorchestration.QualityGateRequest{})
+		if status != "unavailable" || !errors.Is(err, projectorchestration.ErrQualityGateUnavailable) {
+			t.Fatalf("no-runner outcome = %q, %v; want unavailable", status, err)
+		}
+	})
+
+	t.Run("RunnerClaimWithoutTaskBoundEvidenceIsUnavailable", func(t *testing.T) {
+		code := 0
+		request := projectorchestration.QualityGateRequest{
+			WorkspaceID: pgtype.UUID{Bytes: [16]byte{1}, Valid: true},
+			ProjectID:   pgtype.UUID{Bytes: [16]byte{2}, Valid: true},
+			PlanID:      pgtype.UUID{Bytes: [16]byte{3}, Valid: true},
+			NodeID:      pgtype.UUID{Bytes: [16]byte{4}, Valid: true},
+			IssueID:     pgtype.UUID{Bytes: [16]byte{5}, Valid: true},
+			TaskID:      pgtype.UUID{Bytes: [16]byte{6}, Valid: true},
+			GateType:    "unit_test", CommitSHA: "0123456789012345678901234567890123456789",
+			WorktreePath: "/recorded/worktree", RepoPath: "/recorded/repo",
+		}
+		runner := qualityGateRunnerFunc(func(context.Context, projectorchestration.QualityGateRequest) (projectorchestration.QualityGateResult, error) {
+			return projectorchestration.QualityGateResult{Passed: true, ExitCode: &code}, nil
+		})
+		result, status, err := evaluateQualityGate(context.Background(), runner, request)
+		if status != "unavailable" || err == nil || result.Passed {
+			t.Fatalf("unattributed pass result = %+v, status=%q, error=%v", result, status, err)
+		}
+	})
+
+	t.Run("AgentSelfReportCannotPass", func(t *testing.T) {
+		artifact := map[string]any{
+			"tests":   []any{map[string]any{"status": "passed"}},
+			"context": "keep this context",
+			"result": map[string]any{
+				"tests":   []any{map[string]any{"status": "passed"}},
+				"summary": "agent supplied summary",
+			},
+		}
+		request := projectorchestration.QualityGateRequest{Artifact: withoutAgentTestClaims(artifact)}
+		called := false
+		runner := qualityGateRunnerFunc(func(_ context.Context, got projectorchestration.QualityGateRequest) (projectorchestration.QualityGateResult, error) {
+			called = true
+			if _, exists := got.Artifact["tests"]; exists {
+				t.Error("top-level agent test claim reached deterministic runner")
+			}
+			result, _ := got.Artifact["result"].(map[string]any)
+			if _, exists := result["tests"]; exists {
+				t.Error("nested agent test claim reached deterministic runner")
+			}
+			if got.Artifact["context"] != "keep this context" || result["summary"] != "agent supplied summary" {
+				t.Error("sanitizing the agent claim removed unrelated artifact context")
+			}
+			return projectorchestration.QualityGateResult{Passed: false, Error: "runner did not verify tests"}, nil
+		})
+		result, status, err := evaluateQualityGate(context.Background(), runner, request)
+		if !called || status != "failed" || err == nil || result.Passed {
+			t.Fatalf("agent claim outcome = passed:%v, status:%q, err:%v; want failed runner outcome", result.Passed, status, err)
+		}
+		if _, exists := artifact["tests"]; !exists {
+			t.Fatal("sanitizing runner input mutated the original task artifact")
+		}
+	})
+
+	t.Run("NonBlockingFailureIsFailed", func(t *testing.T) {
+		artifact := map[string]any{"result": map[string]any{
+			"tests": []any{map[string]any{
+				"name": "unit", "status": "failed", "evidence": "outside this change",
+			}},
+			"findings": []any{map[string]any{
+				"category": "test", "blocking": false, "evidence": "outside this change",
+			}},
+		}}
+		runner := qualityGateRunnerFunc(func(_ context.Context, request projectorchestration.QualityGateRequest) (projectorchestration.QualityGateResult, error) {
+			result, _ := request.Artifact["result"].(map[string]any)
+			if _, exists := result["tests"]; exists {
+				t.Error("agent test status reached deterministic runner")
+			}
+			if _, exists := result["findings"]; !exists {
+				t.Error("sanitizing agent tests also removed unrelated finding context")
+			}
+			return projectorchestration.QualityGateResult{Passed: false, Error: "failure outside this change"}, nil
+		})
+		_, status, err := evaluateQualityGate(context.Background(), runner, projectorchestration.QualityGateRequest{
+			Artifact: withoutAgentTestClaims(artifact),
+		})
+		if status != "failed" || err == nil {
+			t.Fatalf("non-blocking runner failure outcome = %q, %v; want failed", status, err)
+		}
+	})
+}
+
+func TestQualityEvidenceMustBelongToCurrentTask(t *testing.T) {
+	requirements := []projectorchestration.QualityRequirement{
+		{GateType: "review", Deterministic: false},
+		{GateType: "unit_test", Deterministic: true},
+		{GateType: "integration_test", Deterministic: true},
+	}
+	currentEvidence := map[string]taskQualityEvidence{
+		"unit_test":        {Status: "passed", SourceTaskID: "task-current"},
+		"integration_test": {Status: "passed", SourceTaskID: "task-current"},
+	}
+	if !hasCurrentDeterministicQualityEvidence(requirements, currentEvidence, "task-current") {
+		t.Fatal("current task deterministic evidence should qualify")
+	}
+	currentEvidence["integration_test"] = taskQualityEvidence{Status: "passed", SourceTaskID: "task-previous"}
+	if hasCurrentDeterministicQualityEvidence(requirements, currentEvidence, "task-current") {
+		t.Fatal("a previous task's passing evidence must not qualify a new commit")
+	}
+	delete(currentEvidence, "integration_test")
+	if hasCurrentDeterministicQualityEvidence(requirements, currentEvidence, "task-current") {
+		t.Fatal("missing deterministic gate evidence must not qualify a change set")
+	}
+	if hasCurrentDeterministicQualityEvidence(nil, currentEvidence, "task-current") {
+		t.Fatal("a project with no deterministic gate must not qualify a change set")
+	}
+}
+
+func TestStructuredQATestClaimClassification(t *testing.T) {
 	passed := map[string]any{"result": map[string]any{"tests": []any{
 		map[string]any{"name": "unit", "status": "passed"},
 		map[string]any{"name": "integration", "status": "PASSED"},
@@ -15,7 +145,7 @@ func TestStructuredTestsPassed(t *testing.T) {
 		map[string]any{"name": "unit", "status": "failed"},
 	}}}
 	if _, ok := structuredTestsPassed("unit_test", failed); ok {
-		t.Fatal("failed test evidence must not pass a deterministic gate")
+		t.Fatal("failed test claim must not be classified as passing")
 	}
 	nonBlockingFailure := map[string]any{"result": map[string]any{
 		"tests":    []any{map[string]any{"name": "baseline", "status": "failed", "evidence": "known upstream failure"}},
@@ -66,6 +196,33 @@ func TestStructuredQAHandoff(t *testing.T) {
 	failed := []byte(`{"verdict":"fail","status":"passed","tests":[{"name":"pytest","status":"passed","evidence":"317 passed"}]}`)
 	if structuredQAHandoff(failed) {
 		t.Fatal("failed verdict must not pass QA")
+	}
+
+	validArtifact := map[string]any{
+		"valid":       true,
+		"artifact_id": "123e4567-e89b-12d3-a456-426614174000",
+		"agent_id":    "123e4567-e89b-12d3-a456-426614174001",
+		"result": map[string]any{
+			"verdict": "pass", "status": "passed",
+			"tests": []any{map[string]any{"name": "acceptance", "status": "passed", "evidence": "all checks passed"}},
+		},
+	}
+	if _, ok := validatedQAHandoffArtifactID("qa_handoff", validArtifact); !ok {
+		t.Fatal("validated durable qa_handoff artifact must pass")
+	}
+	if _, ok := validatedQAHandoffArtifactID("qa_report", validArtifact); ok {
+		t.Fatal("legacy qa_report must not satisfy formal qa_handoff")
+	}
+	if _, ok := validatedQAHandoffArtifactID("qa_handoff", map[string]any{
+		"result": validArtifact["result"],
+	}); ok {
+		t.Fatal("passing comment content without persisted artifact identity must not pass")
+	}
+
+	original := []byte(`{"status":"completed"}`)
+	comment := []byte(`{"verdict":"pass","status":"passed","tests":[{"name":"acceptance","status":"passed","evidence":"all checks passed"}]}`)
+	if got := normalizeTaskResultFromAgentCommentContent(original, projectorchestration.NodeQA, comment); string(got) != string(original) {
+		t.Fatalf("QA comment replaced the task result: got %s, want %s", got, original)
 	}
 }
 

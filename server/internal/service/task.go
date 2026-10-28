@@ -732,6 +732,9 @@ var ErrAttributionFailClosed = errors.New("attribution: no precise accountable h
 // upper-layer log or response can leak the constraint name (#5914, Elon review).
 var ErrDuplicatePendingTask = errors.New("a pending task for this issue and agent already exists")
 
+var ErrProjectAutonomousPaused = errors.New("project autonomous execution is paused")
+var ErrProjectAutonomousCancelled = errors.New("project autonomous execution is permanently cancelled")
+
 // isDuplicatePendingTaskErr reports whether err is the pending-task unique-index
 // violation (a concurrent enqueue won the race). Accept both names while v1 and
 // v2 can coexist during a rolling deploy.
@@ -1499,7 +1502,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+	task, err := s.createAgentTaskForOrigin(ctx, issue, origin, db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
 		AgentID:              agentID,
 		RuntimeID:            agent.RuntimeID,
@@ -1545,6 +1548,50 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	// See EnqueueTaskForIssue for ordering rationale.
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)
+	return task, nil
+}
+
+func (s *TaskService) createAgentTaskForOrigin(ctx context.Context, issue db.Issue, origin RunOrigin, params db.CreateAgentTaskParams) (db.AgentTaskQueue, error) {
+	if origin != OriginDerived || !issue.ProjectID.Valid {
+		return s.Queries.CreateAgentTask(ctx, params)
+	}
+	if s.TxStarter == nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("project workflow task admission requires transaction support")
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("begin project workflow task admission: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO autonomous_project_control (project_id, workspace_id, paused, updated_at)
+		VALUES ($1, $2, false, now())
+		ON CONFLICT (project_id) DO UPDATE
+		SET workspace_id=EXCLUDED.workspace_id, updated_at=now()
+	`, issue.ProjectID, issue.WorkspaceID); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("ensure project control state before task admission: %w", err)
+	}
+	var paused, cancelled bool
+	if err := tx.QueryRow(ctx, `
+		SELECT paused, cancelled_at IS NOT NULL FROM autonomous_project_control
+		WHERE project_id=$1 AND workspace_id=$2
+		FOR UPDATE
+	`, issue.ProjectID, issue.WorkspaceID).Scan(&paused, &cancelled); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("read project control state before task admission: %w", err)
+	}
+	if cancelled {
+		return db.AgentTaskQueue{}, ErrProjectAutonomousCancelled
+	}
+	if paused {
+		return db.AgentTaskQueue{}, ErrProjectAutonomousPaused
+	}
+	task, err := s.Queries.WithTx(tx).CreateAgentTask(ctx, params)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("commit project workflow task admission: %w", err)
+	}
 	return task, nil
 }
 

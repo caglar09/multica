@@ -408,7 +408,7 @@ func (s *Store) BindChangeApprovalEscalation(ctx context.Context, id, escalation
 }
 
 func (s *Store) LoadLogicalPlanNodes(ctx context.Context, workspaceID, projectID pgtype.UUID, planID string) ([]LogicalPlanNode, error) {
-	rows, err := s.pool.Query(ctx, `SELECT logical_node_id,node_key,kind,title,description,priority,COALESCE(required_role_family,''),required_capabilities,acceptance_criteria,risk_level,max_attempts,status,materialized_issue_id FROM autonomous_project_plan_node WHERE workspace_id=$1 AND project_id=$2 AND plan_id=$3::uuid ORDER BY created_at,node_key`, workspaceID, projectID, planID)
+	rows, err := s.pool.Query(ctx, `SELECT logical_node_id,node_key,kind,title,description,priority,COALESCE(required_role_family,''),required_capabilities,acceptance_criteria,requirement_ids,risk_level,max_attempts,status,materialized_issue_id FROM autonomous_project_plan_node WHERE workspace_id=$1 AND project_id=$2 AND plan_id=$3::uuid ORDER BY created_at,node_key`, workspaceID, projectID, planID)
 	if err != nil {
 		return nil, err
 	}
@@ -418,8 +418,8 @@ func (s *Store) LoadLogicalPlanNodes(ctx context.Context, workspaceID, projectID
 		var item LogicalPlanNode
 		var logicalID, issueID pgtype.UUID
 		var kind, risk string
-		var capabilities, criteria []byte
-		if err := rows.Scan(&logicalID, &item.Spec.Key, &kind, &item.Spec.Title, &item.Spec.Description, &item.Spec.Priority, &item.Spec.RequiredRoleFamily, &capabilities, &criteria, &risk, &item.Spec.MaxAttempts, &item.Status, &issueID); err != nil {
+		var capabilities, criteria, requirementIDs []byte
+		if err := rows.Scan(&logicalID, &item.Spec.Key, &kind, &item.Spec.Title, &item.Spec.Description, &item.Spec.Priority, &item.Spec.RequiredRoleFamily, &capabilities, &criteria, &requirementIDs, &risk, &item.Spec.MaxAttempts, &item.Status, &issueID); err != nil {
 			return nil, err
 		}
 		item.LogicalNodeID = util.UUIDToString(logicalID)
@@ -431,6 +431,11 @@ func (s *Store) LoadLogicalPlanNodes(ctx context.Context, workspaceID, projectID
 		}
 		if err := json.Unmarshal(criteria, &item.Spec.AcceptanceCriteria); err != nil {
 			return nil, err
+		}
+		if len(requirementIDs) > 0 {
+			if err := json.Unmarshal(requirementIDs, &item.Spec.RequirementIDs); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, item)
 	}
@@ -489,6 +494,10 @@ func (s *Store) ApplyChangePlanMutation(ctx context.Context, workspaceID, projec
 		}
 		result.Plan.Goal = goal
 		result.Plan.Specification = spec.LegacySpecification()
+		result.Plan.SpecificationRevisionID = cr.ProposedSpecificationRevisionID
+		if err := ValidateRequirementCoverage(result.Plan); err != nil {
+			return StoredPlan{}, fmt.Errorf("validate proposed specification traceability: %w", err)
+		}
 	}
 	operationsJSON, err := json.Marshal(operations)
 	if err != nil {
@@ -580,19 +589,23 @@ func (s *Store) ApplyChangePlanMutation(ctx context.Context, workspaceID, projec
 		if err := tx.QueryRow(ctx, `SELECT id,revision FROM autonomous_project_specification_revision WHERE id=$1::uuid AND workspace_id=$2 AND project_id=$3`, cr.ProposedSpecificationRevisionID, workspaceID, projectID).Scan(&revisionID, &revision); err != nil {
 			return StoredPlan{}, err
 		}
-		legacyJSON, err := json.Marshal(result.Plan.Specification)
-		if err != nil {
-			return StoredPlan{}, err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE autonomous_project_plan SET specification_revision_id=$2,goal=$3,specification=$4,updated_at=now() WHERE id=$1::uuid`, persisted.ID, revisionID, result.Plan.Goal, legacyJSON); err != nil {
-			return StoredPlan{}, err
+		if util.UUIDToString(revisionID) != result.Plan.SpecificationRevisionID {
+			return StoredPlan{}, errors.New("proposed specification revision changed before plan persistence")
 		}
 		if err := activateSpecificationTx(ctx, tx, workspaceID, projectID, revisionID, revision); err != nil {
 			return StoredPlan{}, err
 		}
 	}
 	for _, node := range result.Nodes {
-		if _, err := tx.Exec(ctx, `UPDATE autonomous_project_plan_node SET logical_node_id=$3::uuid,updated_at=now() WHERE plan_id=$1::uuid AND node_key=$2`, persisted.ID, node.Spec.Key, node.LogicalNodeID); err != nil {
+		requirementIDs := node.Spec.RequirementIDs
+		if requirementIDs == nil {
+			requirementIDs = []string{}
+		}
+		requirementIDsJSON, err := json.Marshal(requirementIDs)
+		if err != nil {
+			return StoredPlan{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE autonomous_project_plan_node SET logical_node_id=$3::uuid,requirement_ids=$4::jsonb,updated_at=now() WHERE plan_id=$1::uuid AND node_key=$2`, persisted.ID, node.Spec.Key, node.LogicalNodeID, requirementIDsJSON); err != nil {
 			return StoredPlan{}, err
 		}
 		if _, skip := reset[node.LogicalNodeID]; skip {

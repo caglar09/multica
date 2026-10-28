@@ -75,167 +75,14 @@ func (s *Store) PersistPlan(
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return StoredPlan{}, fmt.Errorf("check existing project plan revision: %w", err)
 	}
-
-	var revision int64
-	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(MAX(revision), 0) + 1
-		FROM autonomous_project_plan
-		WHERE workspace_id = $1 AND project_id = $2
-	`, workspaceID, projectID).Scan(&revision); err != nil {
-		return StoredPlan{}, fmt.Errorf("allocate project plan revision: %w", err)
-	}
-
-	// Preserve node/issue identity across replans. node_key is the planner's
-	// stable logical identity; the latest prior revision is therefore the only
-	// authoritative source for carry-forward state.
-	var previousPlanID pgtype.UUID
-	previousPlanErr := tx.QueryRow(ctx, `
-		SELECT id
-		FROM autonomous_project_plan
-		WHERE workspace_id = $1 AND project_id = $2
-		ORDER BY revision DESC
-		LIMIT 1
-	`, workspaceID, projectID).Scan(&previousPlanID)
-	if previousPlanErr != nil && !errors.Is(previousPlanErr, pgx.ErrNoRows) {
-		return StoredPlan{}, fmt.Errorf("load previous project plan: %w", previousPlanErr)
-	}
-
-	specJSON, err := json.Marshal(plan.Specification)
+	stored, err := s.persistPlanTx(ctx, tx, workspaceID, projectID, sourceRevision, plannerName, plannerModel, plan)
 	if err != nil {
-		return StoredPlan{}, fmt.Errorf("encode project specification: %w", err)
-	}
-	policyJSON, err := json.Marshal(plan.Policy)
-	if err != nil {
-		return StoredPlan{}, fmt.Errorf("encode project policy: %w", err)
-	}
-
-	if _, err := tx.Exec(ctx, `
-		UPDATE autonomous_project_plan
-		SET status = 'superseded', updated_at = now()
-		WHERE workspace_id = $1
-		  AND project_id = $2
-		  AND status IN ('draft', 'active', 'blocked')
-	`, workspaceID, projectID); err != nil {
-		return StoredPlan{}, fmt.Errorf("supersede previous project plan: %w", err)
-	}
-
-	var planID pgtype.UUID
-	var createdAt, updatedAt pgtype.Timestamptz
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO autonomous_project_plan (
-			workspace_id, project_id, revision, source_revision,
-			planner_name, planner_model, goal, specification, policy, status
-		)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, 'active')
-		RETURNING id, created_at, updated_at
-	`, workspaceID, projectID, revision, sourceRevision, plannerName, plannerModel, plan.Goal, specJSON, policyJSON).
-		Scan(&planID, &createdAt, &updatedAt); err != nil {
-		return StoredPlan{}, fmt.Errorf("insert autonomous project plan: %w", err)
-	}
-
-	for _, node := range plan.Nodes {
-		capabilities, _ := json.Marshal(node.RequiredCapabilities)
-		criteria, _ := json.Marshal(node.AcceptanceCriteria)
-		maxAttempts := node.MaxAttempts
-		if maxAttempts <= 0 {
-			maxAttempts = 3
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO autonomous_project_plan_node (
-				plan_id, workspace_id, project_id, node_key, kind, title,
-				description, priority, required_role_family, required_capabilities,
-				acceptance_criteria, risk_level, max_attempts
-			)
-			VALUES (
-				$1, $2, $3, $4, $5, $6,
-				$7, $8, NULLIF($9, ''), $10,
-				$11, $12, $13
-			)
-		`, planID, workspaceID, projectID, node.Key, string(node.Kind), node.Title,
-			node.Description, node.Priority, node.RequiredRoleFamily, capabilities,
-			criteria, string(node.Risk), maxAttempts); err != nil {
-			return StoredPlan{}, fmt.Errorf("insert project plan node %q: %w", node.Key, err)
-		}
-	}
-
-	// Reuse the prior revision's materialized issue and execution state when
-	// the planner keeps the same logical node. Matching title+key is the normal
-	// identity fence. In-flight/blocked work is carried by stable key even when
-	// wording changed so a replan cannot kill active side effects mid-run.
-	// Repurposed pending/completed keys with a new title are deliberately NOT
-	// carried: the old issue is retired after commit and the new scope gets a
-	// fresh issue. Plain pending/ready readiness is recomputed from the NEW graph.
-	if previousPlanID.Valid {
-		if _, err := tx.Exec(ctx, `
-			UPDATE autonomous_project_plan_node fresh
-			SET materialized_issue_id = prior.materialized_issue_id,
-			    assigned_role = prior.assigned_role,
-			    assigned_agent_id = prior.assigned_agent_id,
-			    attempt = prior.attempt,
-			    status = CASE
-			        WHEN prior.status IN ('completed','cancelled','running','verification','blocked')
-			            THEN prior.status
-			        ELSE fresh.status
-			    END,
-			    ready_at = CASE WHEN prior.status IN ('running','verification','blocked') THEN prior.ready_at ELSE fresh.ready_at END,
-			    started_at = CASE WHEN prior.status IN ('running','verification','blocked','completed') THEN prior.started_at ELSE fresh.started_at END,
-			    completed_at = CASE WHEN prior.status IN ('completed','cancelled') THEN prior.completed_at ELSE fresh.completed_at END,
-			    blocked_category = CASE WHEN prior.status = 'blocked' THEN prior.blocked_category ELSE NULL END,
-			    blocked_reason = CASE WHEN prior.status = 'blocked' THEN prior.blocked_reason ELSE NULL END,
-			    updated_at = now()
-			FROM autonomous_project_plan_node prior
-			WHERE fresh.plan_id = $1
-			  AND prior.plan_id = $2
-			  AND fresh.node_key = prior.node_key
-			  AND prior.materialized_issue_id IS NOT NULL
-			  AND (
-			      fresh.title = prior.title
-			      OR prior.status IN ('running','verification','blocked')
-			  )
-		`, planID, previousPlanID); err != nil {
-			return StoredPlan{}, fmt.Errorf("carry forward project node identity: %w", err)
-		}
-	}
-
-	for _, edge := range plan.Edges {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO autonomous_project_plan_edge (
-				plan_id, workspace_id, project_id, from_node_key, to_node_key,
-				dependency_type, required_artifact_type
-			)
-			VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''))
-		`, planID, workspaceID, projectID, edge.From, edge.To, string(edge.Type), edge.RequiredArtifactType); err != nil {
-			return StoredPlan{}, fmt.Errorf("insert project plan edge %s -> %s: %w", edge.From, edge.To, err)
-		}
-	}
-
-	if err := seedBrain(ctx, tx, workspaceID, projectID, planID, plan); err != nil {
 		return StoredPlan{}, err
 	}
-	if err := upsertBudget(ctx, tx, workspaceID, projectID, plan.Policy.Budget); err != nil {
-		return StoredPlan{}, err
-	}
-	if err := refreshReadyTx(ctx, tx, planID); err != nil {
-		return StoredPlan{}, err
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return StoredPlan{}, fmt.Errorf("commit project plan: %w", err)
 	}
-
-	return StoredPlan{
-		ID:             util.UUIDToString(planID),
-		WorkspaceID:    util.UUIDToString(workspaceID),
-		ProjectID:      util.UUIDToString(projectID),
-		Revision:       revision,
-		SourceRevision: sourceRevision,
-		PlannerName:    plannerName,
-		PlannerModel:   plannerModel,
-		Status:         "active",
-		Plan:           plan,
-		CreatedAt:      createdAt.Time,
-		UpdatedAt:      updatedAt.Time,
-	}, nil
+	return stored, nil
 }
 
 // ResumeCompletedPlanForDiscoveredWork reopens the latest completed plan when
@@ -323,26 +170,39 @@ func (s *Store) AppendPlanDelta(
 		return fmt.Errorf("lock project plan delta: %w", err)
 	}
 
-	var current bool
+	var planStatus, planDigest string
+	var approvedAt pgtype.Timestamptz
+	var digestMatches bool
 	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM autonomous_project_plan
-			WHERE id = $1
-			  AND workspace_id = $2
-			  AND project_id = $3
-			  AND status IN ('active', 'blocked')
-		)
-	`, planID, workspaceID, projectID).Scan(&current); err != nil {
+		SELECT status, COALESCE(plan_digest, ''), approved_at,
+		       plan_digest = autonomous_project_plan_digest(id)
+		FROM autonomous_project_plan
+		WHERE id = $1 AND workspace_id = $2 AND project_id = $3
+		FOR UPDATE
+	`, planID, workspaceID, projectID).Scan(&planStatus, &planDigest, &approvedAt, &digestMatches); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errors.New("project plan changed before discovered work could be adopted")
+		}
 		return err
 	}
-	if !current {
+	if planStatus != "active" || planDigest == "" || !digestMatches {
 		return errors.New("project plan changed before discovered work could be adopted")
+	}
+	if approvedAt.Valid {
+		return errors.New("approved project plan cannot be mutated in place; persist a new plan revision")
 	}
 
 	for _, node := range nodes {
 		capabilities, _ := json.Marshal(node.RequiredCapabilities)
 		criteria, _ := json.Marshal(node.AcceptanceCriteria)
+		requirementIDs := node.RequirementIDs
+		if requirementIDs == nil {
+			requirementIDs = []string{}
+		}
+		requirementIDsJSON, err := json.Marshal(requirementIDs)
+		if err != nil {
+			return err
+		}
 		maxAttempts := node.MaxAttempts
 		if maxAttempts <= 0 {
 			maxAttempts = 3
@@ -351,17 +211,17 @@ func (s *Store) AppendPlanDelta(
 			INSERT INTO autonomous_project_plan_node (
 				plan_id, workspace_id, project_id, node_key, kind, title,
 				description, priority, required_role_family, required_capabilities,
-				acceptance_criteria, risk_level, max_attempts
+				acceptance_criteria, requirement_ids, risk_level, max_attempts
 			)
 			VALUES (
 				$1, $2, $3, $4, $5, $6,
 				$7, $8, NULLIF($9, ''), $10,
-				$11, $12, $13
+				$11, $12, $13, $14
 			)
 			ON CONFLICT (plan_id, node_key) DO NOTHING
 		`, planID, workspaceID, projectID, node.Key, string(node.Kind), node.Title,
 			node.Description, node.Priority, node.RequiredRoleFamily, capabilities,
-			criteria, string(node.Risk), maxAttempts); err != nil {
+			criteria, requirementIDsJSON, string(node.Risk), maxAttempts); err != nil {
 			return fmt.Errorf("insert discovered project node %q: %w", node.Key, err)
 		}
 	}
@@ -554,38 +414,18 @@ func (s *Store) RefreshReady(ctx context.Context, workspaceID, projectID pgtype.
 }
 
 func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
-	// Agent task results are stored as one canonical artifact per source node.
-	// Normalize model-proposed aliases (for example api_contract from an
-	// architecture node) before evaluating readiness so a valid completed
-	// predecessor cannot leave the graph permanently pending.
-	if _, err := tx.Exec(ctx, `
-		UPDATE autonomous_project_plan_edge e
-		SET required_artifact_type = CASE dep.kind
-			WHEN 'product' THEN 'product_spec'
-			WHEN 'architecture' THEN 'architecture'
-			WHEN 'review' THEN 'review'
-			WHEN 'qa' THEN 'qa_report'
-			WHEN 'security' THEN 'security_review'
-			WHEN 'integration' THEN 'integration_report'
-			WHEN 'release' THEN 'release_manifest'
-			WHEN 'deploy' THEN 'deployment_record'
-			WHEN 'incident' THEN 'incident_report'
-			ELSE 'implementation_handoff'
-		END
-		FROM autonomous_project_plan_node dep
-		WHERE e.plan_id = $1
-		  AND e.dependency_type = 'artifact'
-		  AND dep.plan_id = e.plan_id
-		  AND dep.node_key = e.from_node_key
-	`, planID); err != nil {
-		return fmt.Errorf("normalize project artifact dependencies: %w", err)
-	}
 	_, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node n
 		SET status = 'ready',
 		    ready_at = COALESCE(ready_at, now()),
 		    updated_at = now()
+		FROM autonomous_project_plan p
 		WHERE n.plan_id = $1
+		  AND p.id = n.plan_id
+		  AND p.status = 'active'
+		  AND NULLIF(p.plan_digest, '') IS NOT NULL
+		  AND p.approved_at IS NOT NULL
+		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
 		  AND n.status = 'pending'
 		  AND NOT EXISTS (
 			SELECT 1
@@ -656,7 +496,7 @@ func canonicalNodeArtifactType(kind NodeKind) string {
 	case NodeReview:
 		return "review"
 	case NodeQA:
-		return "qa_report"
+		return "qa_handoff"
 	case NodeSecurity:
 		return "security_review"
 	case NodeIntegration:
@@ -696,7 +536,10 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		WHERE p.workspace_id = $1
 		  AND p.project_id = $2
-		  AND p.status IN ('active', 'blocked')
+		  AND p.status = 'active'
+		  AND NULLIF(p.plan_digest, '') IS NOT NULL
+		  AND p.approved_at IS NOT NULL
+		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
 		  AND n.status IN ('running', 'verification')
 	`, workspaceID, projectID).Scan(&running); err != nil {
 		return nil, err
@@ -719,7 +562,10 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 		  ON c.project_id = n.project_id AND c.workspace_id = n.workspace_id
 		WHERE n.workspace_id = $1
 		  AND n.project_id = $2
-		  AND p.status IN ('active', 'blocked')
+		  AND p.status = 'active'
+		  AND NULLIF(p.plan_digest, '') IS NOT NULL
+		  AND p.approved_at IS NOT NULL
+		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
 		  AND n.status = 'ready'
 		  AND COALESCE(c.paused, FALSE) = FALSE
 		ORDER BY n.priority DESC, n.ready_at ASC, n.created_at ASC
@@ -836,7 +682,10 @@ func (s *Store) BindNodeIssue(
 		  AND n.workspace_id = $1
 		  AND n.project_id = $2
 		  AND n.node_key = $3
-		  AND p.status IN ('active', 'blocked')
+		  AND p.status = 'active'
+		  AND NULLIF(p.plan_digest, '') IS NOT NULL
+		  AND p.approved_at IS NOT NULL
+		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
 		  AND n.status NOT IN ('completed', 'cancelled')
 		  AND (n.materialized_issue_id IS NULL OR n.materialized_issue_id = $4)
 	`, workspaceID, projectID, nodeKey, issueID, assignedRole, assignedAgentID)
@@ -894,7 +743,10 @@ func (s *Store) ClaimReadyNode(
 		  AND n.materialized_issue_id IS NOT NULL
 		  AND n.status = 'ready'
 		  AND n.attempt < n.max_attempts
-		  AND p.status IN ('active', 'blocked')
+		  AND p.status = 'active'
+		  AND NULLIF(p.plan_digest, '') IS NOT NULL
+		  AND p.approved_at IS NOT NULL
+		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
 	`, workspaceID, projectID, nodeKey)
 	if err != nil {
 		return err
@@ -1540,21 +1392,25 @@ func (s *Store) LoadPlan(ctx context.Context, workspaceID, projectID pgtype.UUID
 	var out StoredPlan
 	var id pgtype.UUID
 	var model pgtype.Text
+	var specificationRevisionID pgtype.UUID
 	var specJSON, policyJSON []byte
 	var createdAt, updatedAt pgtype.Timestamptz
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, revision, source_revision, planner_name, planner_model,
+		SELECT id, revision, source_revision, specification_revision_id, planner_name, planner_model,
 		       goal, specification, policy, status, created_at, updated_at
 		FROM autonomous_project_plan
 		WHERE workspace_id = $1 AND project_id = $2 AND revision = $3
 	`, workspaceID, projectID, revision).Scan(
-		&id, &out.Revision, &out.SourceRevision, &out.PlannerName, &model,
+		&id, &out.Revision, &out.SourceRevision, &specificationRevisionID, &out.PlannerName, &model,
 		&out.Plan.Goal, &specJSON, &policyJSON, &out.Status, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return StoredPlan{}, err
 	}
 	out.ID = util.UUIDToString(id)
+	if specificationRevisionID.Valid {
+		out.Plan.SpecificationRevisionID = util.UUIDToString(specificationRevisionID)
+	}
 	out.WorkspaceID = util.UUIDToString(workspaceID)
 	out.ProjectID = util.UUIDToString(projectID)
 	out.PlannerModel = model.String
@@ -1599,7 +1455,7 @@ func (s *Store) loadSpecs(ctx context.Context, planID pgtype.UUID) ([]NodeSpec, 
 	rows, err := s.pool.Query(ctx, `
 		SELECT node_key, kind, title, description, priority,
 		       COALESCE(required_role_family, ''), required_capabilities,
-		       acceptance_criteria, risk_level, max_attempts
+		       acceptance_criteria, requirement_ids, risk_level, max_attempts
 		FROM autonomous_project_plan_node
 		WHERE plan_id = $1
 		ORDER BY created_at, node_key
@@ -1611,9 +1467,9 @@ func (s *Store) loadSpecs(ctx context.Context, planID pgtype.UUID) ([]NodeSpec, 
 	for rows.Next() {
 		var node NodeSpec
 		var kind, risk string
-		var caps, criteria []byte
+		var caps, criteria, requirementIDs []byte
 		if err := rows.Scan(&node.Key, &kind, &node.Title, &node.Description, &node.Priority,
-			&node.RequiredRoleFamily, &caps, &criteria, &risk, &node.MaxAttempts); err != nil {
+			&node.RequiredRoleFamily, &caps, &criteria, &requirementIDs, &risk, &node.MaxAttempts); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
@@ -1621,6 +1477,12 @@ func (s *Store) loadSpecs(ctx context.Context, planID pgtype.UUID) ([]NodeSpec, 
 		node.Risk = RiskLevel(risk)
 		_ = json.Unmarshal(caps, &node.RequiredCapabilities)
 		_ = json.Unmarshal(criteria, &node.AcceptanceCriteria)
+		if len(requirementIDs) > 0 {
+			if err := json.Unmarshal(requirementIDs, &node.RequirementIDs); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+		}
 		nodes = append(nodes, node)
 	}
 	if err := rows.Err(); err != nil {
@@ -1694,7 +1556,10 @@ func (s *Store) StartExternalNode(
 		  AND n.node_key = $3
 		  AND n.status = 'ready'
 		  AND n.attempt < n.max_attempts
-		  AND p.status IN ('active', 'blocked')
+		  AND p.status = 'active'
+		  AND NULLIF(p.plan_digest, '') IS NOT NULL
+		  AND p.approved_at IS NOT NULL
+		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
 	`, workspaceID, projectID, nodeKey)
 	if err != nil {
 		return pgtype.UUID{}, pgtype.UUID{}, err

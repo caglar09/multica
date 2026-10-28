@@ -344,6 +344,12 @@
     "pause_execution": "Döngüyü Duraklat",
     "resume_execution": "Döngüyü Devam Ettir",
     "replan_project": "Yeniden Planla",
+    "cancel_execution": "Yürütmeyi İptal Et",
+    "cancelled_status": "Kalıcı olarak iptal edildi",
+    "cancel_dialog_title": "Otonom yürütme kalıcı olarak iptal edilsin mi?",
+    "cancel_dialog_description": "Çalışan proje görevleri iptal edilir. Bu işlemden sonra yürütme devam ettirilemez veya yeniden planlanamaz.",
+    "cancel_dialog_keep": "Devam et",
+    "cancel_dialog_confirm": "Projeyi kalıcı olarak iptal et",
     "ask_pm": "Proje Yöneticisine Sor",
     "health_running": "Otonom Döngü Devam Ediyor",
     "health_paused": "Yürütme Duraklatıldı",
@@ -397,6 +403,8 @@
     "toast_pause_error": "Yürütme duraklatılamadı",
     "toast_replan_success": "Yeniden planlama talebi gönderildi",
     "toast_replan_error": "Yeniden planlama talebi başarısız oldu",
+    "toast_cancel_success": "Otonom yürütme kalıcı olarak iptal edildi",
+    "toast_cancel_error": "Otonom yürütme iptal edilemedi",
     "bootstrapping_title": "Otonom Ekip Önerisi",
     "bootstrapping_desc": "Proje planlayıcısı bu proje için uzman bir ekip tasarladı. Ajanları devreye almak için görevlendirmeleri inceleyin ve onaylayın.",
     "bootstrapping_confirm_button": "Ekibi Onayla ve Başlat",
@@ -490,5 +498,16 @@
     "brain_settings_description": "Gerektiğinde çalışma ortamını ve öğrenme davranışını değiştirin.",
     "toast_planning_started": "Onaylanan görev planlaması başlatıldı",
     "toast_planning_start_failed": "Onaylanan görev planlaması başlatılamadı"
+  },
+  "plan_approval": {
+    "title": "Plan onayı",
+    "pending_description": "İş başlamadan önce bu plan revizyonunu gözden geçirin.",
+    "approved_description": "Bu plan revizyonunun onay kaydı var.",
+    "digest": "Plan özeti (digest)",
+    "digest_missing": "Bu planın özeti yok; onaylanamaz.",
+    "admin_only": "Bu planı yalnızca çalışma alanı yöneticisi onaylayabilir.",
+    "approve": "Bu revizyonu onayla",
+    "approve_success": "Plan onaylandı; uygun işler başlayabilir.",
+    "approve_error": "Plan onaylanamadı."
   }
 }

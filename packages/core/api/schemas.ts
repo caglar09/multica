@@ -2231,6 +2231,108 @@ export const CancelTaskResponseSchema = AgentTaskSchema.extend({
     .transform((value) => value ?? undefined),
 }).loose();
 
+export const CancelProjectAutonomousResponseSchema = z.object({
+  cancelled: z.boolean().default(false),
+}).loose();
+
+export const EMPTY_CANCEL_PROJECT_AUTONOMOUS_RESPONSE = {
+  cancelled: false,
+};
+
+export const AutonomousProjectControlSchema = z.object({
+  paused: z.boolean().catch(false),
+  cancelled_at: z.string().nullable().catch(null),
+  paused_at: z.string().nullable().catch(null),
+  replan_requested_at: z.string().nullable().catch(null),
+  replan_completed_at: z.string().nullable().catch(null),
+  last_error: z.string().nullable().catch(null),
+}).loose();
+
+export const AutonomousProjectPlanSnapshotSchema = z.object({
+  id: z.string().default(""),
+  revision: z.number().int().nonnegative().catch(0),
+  goal: z.string().default(""),
+  status: z.string().default(""),
+  plan_digest: z.string().default(""),
+  approved_at: z.string().nullable().catch(null),
+  approved_by: z.string().nullable().catch(null),
+  planner_name: z.string().default(""),
+  planner_model: z.string().nullable().catch(null),
+  specification: z.object({
+    summary: z.string().optional(),
+    requirements: z.array(z.string()).catch([]),
+    requirement_details: z.array(z.object({
+      id: z.string().default(""),
+      text: z.string().default(""),
+      rationale: z.string().default(""),
+      source: z.string().default(""),
+    }).loose()).catch([]),
+    non_functional_requirements: z.array(z.string()).catch([]),
+    constraints: z.array(z.string()).catch([]),
+    non_goals: z.array(z.string()).catch([]),
+    definition_of_done: z.array(z.string()).catch([]),
+    acceptance_expectations: z.array(z.string()).catch([]),
+  }).loose().default({
+    requirements: [],
+    requirement_details: [],
+    non_functional_requirements: [],
+    constraints: [],
+    non_goals: [],
+    definition_of_done: [],
+    acceptance_expectations: [],
+  }),
+  policy: z.record(z.string(), z.unknown()).catch({}),
+  nodes: z.array(z.object({
+    id: z.string().default(""),
+    key: z.string().default(""),
+    kind: z.string().default(""),
+    title: z.string().default(""),
+    status: z.string().default(""),
+    priority: z.number().int().catch(0),
+    risk: z.string().default("low"),
+    required_role_family: z.string().nullable().catch(null),
+    assigned_role: z.string().nullable().catch(null),
+    assigned_agent_id: z.string().nullable().catch(null),
+    materialized_issue_id: z.string().nullable().catch(null),
+    attempt: z.number().int().nonnegative().catch(0),
+    max_attempts: z.number().int().nonnegative().catch(0),
+    blocked_category: z.string().nullable().catch(null),
+    blocked_reason: z.string().nullable().catch(null),
+    issue_status: z.string().nullable().catch(null),
+    workflow_state: z.string().nullable().catch(null),
+    acceptance_criteria: z.array(z.string()).catch([]),
+    requirement_ids: z.array(z.string()).catch([]),
+    updated_at: z.string().default(""),
+  }).loose()).catch([]),
+  edges: z.array(z.object({
+    from: z.string().default(""),
+    to: z.string().default(""),
+    type: z.string().default("hard"),
+  }).loose()).catch([]),
+  updated_at: z.string().default(""),
+}).loose();
+
+export const ApproveAutonomousProjectPlanResponseSchema = z.object({
+  approved: z.boolean().default(false),
+  plan_digest: z.string().default(""),
+  status: z.string().default(""),
+}).loose();
+
+export const EMPTY_APPROVE_AUTONOMOUS_PROJECT_PLAN_RESPONSE = {
+  approved: false,
+  plan_digest: "",
+  status: "",
+};
+
+export const EMPTY_AUTONOMOUS_PROJECT_CONTROL = {
+  paused: false,
+  cancelled_at: null,
+  paused_at: null,
+  replan_requested_at: null,
+  replan_completed_at: null,
+  last_error: null,
+};
+
 const ChatLastMessageSchema = z.object({
   content: z.string().default(""),
   role: z.enum(["user", "assistant"]).catch("assistant"),
