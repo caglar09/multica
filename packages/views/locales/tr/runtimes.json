@@ -25,7 +25,56 @@
     "bootstrapping": {
       "title": "Yerel runtime başlatılıyor…",
       "hint": "Bu genellikle birkaç saniye sürer. Daemon'unuz çalışma alanına kaydediliyor."
+    },
+    "add": "Ekle",
+    "add_menu": {
+      "machines": "Makineler",
+      "this_computer": "Bu bilgisayar",
+      "this_computer_connected": "Bağlandı · {{name}}",
+      "this_computer_download": "Bağlamak için masaüstü uygulamasını indirin",
+      "other_machine": "Başka bir makine veya sunucu",
+      "other_machine_hint": "Bu makinede iki komut çalıştırın",
+      "cloud_services": "Bulut hizmetleri",
+      "qoder_manage_hint": "Bağlandı · bağlantıyı yönet",
+      "cloud_runtime_hint": "Multica tarafından barındırılan bir bulut makinesi oluşturun"
+    },
+    "columns": {
+      "name": "Ad",
+      "harness": "Çalışma ortamı",
+      "agents": "Ajanlar",
+      "workload": "İş yükü",
+      "status": "Durum"
+    },
+    "groups": {
+      "machines": {
+        "title": "Makineler"
+      },
+      "cloud": {
+        "title": "Bulut hizmetleri",
+        "coming_soon": "Yakında"
+      }
+    },
+    "rows": {
+      "this_computer_title": "Bu bilgisayarda çalıştırın",
+      "this_computer_hint": "Masaüstü uygulamasını indirip oturum açın; bu bilgisayardaki Claude Code, Codex ve diğer CLI araçları burada otomatik olarak görünür",
+      "download_desktop": "Masaüstü uygulamasını indir",
+      "add_machine_title": "Başka bir makine veya sunucu ekleyin",
+      "add_machine_hint": "Ajanların yüklü CLI araçlarını kullanabilmesi için bu makinede iki komut çalıştırın",
+      "view_commands": "Komutları görüntüle",
+      "owner_you": "Siz",
+      "connect": "Bağlan",
+      "not_connected": "Bağlı değil",
+      "provided_by": "{{vendor}} tarafından",
+      "no_matches": "Eşleşen makine veya bulut hizmeti bulunamadı"
+    },
+    "filters": {
+      "all": "Tümü",
+      "online": "Çevrimiçi",
+      "offline": "Çevrimdışı"
     }
+  },
+  "qoder": {
+    "cloud_title": "Qoder Bulut Ajanları"
   },
   "mika_setup": {
     "title": "Runtime hazır. Mika ile başlayın.",
