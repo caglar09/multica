@@ -202,6 +202,8 @@ export interface ProjectContextPayload {
   root_name: string;
   files: ProjectContextFile[];
   warnings?: string[];
+  local_path?: string;
+  daemon_id?: string;
 }
 
 export interface DiscoveredProject {
@@ -322,6 +324,8 @@ export interface ImportProjectRequest {
   instruction?: string;
   project_context?: ProjectContextPayload;
   discovery_report?: ProjectDiscoveryReport;
+  runtime_id?: string;
+  model?: string;
   dry_run?: boolean;
   create_missing_labels?: boolean;
 }

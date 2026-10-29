@@ -1,11 +1,18 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FileUp, TriangleAlert } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import {
 	useImportProject,
 	useSyncProject,
 } from "@multica/core/projects";
+import { useWorkspaceId } from "@multica/core/hooks";
+import {
+	runtimeDisplayLabel,
+	runtimeListOptions,
+	runtimeModelsOptions,
+} from "@multica/core/runtimes";
 import { ProjectBundleSchema } from "@multica/core/api/schemas";
 import type {
 	ImportProjectRequest,
@@ -25,9 +32,22 @@ import {
 } from "@multica/ui/components/ui/dialog";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
+import {
+	Select,
+	SelectContent,
+	SelectGroup,
+	SelectItem,
+	SelectLabel,
+	SelectTrigger,
+	SelectValue,
+} from "@multica/ui/components/ui/select";
 import { toast } from "sonner";
+import { buildRuntimeMachines, runtimeRowLabel } from "../../runtimes/components/runtime-machines";
+import { useLocalDaemonStatus } from "../../platform";
 import { useT } from "../../i18n/use-t";
 import { collectProjectContext } from "./project-discovery-context";
+
+const runtimeDefaultModel = "__runtime_default__";
 
 type SourceFormat = "json" | "markdown";
 type PortabilityRequest = ImportProjectRequest | SyncProjectRequest;
@@ -44,6 +64,17 @@ export function ProjectImportDialog({
 	onOpenChange,
 }: ProjectImportDialogProps) {
 	const { t } = useT("projects");
+	const wsId = useWorkspaceId();
+	const localDaemon = useLocalDaemonStatus();
+	const runtimeQuery = useQuery(runtimeListOptions(wsId));
+	const onlineRuntimes = useMemo(
+		() => (runtimeQuery.data ?? []).filter((runtime) => runtime.status === "online"),
+		[runtimeQuery.data],
+	);
+	const runtimeMachines = useMemo(
+		() => buildRuntimeMachines(onlineRuntimes, { now: Date.now(), localDaemonId: localDaemon.daemonId }),
+		[onlineRuntimes, localDaemon.daemonId],
+	);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const directoryInputRef = useRef<HTMLInputElement>(null);
 	const importProject = useImportProject();
@@ -53,6 +84,9 @@ export function ProjectImportDialog({
 	const [filename, setFilename] = useState("");
 	const [titleHint, setTitleHint] = useState("");
 	const [projectContext, setProjectContext] = useState<ProjectContextPayload | null>(null);
+	const [runtimeId, setRuntimeId] = useState("");
+	const [model, setModel] = useState("");
+	const modelsQuery = useQuery(runtimeModelsOptions(runtimeId || null));
 	const [instruction, setInstruction] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [preview, setPreview] = useState<PortabilityResult | null>(null);
@@ -68,10 +102,22 @@ export function ProjectImportDialog({
 		setError(null);
 	};
 
+	useEffect(() => {
+		if (runtimeQuery.isLoading) return;
+		if (!runtimeId || onlineRuntimes.some((runtime) => runtime.id === runtimeId)) return;
+		setRuntimeId("");
+		setModel("");
+	}, [onlineRuntimes, runtimeId, runtimeQuery.isLoading]);
+
 	const buildRequest = (dryRun: boolean): PortabilityRequest => {
 		if (projectContext && !projectId) {
+			const sourceContext = projectContext.local_path && localDaemon.running && localDaemon.daemonId
+				? { ...projectContext, daemon_id: localDaemon.daemonId }
+				: projectContext;
 			return {
-				project_context: projectContext,
+				project_context: sourceContext,
+				...(runtimeId ? { runtime_id: runtimeId } : {}),
+				...(model ? { model } : {}),
 				instruction: instruction.trim(),
 				dry_run: dryRun,
 				create_missing_labels: true,
@@ -127,7 +173,7 @@ export function ProjectImportDialog({
 		}
 	};
 
-	const handleDirectory = async (files: FileList | null) => {
+	const handleDirectory = async (files: ArrayLike<File> | null) => {
 		if (!files?.length) return;
 		clearPreview();
 		setContent("");
@@ -180,6 +226,11 @@ export function ProjectImportDialog({
 		...(preview?.preview?.warnings ?? []),
 		...(preview?.warnings ?? []),
 	])];
+	const selectedRuntime = onlineRuntimes.find((runtime) => runtime.id === runtimeId);
+	const modelItems = [
+		{ value: runtimeDefaultModel, label: t(($) => $.portability.discovery.model_default) },
+		...(modelsQuery.data?.models ?? []).map((item) => ({ value: item.id, label: item.label })),
+	];
 
 	return (
 		<Dialog open={open} onOpenChange={openChange}>
@@ -219,7 +270,7 @@ export function ProjectImportDialog({
 									className="sr-only"
 									disabled={pending}
 									onChange={(event) => {
-										const files = event.currentTarget.files;
+									const files = Array.from(event.currentTarget.files ?? []);
 										event.currentTarget.value = "";
 										void handleDirectory(files);
 									}}
@@ -304,7 +355,65 @@ export function ProjectImportDialog({
 					</div> : null}
 
 					{projectContext ? (
-						<div className="space-y-2">
+						<div className="space-y-4">
+							<div className="grid gap-3 sm:grid-cols-2">
+								<label className="space-y-1.5">
+									<span className="text-caption font-medium">{t(($) => $.portability.discovery.runtime_label)}</span>
+									<Select
+										items={onlineRuntimes.map((runtime) => ({ value: runtime.id, label: runtimeDisplayLabel(runtime) }))}
+										value={runtimeId}
+										onValueChange={(value) => {
+											if (!value) return;
+											setRuntimeId(value);
+											setModel("");
+											clearPreview();
+										}}
+									>
+										<SelectTrigger className="w-full" disabled={pending || runtimeQuery.isLoading || onlineRuntimes.length === 0}>
+											<SelectValue>{selectedRuntime ? runtimeDisplayLabel(selectedRuntime) : t(($) => $.portability.discovery.runtime_default)}</SelectValue>
+										</SelectTrigger>
+										<SelectContent>
+											{runtimeMachines.map((machine) => (
+												<SelectGroup key={machine.id}>
+													<SelectLabel>{machine.title}</SelectLabel>
+													{machine.runtimes.map((runtime) => (
+														<SelectItem key={runtime.id} value={runtime.id}>
+															{runtimeRowLabel(runtime, machine.title)}
+														</SelectItem>
+													))}
+												</SelectGroup>
+											))}
+										</SelectContent>
+									</Select>
+								</label>
+								{runtimeId && modelsQuery.data?.supported !== false ? (
+									<label className="space-y-1.5">
+										<span className="text-caption font-medium">{t(($) => $.portability.discovery.model_label)}</span>
+										<Select
+										items={modelItems}
+										value={model || runtimeDefaultModel}
+										onValueChange={(value) => {
+											setModel(value === runtimeDefaultModel ? "" : value ?? "");
+											clearPreview();
+										}}
+									>
+										<SelectTrigger className="w-full" disabled={pending || !runtimeId || modelsQuery.isLoading}>
+											<SelectValue>{modelItems.find((item) => item.value === (model || runtimeDefaultModel))?.label}</SelectValue>
+										</SelectTrigger>
+										<SelectContent>
+											{modelItems.map((item) => (
+												<SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								</label>
+								) : null}
+							</div>
+							{!runtimeQuery.isLoading && onlineRuntimes.length === 0 ? (
+								<p className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-caption text-warning-foreground" role="status">
+									{t(($) => $.portability.discovery.no_online_runtime)}
+								</p>
+							) : null}
 							<label htmlFor="project-discovery-instruction" className="text-caption font-medium">
 								{t(($) => $.portability.discovery.instruction_label)}
 							</label>
@@ -320,7 +429,9 @@ export function ProjectImportDialog({
 								}}
 							/>
 							<p className="text-caption text-muted-foreground" role="note">
-								{t(($) => $.portability.discovery.source_warning)}
+								{projectContext.local_path && localDaemon.running && localDaemon.daemonId
+									? t(($) => $.portability.discovery.source_attached)
+									: t(($) => $.portability.discovery.source_warning)}
 							</p>
 						</div>
 					) : null}
@@ -366,7 +477,7 @@ export function ProjectImportDialog({
 								: t(($) => $.portability.import.apply_import)}
 						</Button>
 					) : (
-						<Button onClick={() => void handlePreview()} disabled={pending || (!projectContext && !content.trim())} aria-busy={pending}>
+						<Button onClick={() => void handlePreview()} disabled={pending || (!projectContext && !content.trim()) || (!!projectContext && !projectId && (runtimeQuery.isLoading || onlineRuntimes.length === 0))} aria-busy={pending}>
 							{t(($) => $.portability.import.preview)}
 						</Button>
 					)}

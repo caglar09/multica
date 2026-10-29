@@ -420,6 +420,8 @@ type ImportRequest struct {
 	Markdown            string                  `json:"markdown,omitempty"`
 	ProjectTitleHint    string                  `json:"project_title_hint,omitempty"`
 	Instruction         string                  `json:"instruction,omitempty"`
+	RuntimeID           string                  `json:"runtime_id,omitempty"`
+	Model               string                  `json:"model,omitempty"`
 	ProjectContext      *ProjectContextPayload  `json:"project_context,omitempty"`
 	DiscoveryReport     *ProjectDiscoveryReport `json:"discovery_report,omitempty"`
 	DryRun              bool                    `json:"dry_run,omitempty"`

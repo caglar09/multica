@@ -4905,6 +4905,19 @@ func TestBuildCodexArgsExtraArgsBeforeCustomArgsAndFiltersBoth(t *testing.T) {
 	}
 }
 
+func TestBuildCodexArgsReadOnlyCannotBeOverridden(t *testing.T) {
+	args := buildCodexArgs(ExecOptions{
+		ReadOnly:   true,
+		CustomArgs: []string{"--sandbox", "workspace-write"},
+	}, slog.Default())
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == "--sandbox" && args[index+1] == "read-only" {
+			return
+		}
+	}
+	t.Fatalf("read-only policy was not appended to Codex args: %v", args)
+}
+
 func TestBuildCodexArgsExplicitFastOverridesLowerPriorityDisable(t *testing.T) {
 	t.Parallel()
 

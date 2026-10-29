@@ -63,9 +63,15 @@
       "sync_complete": "项目已同步"
     },
     "discovery": {
+      "runtime_label": "分析运行时",
+      "runtime_default": "Multica 默认运行时（如可用则使用 Mika）",
+      "model_label": "模型",
+      "model_default": "运行时默认模型",
+      "no_online_runtime": "请连接一个在线的 Multica 守护进程以分析此项目。",
       "instruction_label": "这个项目需要实现什么目标？",
       "instruction_placeholder": "补充分析背景或关注重点...",
       "source_warning": "这些文件仅用于本次导入分析。连接本地文件夹或 Git 仓库前，智能体无法编辑项目文件。",
+      "source_attached": "此本地文件夹将连接到项目，供智能体使用。",
       "boundaries": "范围与约束",
       "implemented": "已实现功能",
       "next_tasks": "后续任务",

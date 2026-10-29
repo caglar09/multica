@@ -63,9 +63,15 @@
       "sync_complete": "프로젝트를 동기화했습니다"
     },
     "discovery": {
+      "runtime_label": "분석 런타임",
+      "runtime_default": "Multica 기본 런타임 (사용 가능한 경우 Mika)",
+      "model_label": "모델",
+      "model_default": "런타임 기본 모델",
+      "no_online_runtime": "이 프로젝트를 분석하려면 온라인 Multica 데몬을 연결하세요.",
       "instruction_label": "이 프로젝트가 달성해야 할 목표는 무엇인가요?",
       "instruction_placeholder": "분석에 필요한 맥락이나 초점을 입력하세요...",
       "source_warning": "파일은 이번 가져오기를 위해서만 분석됩니다. 로컬 폴더나 Git 저장소를 연결하기 전에는 에이전트가 파일을 수정할 수 없습니다.",
+      "source_attached": "에이전트가 작업할 수 있도록 이 로컬 폴더를 프로젝트에 연결합니다.",
       "boundaries": "범위와 제약",
       "implemented": "구현된 기능",
       "next_tasks": "다음 태스크",

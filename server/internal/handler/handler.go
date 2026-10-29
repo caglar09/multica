@@ -427,7 +427,7 @@ type Handler struct {
 	// Config); when unconfigured its Enabled() reports false and callers fall
 	// back silently.
 	LLM                      *llm.Client
-	ProjectDiscoveryAnalyzer func(context.Context, projectbundle.ProjectContextPayload, string) (projectbundle.ProjectDiscoveryReport, error)
+	ProjectDiscoveryAnalyzer func(context.Context, ProjectDiscoveryInput) (projectbundle.ProjectDiscoveryReport, error)
 	// VCSSecretBox encrypts/decrypts per-workspace Git provider access tokens and
 	// webhook secrets at rest (Forgejo / Gitea / GitLab). Nil when
 	// MULTICA_VCS_SECRET_KEY is unset; connect returns 403 and webhook returns 404
@@ -562,13 +562,13 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 			BaseURL: cfg.CloudURL,
 			Timeout: cfg.CloudTimeout,
 		}),
-		LLM:                      llmClient,
-		ProjectDiscoveryAnalyzer: newProjectDiscoveryAnalyzer(llmClient),
-		DeploymentRepository:     deploymentRepo,
-		DeploymentProviders:      deploymentRegistry,
-		DeploymentDispatcher:     &deploymentcore.AsyncDispatcher{Repository: deploymentRepo, Workers: 4, Timeout: 2 * time.Minute},
-		cfg:                      cfg,
+		LLM:                  llmClient,
+		DeploymentRepository: deploymentRepo,
+		DeploymentProviders:  deploymentRegistry,
+		DeploymentDispatcher: &deploymentcore.AsyncDispatcher{Repository: deploymentRepo, Workers: 4, Timeout: 2 * time.Minute},
+		cfg:                  cfg,
 	}
+	h.ProjectDiscoveryAnalyzer = newDaemonProjectDiscoveryAnalyzer(h)
 	h.VercelOAuthClient = deploymentproviders.NewVercelOAuthClient(cfg.VercelOAuthClientID, cfg.VercelOAuthClientSecret, cfg.VercelOAuthRedirectURL)
 	if executor != nil {
 		h.VercelOAuthStates = &postgresVercelOAuthStateStore{handler: h}

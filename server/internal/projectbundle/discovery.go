@@ -22,9 +22,11 @@ const (
 )
 
 type ProjectContextPayload struct {
-	RootName string               `json:"root_name"`
-	Files    []ProjectContextFile `json:"files"`
-	Warnings []string             `json:"warnings,omitempty"`
+	RootName  string               `json:"root_name"`
+	Files     []ProjectContextFile `json:"files"`
+	Warnings  []string             `json:"warnings,omitempty"`
+	LocalPath string               `json:"local_path,omitempty"`
+	DaemonID  string               `json:"daemon_id,omitempty"`
 }
 
 type ProjectContextFile struct {
@@ -114,7 +116,7 @@ func CollectProjectContext(rootDir string, opts CollectOptions) (ProjectContextP
 	if maxTotalBytes <= 0 {
 		maxTotalBytes = maxDiscoveryTotalBytes
 	}
-	payload := ProjectContextPayload{RootName: filepath.Base(root), Files: []ProjectContextFile{}}
+	payload := ProjectContextPayload{RootName: filepath.Base(root), Files: []ProjectContextFile{}, LocalPath: root}
 	var totalBytes int64
 	warnings := map[string]bool{}
 	addWarning := func(message string) {
@@ -214,7 +216,22 @@ func SanitizeProjectContext(input ProjectContextPayload) (ProjectContextPayload,
 	if len(rootName) > 200 {
 		return ProjectContextPayload{}, errors.New("project_context.root_name exceeds 200 characters")
 	}
-	clean := ProjectContextPayload{RootName: rootName, Files: []ProjectContextFile{}}
+	clean := ProjectContextPayload{
+		RootName:  rootName,
+		Files:     []ProjectContextFile{},
+		LocalPath: strings.TrimSpace(input.LocalPath),
+		DaemonID:  strings.TrimSpace(input.DaemonID),
+	}
+	if len(clean.LocalPath) > 4096 || strings.IndexByte(clean.LocalPath, 0) >= 0 {
+		return ProjectContextPayload{}, errors.New("project_context.local_path is invalid")
+	}
+	portableLocalPath := strings.ReplaceAll(clean.LocalPath, "\\", "/")
+	if clean.LocalPath != "" && !strings.HasPrefix(portableLocalPath, "/") && !windowsDrivePath.MatchString(portableLocalPath) {
+		return ProjectContextPayload{}, errors.New("project_context.local_path must be an absolute path")
+	}
+	if len(clean.DaemonID) > 200 || strings.IndexByte(clean.DaemonID, 0) >= 0 {
+		return ProjectContextPayload{}, errors.New("project_context.daemon_id is invalid")
+	}
 	seen := map[string]bool{}
 	var total int
 	for _, file := range input.Files {
@@ -404,16 +421,31 @@ func BuildBundleFromDiscovery(report ProjectDiscoveryReport, context *ProjectCon
 		knowledgeJSON("architecture", "Architecture summary", map[string]any{"summary": report.Project.ArchitectureSummary}),
 		knowledgeJSON("requirement", "Project boundaries", report.Boundaries),
 		knowledgeJSON("architecture", "Implemented features", report.ImplementedFeatures),
-		knowledgeJSON("reference", "Source access", map[string]any{"available": false, "message": "The selected files were analyzed, but no agent-accessible local directory or Git source is attached. Attach a source before asking agents to edit files."}),
 	}
-	contextWarnings := []string{"The selected files were used for analysis only. No agent-accessible local directory or Git source is attached; connect a source before agents edit files."}
+	resources := []PortableResource{}
+	contextWarnings := []string{}
+	sourceAttached := false
+	if context != nil && context.LocalPath != "" && context.DaemonID != "" {
+		ref, err := json.Marshal(map[string]string{
+			"local_path": context.LocalPath, "daemon_id": context.DaemonID, "execution_mode": "in_place",
+		})
+		if err != nil {
+			return Bundle{}, fmt.Errorf("encode local project resource: %w", err)
+		}
+		resources = append(resources, PortableResource{ResourceType: "local_directory", ResourceRef: ref})
+		sourceAttached = true
+	}
+	if !sourceAttached {
+		knowledge = append(knowledge, knowledgeJSON("reference", "Source access", map[string]any{"available": false, "message": "The selected files were analyzed, but no agent-accessible local directory or Git source is attached. Attach a source before asking agents to edit files."}))
+		contextWarnings = append(contextWarnings, "The selected files were used for analysis only. No agent-accessible local directory or Git source is attached; connect a source before agents edit files.")
+	}
 	if context != nil {
 		contextWarnings = append(contextWarnings, context.Warnings...)
 	}
 	description := report.Project.Purpose
 	brief := report.Project.Goal + "\n\n" + report.Project.ArchitectureSummary
 	bundle := Bundle{SchemaVersion: SchemaVersionV1, Project: PortableProject{Title: report.Project.Title, Description: &description},
-		Resources: []PortableResource{}, Bootstrap: &PortableBootstrap{AutonomyMode: "standard", AutonomyLevel: "development", Brief: brief, Knowledge: knowledge,
+		Resources: resources, Bootstrap: &PortableBootstrap{AutonomyMode: "standard", AutonomyLevel: "development", Brief: brief, Knowledge: knowledge,
 			Plan: &PortablePlan{Goal: report.Project.Goal, Requirements: portablePlanRequirements(requirements), Specification: spec, Nodes: nodes, Edges: planEdges}}, Tasks: features}
 	for _, warning := range uniqueStrings(contextWarnings) {
 		bundle.Bootstrap.Knowledge = append(bundle.Bootstrap.Knowledge, knowledgeJSON("fact", "Import warning", map[string]string{"message": warning}))

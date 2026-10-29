@@ -340,6 +340,19 @@ func TestBuildClaudeArgsInheritsMCPByDefault(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeArgsReadOnlyCannotBeOverridden(t *testing.T) {
+	args := buildClaudeArgs(ExecOptions{
+		ReadOnly:   true,
+		CustomArgs: []string{"--permission-mode", "bypassPermissions"},
+	}, slog.Default())
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == "--permission-mode" && args[index+1] == "plan" {
+			return
+		}
+	}
+	t.Fatalf("read-only policy was not applied to Claude args: %v", args)
+}
+
 func TestBuildClaudeArgsUsesStrictMCPForManagedConfig(t *testing.T) {
 	t.Parallel()
 

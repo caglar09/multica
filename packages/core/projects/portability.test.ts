@@ -10,6 +10,7 @@ import { setApiInstance } from "../api";
 import {
   ProjectPortabilityResultSchema,
   ProjectBundleSchema,
+  ProjectContextPayloadSchema,
   ProjectExportResponseSchema,
 } from "../api/schemas";
 import type { PortableProjectBundle, PortableProjectExportResponse } from "../types";
@@ -50,6 +51,18 @@ function createWrapper(queryClient: QueryClient) {
 }
 
 describe("project portability schemas", () => {
+  it("accepts optional source path and daemon identity on discovery context", () => {
+    expect(ProjectContextPayloadSchema.parse({
+      root_name: "manual-project",
+      files: [{ path: "src/main.ts", content: "export {}" }],
+      local_path: "/Users/example/manual-project",
+      daemon_id: "daemon-local",
+    })).toMatchObject({
+      local_path: "/Users/example/manual-project",
+      daemon_id: "daemon-local",
+    });
+  });
+
   it("parses the portable bundle and export response while retaining unknown statuses", () => {
     expect(ProjectBundleSchema.parse(bundle)).toMatchObject({
       project: { status: "future_status" },

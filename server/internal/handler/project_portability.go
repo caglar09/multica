@@ -11,7 +11,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/projectbundle"
-	"github.com/multica-ai/multica/server/pkg/llm"
 )
 
 const maxProjectPortabilityBody = 10 << 20
@@ -60,6 +59,10 @@ func (h *Handler) ImportProject(w http.ResponseWriter, r *http.Request) {
 		err       error
 	)
 	hasDiscovery := request.ProjectContext != nil || request.DiscoveryReport != nil
+	if !hasDiscovery && (strings.TrimSpace(request.RuntimeID) != "" || strings.TrimSpace(request.Model) != "") {
+		writeError(w, http.StatusBadRequest, "runtime_id and model require project_context discovery")
+		return
+	}
 	if hasDiscovery {
 		if request.Bundle != nil || strings.TrimSpace(request.Markdown) != "" {
 			writeError(w, http.StatusBadRequest, "provide one project source")
@@ -83,15 +86,32 @@ func (h *Handler) ImportProject(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if request.ProjectContext == nil || h.ProjectDiscoveryAnalyzer == nil {
-				writeError(w, http.StatusServiceUnavailable, "project discovery is unavailable")
+				writeError(w, http.StatusServiceUnavailable, "project discovery requires an online Multica runtime")
 				return
 			}
-			report, analyzeErr := h.ProjectDiscoveryAnalyzer(r.Context(), *context, request.Instruction)
-			if errors.Is(analyzeErr, llm.ErrNotConfigured) {
-				writeError(w, http.StatusServiceUnavailable, "project discovery model is not configured")
-				return
+			if request.RuntimeID != "" {
+				if _, ok := parseUUIDOrBadRequest(w, request.RuntimeID, "runtime_id"); !ok {
+					return
+				}
 			}
-			if analyzeErr != nil {
+			report, analyzeErr := h.ProjectDiscoveryAnalyzer(r.Context(), ProjectDiscoveryInput{
+				WorkspaceID: wsUUID, UserID: userUUID, RuntimeID: request.RuntimeID, Model: request.Model,
+				Context: *context, Instruction: request.Instruction,
+			})
+			switch {
+			case errors.Is(analyzeErr, ErrDiscoveryRuntimeUnavailable):
+				writeError(w, http.StatusServiceUnavailable, "connect an online Multica runtime to analyze this project")
+				return
+			case errors.Is(analyzeErr, ErrDiscoveryRuntimeForbidden):
+				writeError(w, http.StatusForbidden, "you do not have access to the selected runtime")
+				return
+			case errors.Is(analyzeErr, ErrDiscoveryRuntimeOffline):
+				writeError(w, http.StatusConflict, "the selected runtime is offline")
+				return
+			case errors.Is(analyzeErr, ErrDiscoveryReadOnlyUnsupported):
+				writeError(w, http.StatusUnprocessableEntity, "choose a runtime with native read-only mode (Codex, Claude, or Antigravity for Gemini models)")
+				return
+			case analyzeErr != nil:
 				writeError(w, http.StatusBadGateway, "project analysis failed; review the source and try again")
 				return
 			}
@@ -128,7 +148,7 @@ func (h *Handler) ImportProject(w http.ResponseWriter, r *http.Request) {
 			h.writeProjectPortabilityError(w, err)
 			return
 		}
-		addDiscoveryWarnings(&result, discovery, context)
+		addDiscoveryWarnings(&result, discovery, context, bundle)
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
@@ -137,18 +157,34 @@ func (h *Handler) ImportProject(w http.ResponseWriter, r *http.Request) {
 		h.writeProjectPortabilityError(w, err)
 		return
 	}
-	addDiscoveryWarnings(&result, discovery, context)
+	addDiscoveryWarnings(&result, discovery, context, bundle)
 	writeJSON(w, http.StatusCreated, result)
 }
 
 const sourceNotAttachedWarning = "The selected files were analyzed, but no agent-accessible local directory or Git source is attached; attach a source before agents edit files."
 
-func addDiscoveryWarnings(result *projectbundle.PortabilityResult, report *projectbundle.ProjectDiscoveryReport, context *projectbundle.ProjectContextPayload) {
+func addDiscoveryWarnings(result *projectbundle.PortabilityResult, report *projectbundle.ProjectDiscoveryReport, context *projectbundle.ProjectContextPayload, bundle projectbundle.Bundle) {
 	if report == nil {
 		return
 	}
 	result.DiscoveryReport = report
-	warnings := []string{sourceNotAttachedWarning}
+	attached := false
+	for _, resource := range bundle.Resources {
+		if resource.ResourceType == "github_repo" {
+			attached = true
+		}
+		if resource.ResourceType == "local_directory" {
+			warnings := append([]string{}, result.Warnings...)
+			if result.Preview != nil {
+				warnings = append(warnings, result.Preview.Warnings...)
+			}
+			attached = !hasProjectWarning(warnings, "A local_directory resource was skipped because its daemon is not registered in the target workspace.")
+		}
+	}
+	warnings := []string{}
+	if !attached {
+		warnings = append(warnings, sourceNotAttachedWarning)
+	}
 	if context != nil {
 		warnings = append(warnings, context.Warnings...)
 	}
@@ -165,6 +201,15 @@ func addDiscoveryWarnings(result *projectbundle.PortabilityResult, report *proje
 	if result.Preview != nil {
 		result.Preview.Warnings = uniqueProjectWarnings(result.Preview.Warnings)
 	}
+}
+
+func hasProjectWarning(warnings []string, target string) bool {
+	for _, warning := range warnings {
+		if warning == target {
+			return true
+		}
+	}
+	return false
 }
 
 func uniqueProjectWarnings(warnings []string) []string {

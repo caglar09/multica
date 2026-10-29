@@ -3620,10 +3620,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		projectCtx.applyTo(&resp)
 		var sessionKind string
-		if err := h.DB.QueryRow(r.Context(), `SELECT session_kind FROM chat_session WHERE id=$1`, cs.ID).Scan(&sessionKind); err == nil && cs.ProjectID.Valid && resp.Agent != nil {
+		if err := h.DB.QueryRow(r.Context(), `SELECT session_kind FROM chat_session WHERE id=$1`, cs.ID).Scan(&sessionKind); err == nil && resp.Agent != nil {
 			reasoningOnlySession := sessionKind == "autonomous_project_leader" || sessionKind == "autonomous_project_planning"
 			projectManagerChat := false
-			if !reasoningOnlySession {
+			if cs.ProjectID.Valid && !reasoningOnlySession {
 				// A standard project chat can still be opened against the
 				// provisioned Project Manager agent. Resolve the role from the
 				// active project team instead of trusting the agent name or chat
@@ -3661,7 +3661,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				resp.RemoteMCPConnections = nil
 				if projectManagerChat {
 					resp.Agent.Instructions += "\n\n## Project Manager Chat Contract\n" + projectManagerChatContract
-				} else {
+				} else if cs.ProjectID.Valid {
 					leaderContext, contextErr := h.buildProjectLeaderContext(r.Context(), cs.WorkspaceID, cs.ProjectID, projectCtx)
 					if contextErr != nil {
 						slog.Warn("project leader context unavailable; delivery continues without proposal context", "task_id", uuidToString(task.ID), "project_id", uuidToString(cs.ProjectID), "error", contextErr)

@@ -75,9 +75,12 @@ func TestProjectDiscoveryImportPreviewsBeforeApplyingReviewedReport(t *testing.T
 		t.Skip("database not available")
 	}
 	previousAnalyzer := testHandler.ProjectDiscoveryAnalyzer
-	testHandler.ProjectDiscoveryAnalyzer = func(_ context.Context, _ projectbundle.ProjectContextPayload, instruction string) (projectbundle.ProjectDiscoveryReport, error) {
-		if instruction != "Improve the inventory workflow" {
-			t.Errorf("discovery instruction = %q", instruction)
+	testHandler.ProjectDiscoveryAnalyzer = func(_ context.Context, input ProjectDiscoveryInput) (projectbundle.ProjectDiscoveryReport, error) {
+		if input.Instruction != "Improve the inventory workflow" {
+			t.Errorf("discovery instruction = %q", input.Instruction)
+		}
+		if input.RuntimeID != "11111111-1111-4111-8111-111111111111" || input.Model != "gpt-5.5-codex" {
+			t.Errorf("discovery runtime/model = %q/%q", input.RuntimeID, input.Model)
 		}
 		return projectbundle.ProjectDiscoveryReport{
 			Project:             projectbundle.DiscoveredProject{Title: "Discovered inventory", Purpose: "Track stock", Goal: "Reduce stock errors", ArchitectureSummary: "An API and web client."},
@@ -91,7 +94,7 @@ func TestProjectDiscoveryImportPreviewsBeforeApplyingReviewedReport(t *testing.T
 	contextPayload := projectbundle.ProjectContextPayload{RootName: "inventory", Files: []projectbundle.ProjectContextFile{{Path: "src/auth.any", Content: "sign-in flow"}}}
 	previewResponse := httptest.NewRecorder()
 	testHandler.ImportProject(previewResponse, newRequest("POST", "/api/projects/import", projectbundle.ImportRequest{
-		Instruction: "Improve the inventory workflow", ProjectContext: &contextPayload, DryRun: true,
+		Instruction: "Improve the inventory workflow", ProjectContext: &contextPayload, RuntimeID: "11111111-1111-4111-8111-111111111111", Model: "gpt-5.5-codex", DryRun: true,
 	}))
 	if previewResponse.Code != http.StatusOK {
 		t.Fatalf("discovery preview status = %d, want 200: %s", previewResponse.Code, previewResponse.Body.String())

@@ -163,9 +163,15 @@
       "sync_complete": "Projet synchronisé"
     },
     "discovery": {
+      "runtime_label": "Runtime d’analyse",
+      "runtime_default": "Runtime Multica par défaut (Mika si disponible)",
+      "model_label": "Modèle",
+      "model_default": "Modèle par défaut du runtime",
+      "no_online_runtime": "Connectez un daemon Multica en ligne pour analyser ce projet.",
       "instruction_label": "Quel objectif ce projet doit-il atteindre ?",
       "instruction_placeholder": "Ajoutez du contexte ou un point d’attention pour l’analyse...",
       "source_warning": "Les fichiers sont analysés uniquement pour cet import. Les agents ne peuvent pas les modifier avant la connexion d’un dossier local ou d’un dépôt Git.",
+      "source_attached": "Ce dossier local sera associé au projet pour le travail des agents.",
       "boundaries": "Périmètre et contraintes",
       "implemented": "Fonctionnalités réalisées",
       "next_tasks": "Prochaines tâches",

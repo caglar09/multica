@@ -49,6 +49,8 @@ type projectPortabilityInput struct {
 	Bundle         *projectbundle.Bundle
 	Markdown       string
 	ProjectContext *projectbundle.ProjectContextPayload
+	RuntimeID      string
+	Model          string
 }
 
 func runProjectExport(cmd *cobra.Command, args []string) error {
@@ -98,6 +100,9 @@ func runProjectImport(cmd *cobra.Command, _ []string) error {
 	dirPath, _ := cmd.Flags().GetString("dir")
 	title, _ := cmd.Flags().GetString("title")
 	goal, _ := cmd.Flags().GetString("goal")
+	runtimeID, _ := cmd.Flags().GetString("runtime")
+	model, _ := cmd.Flags().GetString("model")
+	daemonID, _ := cmd.Flags().GetString("daemon-id")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	output, _ := cmd.Flags().GetString("output")
 	if err := validatePortabilityOutput(output); err != nil {
@@ -111,6 +116,14 @@ func runProjectImport(cmd *cobra.Command, _ []string) error {
 	input, err := readProjectPortabilityInput(filePath, dirPath, cmd.Flags().Changed("file"), cmd.Flags().Changed("dir"), title)
 	if err != nil {
 		return fmt.Errorf("read project input: %w", err)
+	}
+	if strings.TrimSpace(runtimeID) != "" || strings.TrimSpace(model) != "" || strings.TrimSpace(daemonID) != "" {
+		if input.ProjectContext == nil {
+			return fmt.Errorf("--runtime, --model, and --daemon-id can only be used with a raw project directory")
+		}
+		input.RuntimeID = strings.TrimSpace(runtimeID)
+		input.Model = strings.TrimSpace(model)
+		input.ProjectContext.DaemonID = strings.TrimSpace(daemonID)
 	}
 	body := projectImportRequest(input, dryRun, title)
 	body.Instruction = strings.TrimSpace(goal)
@@ -354,7 +367,7 @@ func decodeProjectBundleFile(path string, data []byte) (projectbundle.Bundle, er
 }
 
 func projectImportRequest(input projectPortabilityInput, dryRun bool, titleHint string) projectbundle.ImportRequest {
-	request := projectbundle.ImportRequest{DryRun: dryRun, ProjectTitleHint: titleHint}
+	request := projectbundle.ImportRequest{DryRun: dryRun, ProjectTitleHint: titleHint, RuntimeID: input.RuntimeID, Model: input.Model}
 	if input.Bundle != nil {
 		request.Bundle = input.Bundle
 	} else if input.ProjectContext != nil {

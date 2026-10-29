@@ -1,4 +1,5 @@
 import type { ProjectContextPayload } from "@multica/core/types";
+import { ProjectContextPayloadSchema } from "@multica/core/api/schemas";
 
 const maxFiles = 256;
 const maxFileBytes = 256 * 1024;
@@ -14,6 +15,7 @@ interface ProjectFileLike {
 	name: string;
 	size: number;
 	webkitRelativePath?: string;
+	path?: string;
 	arrayBuffer(): Promise<ArrayBuffer>;
 }
 
@@ -24,6 +26,13 @@ export async function collectProjectContext(files: ArrayLike<ProjectFileLike>): 
 		const file = files[index];
 		if (!file) continue;
 		const fullPath = (file.webkitRelativePath || file.name).replaceAll("\\", "/");
+		if (!context.local_path && file.path && file.webkitRelativePath) {
+			const absoluteFile = file.path.replaceAll("\\", "/");
+			const relativeFile = file.webkitRelativePath.replaceAll("\\", "/").split("/").slice(1).join("/");
+			if (relativeFile && absoluteFile.endsWith(`/${relativeFile}`)) {
+				context.local_path = absoluteFile.slice(0, -relativeFile.length - 1);
+			}
+		}
 		const parts = fullPath.split("/").filter(Boolean);
 		const rootName = file.webkitRelativePath && parts.length > 1 ? (parts[0] ?? "Selected project") : "Selected project";
 		const path = file.webkitRelativePath && parts.length > 1 ? parts.slice(1).join("/") : parts.join("/");
@@ -60,5 +69,5 @@ export async function collectProjectContext(files: ArrayLike<ProjectFileLike>): 
 	if (context.files.length === 0) throw new Error("The selected folder contains no readable text files.");
 	context.files.sort((a, b) => a.path.localeCompare(b.path));
 	context.warnings = [...new Set(context.warnings)];
-	return context;
+	return ProjectContextPayloadSchema.parse(context);
 }

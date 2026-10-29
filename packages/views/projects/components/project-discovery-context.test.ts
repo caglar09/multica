@@ -30,4 +30,13 @@ describe("collectProjectContext", () => {
 		await expect(collectProjectContext([selectedFile("sample/.env", "secret")]))
 			.rejects.toThrow("no readable text files");
 	});
+
+	it("resolves the selected project root from Electron file paths", async () => {
+		const context = await collectProjectContext([{
+			...selectedFile("DeviceCleaner/src/main.go", "source"),
+			path: "/Users/caglar/Desktop/DeviceCleaner/src/main.go",
+		}]);
+
+		expect(context.local_path).toBe("/Users/caglar/Desktop/DeviceCleaner");
+	});
 });

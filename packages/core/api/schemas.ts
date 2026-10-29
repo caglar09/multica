@@ -89,6 +89,7 @@ import type {
   PortableProjectExportResponse,
   PortableProjectSpecification,
   PortableSpecificationRequirement,
+  ProjectContextPayload,
   ProjectDiscoveryReport,
   DiscoveredFeature,
   DiscoveredProject,
@@ -1794,6 +1795,14 @@ export const ProjectExportResponseSchema: z.ZodType<PortableProjectExportRespons
   bundle: ProjectBundleSchema,
   tasks_markdown: z.string(),
   agent_guide_markdown: z.string(),
+}).loose();
+
+export const ProjectContextPayloadSchema: z.ZodType<ProjectContextPayload> = z.object({
+  root_name: z.string(),
+  files: z.array(z.object({ path: z.string(), content: z.string() }).loose()),
+  warnings: z.array(z.string()).optional(),
+  local_path: z.string().optional(),
+  daemon_id: z.string().optional(),
 }).loose();
 
 const PortableStringListSchema = z.array(z.string()).nullish().transform((values) => values ?? []);

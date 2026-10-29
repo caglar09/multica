@@ -63,9 +63,15 @@
       "sync_complete": "プロジェクトを同期しました"
     },
     "discovery": {
+      "runtime_label": "分析ランタイム",
+      "runtime_default": "Multica の既定ランタイム（利用可能な場合は Mika）",
+      "model_label": "モデル",
+      "model_default": "ランタイムの既定モデル",
+      "no_online_runtime": "このプロジェクトを分析するには、オンラインの Multica デーモンを接続してください。",
       "instruction_label": "このプロジェクトで達成したいこと",
       "instruction_placeholder": "分析の背景や重点を入力...",
       "source_warning": "ファイルは今回のインポート分析にのみ使用されます。ローカルフォルダーまたは Git リポジトリを接続するまで、エージェントはファイルを編集できません。",
+      "source_attached": "エージェントが作業できるよう、このローカルフォルダーをプロジェクトに接続します。",
       "boundaries": "範囲と制約",
       "implemented": "実装済み機能",
       "next_tasks": "次のタスク",

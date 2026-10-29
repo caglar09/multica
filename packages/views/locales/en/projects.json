@@ -64,9 +64,15 @@
       "sync_complete": "Project synced"
     },
     "discovery": {
+      "runtime_label": "Analysis runtime",
+      "runtime_default": "Multica default (Mika when available)",
+      "model_label": "Model",
+      "model_default": "Runtime default",
+      "no_online_runtime": "Connect an online Multica daemon to analyze this project.",
       "instruction_label": "What should this project achieve?",
       "instruction_placeholder": "Add context or focus for the analysis...",
       "source_warning": "Files are analyzed for this import only. Agents cannot edit them until you attach a local folder or Git repository.",
+      "source_attached": "This local folder will be attached to the project for agent work.",
       "boundaries": "Boundaries and constraints",
       "implemented": "Implemented features",
       "next_tasks": "Next tasks",

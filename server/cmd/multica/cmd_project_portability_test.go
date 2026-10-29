@@ -31,6 +31,9 @@ func newProjectImportTestCmd() *cobra.Command {
 	cmd.Flags().String("dir", "", "")
 	cmd.Flags().String("title", "", "")
 	cmd.Flags().String("goal", "", "")
+	cmd.Flags().String("runtime", "", "")
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().String("daemon-id", "", "")
 	cmd.Flags().Bool("dry-run", false, "")
 	cmd.Flags().String("output", "table", "")
 	return cmd
@@ -181,6 +184,9 @@ func TestProjectPortabilityRawImportPreviewsAndRequiresConfirmation(t *testing.T
 	cmd := newProjectImportTestCmd()
 	_ = cmd.Flags().Set("dir", dir)
 	_ = cmd.Flags().Set("goal", "Improve the project")
+	_ = cmd.Flags().Set("runtime", "runtime-codex")
+	_ = cmd.Flags().Set("model", "gpt-5.5-codex")
+	_ = cmd.Flags().Set("daemon-id", "daemon-local")
 	cmd.SetIn(strings.NewReader("y\n"))
 	var stderr strings.Builder
 	cmd.SetErr(&stderr)
@@ -194,8 +200,15 @@ func TestProjectPortabilityRawImportPreviewsAndRequiresConfirmation(t *testing.T
 	if requestBodies[0]["dry_run"] != true || requestBodies[0]["instruction"] != "Improve the project" {
 		t.Fatalf("preview request = %#v, want dry_run and goal instruction", requestBodies[0])
 	}
+	if requestBodies[0]["runtime_id"] != "runtime-codex" || requestBodies[0]["model"] != "gpt-5.5-codex" {
+		t.Fatalf("preview runtime/model = %#v/%#v, want selected daemon runtime and model", requestBodies[0]["runtime_id"], requestBodies[0]["model"])
+	}
 	if _, ok := requestBodies[0]["project_context"].(map[string]any); !ok {
 		t.Fatalf("preview request context = %#v, want project context", requestBodies[0]["project_context"])
+	}
+	projectContext := requestBodies[0]["project_context"].(map[string]any)
+	if projectContext["local_path"] != dir || projectContext["daemon_id"] != "daemon-local" {
+		t.Fatalf("preview source = %#v, want local path and daemon identity", projectContext)
 	}
 	if requestBodies[1]["dry_run"] != nil && requestBodies[1]["dry_run"] != false {
 		t.Fatalf("apply request dry_run = %#v, want false", requestBodies[1]["dry_run"])
@@ -369,6 +382,19 @@ func TestProjectPortabilityImportPostsBundleAndPrintsTypedResult(t *testing.T) {
 	}
 	if !strings.Contains(out, `"project_id"`) || !strings.Contains(out, `"created_count": 2`) {
 		t.Fatalf("typed result output = %q", out)
+	}
+}
+
+func TestProjectPortabilityImportRejectsRuntimeOptionsForBundleInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "project.json")
+	if err := os.WriteFile(path, portableProjectBundleJSON(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newProjectImportTestCmd()
+	_ = cmd.Flags().Set("file", path)
+	_ = cmd.Flags().Set("runtime", "runtime-codex")
+	if _, err := captureStdout(t, func() error { return runProjectImport(cmd, nil) }); err == nil || !strings.Contains(err.Error(), "raw project directory") {
+		t.Fatalf("runProjectImport() error = %v, want raw-directory option validation", err)
 	}
 }
 

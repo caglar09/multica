@@ -1,6 +1,7 @@
 package projectbundle
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,7 @@ func TestCollectProjectContextReadsArbitraryTextAndExcludesUnsafePaths(t *testin
 	if err != nil {
 		t.Fatalf("CollectProjectContext() error = %v", err)
 	}
-	if got.RootName != filepath.Base(root) || len(got.Files) != 1 || got.Files[0].Path != "odd-layout/feature.logic" {
+	if got.RootName != filepath.Base(root) || got.LocalPath != root || len(got.Files) != 1 || got.Files[0].Path != "odd-layout/feature.logic" {
 		t.Fatalf("collected context = %#v", got)
 	}
 	if strings.Contains(strings.Join(got.Warnings, " "), "secret") || len(got.Warnings) < 2 {
@@ -69,6 +70,55 @@ func TestSanitizeProjectContextRejectsTraversalAndRemovesSensitiveFiles(t *testi
 	}
 	if len(got.Files) != 1 || got.Files[0].Path != "src/main.any" || len(got.Warnings) == 0 {
 		t.Fatalf("sanitized context = %#v", got)
+	}
+}
+
+func TestSanitizeProjectContextKeepsOnlyAbsoluteSourceIdentity(t *testing.T) {
+	base := ProjectContextPayload{RootName: "sample", Files: []ProjectContextFile{{Path: "main.go", Content: "package sample"}}}
+	for _, path := range []string{"relative/project", "", "/\x00bad"} {
+		if path == "" {
+			continue
+		}
+		input := base
+		input.LocalPath = path
+		if _, err := SanitizeProjectContext(input); err == nil {
+			t.Errorf("SanitizeProjectContext accepted local path %q", path)
+		}
+	}
+	base.LocalPath = "/Users/example/sample"
+	base.DaemonID = "daemon-local"
+	got, err := SanitizeProjectContext(base)
+	if err != nil {
+		t.Fatalf("SanitizeProjectContext() error = %v", err)
+	}
+	if got.LocalPath != base.LocalPath || got.DaemonID != base.DaemonID {
+		t.Fatalf("source identity = %q/%q, want %q/%q", got.LocalPath, got.DaemonID, base.LocalPath, base.DaemonID)
+	}
+}
+
+func TestBuildBundleFromDiscoveryAttachesLocalDirectoryWhenDaemonIsKnown(t *testing.T) {
+	report := ProjectDiscoveryReport{
+		Project: DiscoveredProject{Title: "Sample", Purpose: "Purpose", Goal: "Goal", ArchitectureSummary: "Architecture"},
+	}
+	context := &ProjectContextPayload{RootName: "sample", LocalPath: "/Users/example/sample", DaemonID: "daemon-local"}
+	bundle, err := BuildBundleFromDiscovery(report, context)
+	if err != nil {
+		t.Fatalf("BuildBundleFromDiscovery() error = %v", err)
+	}
+	if len(bundle.Resources) != 1 || bundle.Resources[0].ResourceType != "local_directory" {
+		t.Fatalf("resources = %#v, want one local directory", bundle.Resources)
+	}
+	var ref map[string]string
+	if err := json.Unmarshal(bundle.Resources[0].ResourceRef, &ref); err != nil {
+		t.Fatalf("decode local-directory resource: %v", err)
+	}
+	if ref["local_path"] != context.LocalPath || ref["daemon_id"] != context.DaemonID || ref["execution_mode"] != "in_place" {
+		t.Fatalf("local-directory resource = %#v", ref)
+	}
+	for _, entry := range bundle.Bootstrap.Knowledge {
+		if entry.Title == "Source access" {
+			t.Fatalf("attached source incorrectly emitted unattached-source knowledge: %#v", entry)
+		}
 	}
 }
 
