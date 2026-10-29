@@ -20,7 +20,7 @@ const (
 	projectDiscoverySystemKeyPrefix = "project_discovery_analyzer:"
 	projectDiscoverySessionTitle    = "Project discovery analysis"
 	projectDiscoverySessionKind     = "autonomous_project_planning"
-	projectDiscoveryTaskTimeout     = 3 * time.Minute
+	projectDiscoveryTaskTimeout     = 6 * time.Minute
 	projectDiscoveryPollPeriod      = 300 * time.Millisecond
 )
 
