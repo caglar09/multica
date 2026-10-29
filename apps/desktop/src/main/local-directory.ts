@@ -2,6 +2,10 @@ import { ipcMain, dialog, BrowserWindow, shell } from "electron";
 import { access, stat } from "fs/promises";
 import { constants as fsConstants } from "fs";
 import { basename, dirname, isAbsolute, join } from "path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export interface PickDirectoryResult {
   ok: boolean;
@@ -66,6 +70,21 @@ async function validateLocalDirectory(
     return { ok: false, reason: "not_writable" };
   }
   return { ok: true, is_git_repo: await isInsideGitWorkTree(path) };
+}
+
+async function prepareLocalDirectory(path: string, initializeGit: boolean) {
+  const validation = await validateLocalDirectory(path);
+  if (!validation.ok) return validation;
+  let initializedGit = false;
+  if (!validation.is_git_repo && initializeGit) {
+    try {
+      await execFileAsync("git", ["init", path]);
+      initializedGit = true;
+    } catch (err) {
+      return { ok: false as const, reason: "error" as const, error: errorMessage(err) };
+    }
+  }
+  return { ...validation, is_git_repo: validation.is_git_repo || initializedGit, initialized_git: initializedGit };
 }
 
 /**
@@ -162,6 +181,12 @@ export function setupLocalDirectory(
     "local-directory:validate",
     (_event, path: string): Promise<ValidateLocalDirectoryResult> =>
       validateLocalDirectory(path),
+  );
+
+  ipcMain.handle(
+    "local-directory:prepare",
+    async (_event, path: string, initializeGit = false) =>
+      prepareLocalDirectory(path, initializeGit),
   );
 
   ipcMain.handle(

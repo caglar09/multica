@@ -163,6 +163,13 @@
       "sync_complete": "Proje senkronize edildi"
     },
     "discovery": {
+      "source_path_label": "Bu bilgisayardaki proje klasörünün yolu",
+      "source_path_placeholder": "/Users/kullanici/projeler/projem",
+      "source_path_required": "Proje klasörünün tam yolunu girin.",
+      "source_path_invalid": "Yerel Multica daemon'ı bu proje klasörüne erişemedi.",
+      "local_daemon_required": "Bu klasörün bulunduğu bilgisayardaki Multica daemon'ını bağlayın.",
+      "git_required": "Bu proje klasöründe Git başlatılamadı.",
+      "git_will_initialize": "İçe aktarmayı onayladığınızda bu proje klasöründe Git başlatılacak.",
       "runtime_label": "Analiz çalışma ortamı",
       "runtime_default": "Multica varsayılanı (varsa Mika)",
       "model_label": "Model",

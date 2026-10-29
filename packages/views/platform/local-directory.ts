@@ -34,6 +34,11 @@ export type ValidateLocalDirectoryResult = {
   is_git_repo?: boolean;
 };
 
+export type PrepareLocalDirectoryResult = ValidateLocalDirectoryResult & {
+  daemon_id?: string;
+  initialized_git?: boolean;
+};
+
 export type OpenLocalDirectoryResult = {
   ok: boolean;
   reason?:
@@ -55,6 +60,7 @@ interface DesktopLocalDirectoryAPI {
   validateLocalDirectory?: (
     path: string,
   ) => Promise<ValidateLocalDirectoryResult>;
+  prepareLocalDirectory?: (path: string, initializeGit?: boolean) => Promise<PrepareLocalDirectoryResult>;
   openLocalDirectory?: (path: string) => Promise<OpenLocalDirectoryResult>;
 }
 
@@ -87,6 +93,52 @@ export async function validateLocalDirectory(
   const api = readDesktopAPI();
   if (!api?.validateLocalDirectory) return { ok: false, reason: "unsupported" };
   return api.validateLocalDirectory(path);
+}
+
+export async function prepareLocalDirectory(
+  path: string,
+  options?: { daemonId?: string; healthPort?: number; initializeGit?: boolean },
+): Promise<PrepareLocalDirectoryResult> {
+  const api = readDesktopAPI();
+  if (api?.prepareLocalDirectory) return api.prepareLocalDirectory(path, options?.initializeGit);
+
+  try {
+    const healthPort = options?.healthPort ?? DEFAULT_LOCAL_DAEMON_HEALTH_PORT;
+    if (!Number.isInteger(healthPort) || healthPort < DEFAULT_LOCAL_DAEMON_HEALTH_PORT || healthPort > MAX_LOCAL_DAEMON_HEALTH_PORT) {
+      return { ok: false, reason: "unsupported", error: "Invalid local daemon health port" };
+    }
+    const daemonBaseURL = `http://127.0.0.1:${healthPort}`;
+    const healthResponse = await fetch(`${daemonBaseURL}/health`, { cache: "no-store" });
+    if (!healthResponse.ok) throw new Error(`Local daemon health check failed (HTTP ${healthResponse.status})`);
+    const healthPayload: unknown = await healthResponse.json();
+    const healthDaemonId = typeof healthPayload === "object" && healthPayload !== null && "daemon_id" in healthPayload
+      ? (healthPayload as { daemon_id?: unknown }).daemon_id
+      : undefined;
+    if (typeof healthDaemonId !== "string" || !healthDaemonId || (options?.daemonId && healthDaemonId !== options.daemonId)) {
+      return { ok: false, reason: "unsupported", error: "Local daemon identity does not match this project folder" };
+    }
+    const response = await fetch(`${daemonBaseURL}/project-directory/prepare`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, initialize_git: options?.initializeGit === true }),
+    });
+    if (!response.ok) {
+      const message = (await response.text()).trim();
+      return { ok: false, reason: "error", error: message || `Local folder could not be prepared (HTTP ${response.status})` };
+    }
+    const payload: unknown = await response.json();
+    if (typeof payload !== "object" || payload === null || !("ok" in payload) || payload.ok !== true) {
+      return { ok: false, reason: "error", error: "Local daemon returned an invalid folder response" };
+    }
+    return {
+      ok: true,
+      daemon_id: "daemon_id" in payload && typeof payload.daemon_id === "string" ? payload.daemon_id : undefined,
+      is_git_repo: "is_git_repo" in payload && payload.is_git_repo === true,
+      initialized_git: "initialized_git" in payload && payload.initialized_git === true,
+    };
+  } catch (error) {
+    return { ok: false, reason: "unsupported", error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 export async function openLocalDirectory(

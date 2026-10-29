@@ -63,6 +63,13 @@
       "sync_complete": "プロジェクトを同期しました"
     },
     "discovery": {
+      "source_path_label": "このコンピューター上のプロジェクトフォルダーのパス",
+      "source_path_placeholder": "/Users/you/projects/my-project",
+      "source_path_required": "プロジェクトフォルダーの絶対パスを入力してください。",
+      "source_path_invalid": "ローカルのMultica daemonがこのフォルダーにアクセスできません。",
+      "local_daemon_required": "このフォルダーがあるコンピューターのMultica daemonを接続してください。",
+      "git_required": "このプロジェクトフォルダーでGitを初期化できませんでした。",
+      "git_will_initialize": "インポートを確定すると、このフォルダーでGitを初期化します。",
       "runtime_label": "分析ランタイム",
       "runtime_default": "Multica の既定ランタイム（利用可能な場合は Mika）",
       "model_label": "モデル",

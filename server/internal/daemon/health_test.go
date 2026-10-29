@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -34,6 +35,61 @@ func TestHealthHandlerReportsEmptyCLICommitWithoutFallback(t *testing.T) {
 	}
 	if got, present := raw["cli_commit"]; !present || got != "" {
 		t.Fatalf("cli_commit: got %v, present %v; want an explicit empty string without version fallback", got, present)
+	}
+}
+
+func TestPrepareProjectDirectoryInitializesGitOnlyWhenRequested(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	path := t.TempDir()
+	d := &Daemon{cfg: Config{DaemonID: "daemon-test"}}
+	prepare := func(initializeGit bool) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(prepareProjectDirectoryRequest{Path: path, InitializeGit: initializeGit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/project-directory/prepare", bytes.NewReader(body))
+		req.Header.Set("Origin", "http://localhost:13544")
+		rec := httptest.NewRecorder()
+		d.prepareProjectDirectoryHandler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	preview := prepare(false)
+	if preview.Code != http.StatusOK {
+		t.Fatalf("preview status: got %d, body %s", preview.Code, preview.Body.String())
+	}
+	var previewResult map[string]any
+	if err := json.Unmarshal(preview.Body.Bytes(), &previewResult); err != nil {
+		t.Fatal(err)
+	}
+	if previewResult["is_git_repo"] != false || previewResult["initialized_git"] != false {
+		t.Fatalf("preview unexpectedly changed or misreported Git state: %#v", previewResult)
+	}
+
+	apply := prepare(true)
+	if apply.Code != http.StatusOK {
+		t.Fatalf("apply status: got %d, body %s", apply.Code, apply.Body.String())
+	}
+	var applyResult map[string]any
+	if err := json.Unmarshal(apply.Body.Bytes(), &applyResult); err != nil {
+		t.Fatal(err)
+	}
+	if applyResult["daemon_id"] != "daemon-test" || applyResult["is_git_repo"] != true || applyResult["initialized_git"] != true {
+		t.Fatalf("apply did not initialize and bind Git: %#v", applyResult)
+	}
+}
+
+func TestPrepareProjectDirectoryRejectsNonLocalOrigins(t *testing.T) {
+	d := &Daemon{}
+	req := httptest.NewRequest(http.MethodPost, "/project-directory/prepare", strings.NewReader(`{"path":"/tmp/project"}`))
+	req.Header.Set("Origin", "https://example.com")
+	rec := httptest.NewRecorder()
+	d.prepareProjectDirectoryHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 

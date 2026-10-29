@@ -163,6 +163,13 @@
       "sync_complete": "Projet synchronisé"
     },
     "discovery": {
+      "source_path_label": "Chemin du dossier sur cet ordinateur",
+      "source_path_placeholder": "/Users/vous/projets/mon-projet",
+      "source_path_required": "Saisissez le chemin complet du dossier du projet.",
+      "source_path_invalid": "Le daemon Multica local ne peut pas accéder à ce dossier.",
+      "local_daemon_required": "Connectez le daemon Multica de l’ordinateur qui contient ce dossier.",
+      "git_required": "Git n’a pas pu être initialisé dans ce dossier.",
+      "git_will_initialize": "Git sera initialisé après confirmation de l’import.",
       "runtime_label": "Runtime d’analyse",
       "runtime_default": "Runtime Multica par défaut (Mika si disponible)",
       "model_label": "Modèle",

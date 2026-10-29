@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 	syncProject: vi.fn(),
 	refetch: vi.fn(),
 	downloadBlob: vi.fn(),
+	prepareLocalDirectory: vi.fn(),
 	localDaemon: { running: false, daemonId: null as string | null },
 }));
 
@@ -38,7 +39,10 @@ vi.mock("@multica/core/runtimes", async (importOriginal) => {
 	};
 });
 
-vi.mock("../../platform", () => ({ useLocalDaemonStatus: () => mocks.localDaemon }));
+vi.mock("../../platform", () => ({
+	useLocalDaemonStatus: () => mocks.localDaemon,
+	prepareLocalDirectory: mocks.prepareLocalDirectory,
+}));
 
 vi.mock("@multica/core/projects", () => ({
 	useExportProject: () => ({
@@ -82,6 +86,7 @@ describe("project portability dialogs", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.localDaemon = { running: false, daemonId: null };
+		mocks.prepareLocalDirectory.mockResolvedValue({ ok: true, daemon_id: "daemon-local", is_git_repo: true });
 		mocks.importProject.mockResolvedValue({
 			project_id: "project-2",
 			created_count: 1,
@@ -164,6 +169,7 @@ describe("project portability dialogs", () => {
 
 	it("previews a selected project folder and applies only after review", async () => {
 		const user = userEvent.setup();
+		mocks.localDaemon = { running: true, daemonId: "daemon-local" };
 		const onOpenChange = vi.fn();
 		const report = {
 			project: { title: "Manual project", purpose: "Track inventory", goal: "Reduce stock errors", architecture_summary: "A small API." },
@@ -192,23 +198,33 @@ describe("project portability dialogs", () => {
 			arrayBuffer: async () => new TextEncoder().encode("source").buffer,
 		};
 		fireEvent.change(document.getElementById("project-portability-directory")!, { target: { files: [file] } });
+		fireEvent.change(await screen.findByRole("textbox", { name: "Project folder path on this computer" }), {
+			target: { value: "/Users/example/manual-project" },
+		});
 		await user.click(screen.getByRole("button", { name: "Preview changes" }));
 
 		await waitFor(() => {
-			expect(mocks.importProject).toHaveBeenCalledWith(expect.objectContaining({
-				project_context: { root_name: "manual-project", files: [{ path: "src/main.any", content: "source" }], warnings: [] },
+				expect(mocks.importProject).toHaveBeenCalledWith(expect.objectContaining({
+				project_context: { root_name: "manual-project", files: [{ path: "src/main.any", content: "source" }], warnings: [], local_path: "/Users/example/manual-project", daemon_id: "daemon-local" },
 				dry_run: true,
 			}));
 		});
 		expect(await screen.findByText("Add an audit trail")).toBeTruthy();
 		expect(screen.getByText("Authentication")).toBeTruthy();
-		expect(screen.getByText(/Agents cannot edit them/)).toBeTruthy();
+		expect(screen.getByText(/This local folder will be attached/)).toBeTruthy();
+		expect(mocks.prepareLocalDirectory).toHaveBeenLastCalledWith("/Users/example/manual-project", {
+			daemonId: "daemon-local",
+		});
 		await user.click(screen.getByRole("button", { name: "Import project" }));
 		await waitFor(() => expect(mocks.importProject).toHaveBeenNthCalledWith(2, expect.objectContaining({
 			project_context: expect.any(Object),
 			discovery_report: report,
 			dry_run: false,
 		})));
+		expect(mocks.prepareLocalDirectory).toHaveBeenLastCalledWith("/Users/example/manual-project", {
+			daemonId: "daemon-local",
+			initializeGit: true,
+		});
 		expect(onOpenChange).toHaveBeenCalledWith(false);
 	});
 
@@ -259,6 +275,7 @@ describe("project portability dialogs", () => {
 
 	it("keeps the selected folder files when resetting the directory input", async () => {
 		const user = userEvent.setup();
+		mocks.localDaemon = { running: true, daemonId: "daemon-local" };
 		const onOpenChange = vi.fn();
 		renderWithQueryClient(<ProjectImportDialog open onOpenChange={onOpenChange} />);
 		await user.click(screen.getByRole("button", { name: "Choose project folder" }));
@@ -283,10 +300,13 @@ describe("project portability dialogs", () => {
 			set: (value: string) => { if (!value) selectedFiles = []; },
 		});
 		fireEvent.change(input);
+		fireEvent.change(await screen.findByRole("textbox", { name: "Project folder path on this computer" }), {
+			target: { value: "/Users/example/manual-project" },
+		});
 		await user.click(screen.getByRole("button", { name: "Preview changes" }));
 
 		await waitFor(() => expect(mocks.importProject).toHaveBeenCalledWith(expect.objectContaining({
-			project_context: { root_name: "manual-project", files: [{ path: "src/main.any", content: "source" }], warnings: [] },
+			project_context: expect.objectContaining({ root_name: "manual-project", files: [{ path: "src/main.any", content: "source" }], local_path: "/Users/example/manual-project" }),
 			dry_run: true,
 		})));
 	});

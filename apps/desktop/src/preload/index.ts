@@ -211,6 +211,8 @@ const desktopAPI = {
   /** Validate that a path is an existing readable+writable directory. */
   validateLocalDirectory: (path: string) =>
     ipcRenderer.invoke("local-directory:validate", path),
+  prepareLocalDirectory: (path: string, initializeGit?: boolean) =>
+    ipcRenderer.invoke("local-directory:prepare", path, initializeGit),
   /** Open an attached local directory in the operating system's file manager. */
   openLocalDirectory: (path: string) =>
     ipcRenderer.invoke("local-directory:open", path),

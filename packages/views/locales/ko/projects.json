@@ -63,6 +63,13 @@
       "sync_complete": "프로젝트를 동기화했습니다"
     },
     "discovery": {
+      "source_path_label": "이 컴퓨터의 프로젝트 폴더 경로",
+      "source_path_placeholder": "/Users/you/projects/my-project",
+      "source_path_required": "프로젝트 폴더의 전체 경로를 입력하세요.",
+      "source_path_invalid": "로컬 Multica 데몬이 이 폴더에 접근할 수 없습니다.",
+      "local_daemon_required": "이 폴더가 있는 컴퓨터의 Multica 데몬을 연결하세요.",
+      "git_required": "프로젝트 폴더에서 Git을 초기화하지 못했습니다.",
+      "git_will_initialize": "가져오기를 확인하면 이 폴더에서 Git을 초기화합니다.",
       "runtime_label": "분석 런타임",
       "runtime_default": "Multica 기본 런타임 (사용 가능한 경우 Mika)",
       "model_label": "모델",

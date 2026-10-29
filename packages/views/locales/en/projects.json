@@ -64,6 +64,13 @@
       "sync_complete": "Project synced"
     },
     "discovery": {
+      "source_path_label": "Project folder path on this computer",
+      "source_path_placeholder": "/Users/you/projects/my-project",
+      "source_path_required": "Enter the full path of this project folder.",
+      "source_path_invalid": "This project folder could not be accessed by the local Multica daemon.",
+      "local_daemon_required": "Connect the Multica daemon on the computer that has this folder.",
+      "git_required": "Git could not be initialized in this project folder.",
+      "git_will_initialize": "Git will be initialized after you confirm the import.",
       "runtime_label": "Analysis runtime",
       "runtime_default": "Multica default (Mika when available)",
       "model_label": "Model",

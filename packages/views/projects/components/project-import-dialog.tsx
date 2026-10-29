@@ -43,7 +43,7 @@ import {
 } from "@multica/ui/components/ui/select";
 import { toast } from "sonner";
 import { buildRuntimeMachines, runtimeRowLabel } from "../../runtimes/components/runtime-machines";
-import { useLocalDaemonStatus } from "../../platform";
+import { prepareLocalDirectory, useLocalDaemonStatus } from "../../platform";
 import { useT } from "../../i18n/use-t";
 import { collectProjectContext } from "./project-discovery-context";
 
@@ -84,6 +84,8 @@ export function ProjectImportDialog({
 	const [filename, setFilename] = useState("");
 	const [titleHint, setTitleHint] = useState("");
 	const [projectContext, setProjectContext] = useState<ProjectContextPayload | null>(null);
+	const [localPath, setLocalPath] = useState("");
+	const [directoryHasGit, setDirectoryHasGit] = useState<boolean | null>(null);
 	const [runtimeId, setRuntimeId] = useState("");
 	const [model, setModel] = useState("");
 	const modelsQuery = useQuery(runtimeModelsOptions(runtimeId || null));
@@ -111,8 +113,8 @@ export function ProjectImportDialog({
 
 	const buildRequest = (dryRun: boolean): PortabilityRequest => {
 		if (projectContext && !projectId) {
-			const sourceContext = projectContext.local_path && localDaemon.running && localDaemon.daemonId
-				? { ...projectContext, daemon_id: localDaemon.daemonId }
+			const sourceContext = localPath.trim() && localDaemon.running && localDaemon.daemonId
+				? { ...projectContext, local_path: localPath.trim(), daemon_id: localDaemon.daemonId }
 				: projectContext;
 			return {
 				project_context: sourceContext,
@@ -164,6 +166,8 @@ export function ProjectImportDialog({
 		if (!file) return;
 		clearPreview();
 		setProjectContext(null);
+		setLocalPath("");
+		setDirectoryHasGit(null);
 		setFilename(file.name);
 		setFormat(file.name.toLowerCase().endsWith(".md") ? "markdown" : "json");
 		try {
@@ -179,7 +183,9 @@ export function ProjectImportDialog({
 		setContent("");
 		setFilename(t(($) => $.portability.import.selected_folder));
 		try {
-			setProjectContext(await collectProjectContext(files));
+			const context = await collectProjectContext(files);
+			setProjectContext(context);
+			setLocalPath(context.local_path ?? "");
 		} catch (cause) {
 			setProjectContext(null);
 			setError(cause instanceof Error ? cause.message : t(($) => $.portability.import.file_read_failed));
@@ -189,6 +195,14 @@ export function ProjectImportDialog({
 	const handlePreview = async () => {
 		clearPreview();
 		try {
+			if (projectContext && !projectId) {
+				if (!localPath.trim()) throw new Error(t(($) => $.portability.discovery.source_path_required));
+				if (!localDaemon.running || !localDaemon.daemonId) throw new Error(t(($) => $.portability.discovery.local_daemon_required));
+				const prepared = await prepareLocalDirectory(localPath.trim(), { daemonId: localDaemon.daemonId });
+				if (!prepared.ok) throw new Error(prepared.error || t(($) => $.portability.discovery.source_path_invalid));
+				setDirectoryHasGit(prepared.is_git_repo ?? false);
+				setProjectContext({ ...projectContext, local_path: localPath.trim(), daemon_id: prepared.daemon_id ?? localDaemon.daemonId });
+			}
 			const request = buildRequest(true);
 			setPreviewRequest(request);
 			const result = await runRequest(request);
@@ -203,6 +217,10 @@ export function ProjectImportDialog({
 		if (!preview || !previewRequest) return;
 		setError(null);
 		try {
+			if (projectContext && !projectId) {
+				const prepared = await prepareLocalDirectory(localPath.trim(), { daemonId: localDaemon.daemonId ?? undefined, initializeGit: true });
+				if (!prepared.ok || !prepared.is_git_repo) throw new Error(prepared.error || t(($) => $.portability.discovery.git_required));
+			}
 			const request: PortabilityRequest = {
 				...previewRequest,
 				dry_run: false,
@@ -214,8 +232,8 @@ export function ProjectImportDialog({
 				? t(($) => $.portability.import.sync_complete)
 				: t(($) => $.portability.import.import_complete));
 			onOpenChange(false);
-		} catch {
-			setError(t(($) => $.portability.import.apply_failed));
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : t(($) => $.portability.import.apply_failed));
 		}
 	};
 
@@ -356,6 +374,20 @@ export function ProjectImportDialog({
 
 					{projectContext ? (
 						<div className="space-y-4">
+						<label htmlFor="project-discovery-local-path" className="block space-y-1.5">
+							<span className="text-caption font-medium">{t(($) => $.portability.discovery.source_path_label)}</span>
+							<Input
+								id="project-discovery-local-path"
+								value={localPath}
+								placeholder={t(($) => $.portability.discovery.source_path_placeholder)}
+								disabled={pending}
+								autoComplete="off"
+								onChange={(event) => {
+									setLocalPath(event.target.value);
+									clearPreview();
+								}}
+							/>
+						</label>
 							<div className="grid gap-3 sm:grid-cols-2">
 								<label className="space-y-1.5">
 									<span className="text-caption font-medium">{t(($) => $.portability.discovery.runtime_label)}</span>
@@ -428,10 +460,12 @@ export function ProjectImportDialog({
 									clearPreview();
 								}}
 							/>
-							<p className="text-caption text-muted-foreground" role="note">
-								{projectContext.local_path && localDaemon.running && localDaemon.daemonId
-									? t(($) => $.portability.discovery.source_attached)
-									: t(($) => $.portability.discovery.source_warning)}
+				<p className="text-caption text-muted-foreground" role="note">
+					{localPath.trim() && localDaemon.running && localDaemon.daemonId
+						? directoryHasGit === false
+							? t(($) => $.portability.discovery.git_will_initialize)
+							: t(($) => $.portability.discovery.source_attached)
+						: t(($) => $.portability.discovery.source_warning)}
 							</p>
 						</div>
 					) : null}

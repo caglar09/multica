@@ -63,6 +63,13 @@
       "sync_complete": "项目已同步"
     },
     "discovery": {
+      "source_path_label": "此电脑上的项目文件夹路径",
+      "source_path_placeholder": "/Users/you/projects/my-project",
+      "source_path_required": "请输入项目文件夹的完整路径。",
+      "source_path_invalid": "本机 Multica daemon 无法访问此项目文件夹。",
+      "local_daemon_required": "请连接存放此文件夹的电脑上的 Multica daemon。",
+      "git_required": "无法在此项目文件夹中初始化 Git。",
+      "git_will_initialize": "确认导入后，将在此项目文件夹中初始化 Git。",
       "runtime_label": "分析运行时",
       "runtime_default": "Multica 默认运行时（如可用则使用 Mika）",
       "model_label": "模型",

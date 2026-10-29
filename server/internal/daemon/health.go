@@ -534,6 +534,7 @@ func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt tim
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", d.healthHandler(startedAt))
 	mux.HandleFunc("/open-directory", d.openManagedDirectoryHandler())
+	mux.HandleFunc("/project-directory/prepare", d.prepareProjectDirectoryHandler())
 	mux.HandleFunc("/shutdown", d.shutdownHandler())
 	mux.HandleFunc("/repo/checkout", d.repoCheckoutHandler())
 
@@ -547,6 +548,55 @@ func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt tim
 	d.logger.Info("health server listening", "addr", ln.Addr().String())
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		d.logger.Warn("health server error", "error", err)
+	}
+}
+
+type prepareProjectDirectoryRequest struct {
+	Path          string `json:"path"`
+	InitializeGit bool   `json:"initialize_git"`
+}
+
+func (d *Daemon) prepareProjectDirectoryHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !allowLocalUIOrigin(w, r) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req prepareProjectDirectoryRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		path := strings.TrimSpace(req.Path)
+		if err := validateLocalPath(path); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_, gitErr := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel").Output()
+		initialized := false
+		if gitErr != nil && req.InitializeGit {
+			cmd := exec.Command("git", "init", path)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				http.Error(w, "initialize Git in project folder: "+strings.TrimSpace(string(output)), http.StatusBadGateway)
+				return
+			}
+			initialized = true
+			gitErr = nil
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "daemon_id": d.cfg.DaemonID,
+			"is_git_repo": gitErr == nil, "initialized_git": initialized,
+		})
 	}
 }
 
