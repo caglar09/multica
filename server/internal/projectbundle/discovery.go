@@ -444,8 +444,9 @@ func BuildBundleFromDiscovery(report ProjectDiscoveryReport, context *ProjectCon
 	}
 	description := report.Project.Purpose
 	brief := report.Project.Goal + "\n\n" + report.Project.ArchitectureSummary
+	// Discovery imports need a reviewable team draft before their plan nodes can run.
 	bundle := Bundle{SchemaVersion: SchemaVersionV1, Project: PortableProject{Title: report.Project.Title, Description: &description},
-		Resources: resources, Bootstrap: &PortableBootstrap{AutonomyMode: "standard", AutonomyLevel: "development", Brief: brief, Knowledge: knowledge,
+		Resources: resources, Bootstrap: &PortableBootstrap{AutonomyMode: "autonomous", AutonomyLevel: "development", Brief: brief, Knowledge: knowledge,
 			Plan: &PortablePlan{Goal: report.Project.Goal, Requirements: portablePlanRequirements(requirements), Specification: spec, Nodes: nodes, Edges: planEdges}}, Tasks: features}
 	for _, warning := range uniqueStrings(contextWarnings) {
 		bundle.Bootstrap.Knowledge = append(bundle.Bootstrap.Knowledge, knowledgeJSON("fact", "Import warning", map[string]string{"message": warning}))

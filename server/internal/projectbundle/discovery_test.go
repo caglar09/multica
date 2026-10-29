@@ -143,6 +143,9 @@ func TestBuildBundleFromDiscoveryMapsProjectBrainSpecificationTasksAndDAG(t *tes
 	if bundle.Bootstrap == nil || bundle.Bootstrap.Plan == nil || bundle.Bootstrap.Plan.Specification == nil {
 		t.Fatal("bundle is missing bootstrap plan specification")
 	}
+	if bundle.Bootstrap.AutonomyMode != "autonomous" {
+		t.Fatalf("discovery bootstrap autonomy mode = %q, want autonomous", bundle.Bootstrap.AutonomyMode)
+	}
 	if got := bundle.Bootstrap.Plan.Specification.NonGoals; len(got) != 1 || got[0] != "Shipping" {
 		t.Fatalf("non-goals = %#v", got)
 	}
