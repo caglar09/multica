@@ -36,6 +36,8 @@ const mocks = vi.hoisted(() => ({
   retryAutonomousAction: vi.fn(),
   rerunAutonomousIssue: vi.fn(),
 	startProjectPlanning: vi.fn(),
+  importProject: vi.fn(),
+  syncProject: vi.fn(),
 }));
 
 vi.mock("@multica/ui/lib/clipboard", () => ({
@@ -88,6 +90,18 @@ vi.mock("@multica/core/projects", () => ({
 		mutate: mocks.rerunAutonomousIssue,
 		isPending: false,
 	}),
+	useExportProject: () => ({
+		data: {
+			bundle: { schema_version: "multica.project.v1", origin: {}, project: { title: "Test" }, tasks: [] },
+			tasks_markdown: "# Test",
+		agent_guide_markdown: "Guide",
+		},
+		isLoading: false,
+		isError: false,
+		refetch: vi.fn(),
+	}),
+	useImportProject: () => ({ mutateAsync: mocks.importProject, isPending: false }),
+	useSyncProject: () => ({ mutateAsync: mocks.syncProject, isPending: false }),
 }));
 vi.mock("../../workflows/project-workflow-menu", () => ({ ProjectWorkflowMenu: () => null }));
 
@@ -592,6 +606,15 @@ describe("ProjectDetail sharing", () => {
       "https://app.example/test-workspace/projects/project-1",
     );
   });
+
+	it("opens project export from the project actions menu", async () => {
+		const user = userEvent.setup();
+		renderProjectDetail();
+
+		await user.click(screen.getByRole("button", { name: "Export project..." }));
+
+		expect(screen.getByRole("heading", { name: "Export project" })).toBeInTheDocument();
+	});
 });
 
 describe("ProjectDetail project deletion", () => {

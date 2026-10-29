@@ -18,6 +18,67 @@
     "selected_other": "已选 {{count}} 项",
     "clear_selection": "清除选择"
   },
+  "portability": {
+    "export": {
+      "open_export": "导出项目...",
+      "title": "导出项目",
+      "description": "下载项目及其外部协作文件。",
+      "loading": "正在准备导出...",
+      "load_failed": "无法加载项目导出内容。",
+      "retry": "重试",
+      "download_bundle": "下载项目包",
+      "download_tasks": "下载 TASKS.md",
+      "download_guide": "下载 AGENT_GUIDE.md",
+      "copy_export_command": "复制导出命令",
+      "copy_sync_command": "复制同步命令",
+      "command_copied": "已复制命令",
+      "copy_failed": "无法复制命令"
+    },
+    "import": {
+      "open_import": "导入项目",
+      "title": "导入项目",
+      "sync_title": "同步项目",
+      "description": "应用前请检查变更。未包含在输入中的任务会保留。",
+      "file_label": "项目文件",
+      "choose_file": "选择文件",
+      "choose_folder": "选择项目文件夹",
+      "selected_folder": "已选择项目文件夹",
+      "format_label": "文件格式",
+      "json_format": "JSON 项目包",
+      "markdown_format": "Markdown 任务列表",
+      "paste_label": "或粘贴内容",
+      "paste_placeholder": "粘贴项目 JSON 包或 Markdown 任务列表...",
+      "title_hint_label": "项目名称",
+      "title_hint_placeholder": "Markdown 中没有项目名称时使用",
+      "empty_input": "请选择文件或粘贴内容。",
+      "invalid_json": "该 JSON 文件不是有效的 Multica 项目包。",
+      "file_read_failed": "无法读取此文件。",
+      "preview": "预览变更",
+      "preview_failed": "无法生成预览。",
+      "apply_failed": "无法应用这些变更。输入内容已保留，可重试。",
+      "apply_import": "导入项目",
+      "apply_sync": "应用同步",
+      "cancel": "取消",
+      "import_complete": "项目已导入",
+      "sync_complete": "项目已同步"
+    },
+    "discovery": {
+      "instruction_label": "这个项目需要实现什么目标？",
+      "instruction_placeholder": "补充分析背景或关注重点...",
+      "source_warning": "这些文件仅用于本次导入分析。连接本地文件夹或 Git 仓库前，智能体无法编辑项目文件。",
+      "boundaries": "范围与约束",
+      "implemented": "已实现功能",
+      "next_tasks": "后续任务",
+      "blocked_by": "依赖于"
+    },
+    "preview": {
+      "title": "变更预览",
+      "created": "将创建 {{count}} 个任务",
+      "updated": "将更新 {{count}} 个任务",
+      "unchanged": "{{count}} 个任务未更改",
+      "warnings": "警告"
+    }
+  },
   "table": {
     "name": "名称",
     "priority": "优先级",

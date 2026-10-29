@@ -8,6 +8,8 @@ import {
 	Check,
 	ChevronRight,
 	Copy,
+	Download,
+	FileUp,
 	LayoutDashboard,
 	Link2,
 	ListTodo,
@@ -87,6 +89,8 @@ import {
 } from "../../editor";
 import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
+import { ProjectExportDialog } from "./project-export-dialog";
+import { ProjectImportDialog } from "./project-import-dialog";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { ProjectReport } from "./project-report";
@@ -252,6 +256,8 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	const descEditorRef = useRef<ContentEditorRef>(null);
 	const isMobile = useIsMobile();
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+	const [exportDialogOpen, setExportDialogOpen] = useState(false);
+	const [syncDialogOpen, setSyncDialogOpen] = useState(false);
 	const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 	const [iconPickerOpen, setIconPickerOpen] = useState(false);
 	const localProjectDirectory = useMemo(() => {
@@ -268,6 +274,9 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 		// immediately and let the loopback daemon validate/open it on click.
 		return directories[0];
 	}, [project, localDaemon.daemonId]);
+	const importedSourceUnavailable = (project?.resource_count ?? 0) === 0 && (autonomousSnapshot?.bootstrap?.knowledge?.some(
+		(item) => item.title === "Source access",
+	) ?? false);
 
 
 	const handleOpenProjectDirectory = useCallback(async () => {
@@ -1048,6 +1057,11 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 							{t(($) => $.detail.project_folder_pending)}
 						</div>
 					)}
+					{importedSourceUnavailable ? (
+						<p className="px-1 text-caption text-warning-foreground" role="note">
+							{t(($) => $.portability.discovery.source_warning)}
+						</p>
+					) : null}
 				</div>
 
 				{/* Attached Squad Card */}
@@ -1336,6 +1350,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 												<Button
 													variant="ghost"
 													size="icon-sm"
+													aria-label={t(($) => $.page.row_menu)}
 													className="text-muted-foreground"
 												>
 													<MoreHorizontal />
@@ -1357,6 +1372,15 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 											>
 												<Link2 className="h-3.5 w-3.5" />
 												{t(($) => $.detail.copy_link)}
+											</DropdownMenuItem>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem onClick={() => setExportDialogOpen(true)}>
+												<Download className="h-3.5 w-3.5" />
+												{t(($) => $.portability.export.open_export)}
+											</DropdownMenuItem>
+											<DropdownMenuItem onClick={() => setSyncDialogOpen(true)}>
+												<FileUp className="h-3.5 w-3.5" />
+												{t(($) => $.portability.import.sync_title)}
 											</DropdownMenuItem>
 											{isWorkspaceAdmin && (
 												<>
@@ -1620,6 +1644,20 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 					</AlertDialogContent>
 				</AlertDialog>
 			)}
+			{exportDialogOpen ? (
+				<ProjectExportDialog
+					projectId={projectId}
+					open={exportDialogOpen}
+					onOpenChange={setExportDialogOpen}
+				/>
+			) : null}
+			{syncDialogOpen ? (
+				<ProjectImportDialog
+					projectId={projectId}
+					open={syncDialogOpen}
+					onOpenChange={setSyncDialogOpen}
+				/>
+			) : null}
 		</>
 	);
 }

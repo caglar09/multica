@@ -19,6 +19,67 @@
     "selected_other": "{{count}} selected",
     "clear_selection": "Clear selection"
   },
+  "portability": {
+    "export": {
+      "open_export": "Export project...",
+      "title": "Export project",
+      "description": "Download the project bundle and files for external work.",
+      "loading": "Preparing export...",
+      "load_failed": "Project export could not be loaded.",
+      "retry": "Try again",
+      "download_bundle": "Download project bundle",
+      "download_tasks": "Download TASKS.md",
+      "download_guide": "Download AGENT_GUIDE.md",
+      "copy_export_command": "Copy export command",
+      "copy_sync_command": "Copy sync command",
+      "command_copied": "Command copied",
+      "copy_failed": "Could not copy command"
+    },
+    "import": {
+      "open_import": "Import project",
+      "title": "Import project",
+      "sync_title": "Sync project",
+      "description": "Review the changes before applying them. Missing tasks are kept.",
+      "file_label": "Project file",
+      "choose_file": "Choose file",
+      "choose_folder": "Choose project folder",
+      "selected_folder": "Project folder selected",
+      "format_label": "File format",
+      "json_format": "JSON bundle",
+      "markdown_format": "Markdown task list",
+      "paste_label": "Or paste content",
+      "paste_placeholder": "Paste a project JSON bundle or Markdown task list...",
+      "title_hint_label": "Project title",
+      "title_hint_placeholder": "Used when Markdown has no project title",
+      "empty_input": "Choose a file or paste its contents.",
+      "invalid_json": "The JSON file is not a valid Multica project bundle.",
+      "file_read_failed": "Could not read this file.",
+      "preview": "Preview changes",
+      "preview_failed": "Could not prepare a preview.",
+      "apply_failed": "Could not apply these changes. Your input is still available to retry.",
+      "apply_import": "Import project",
+      "apply_sync": "Apply sync",
+      "cancel": "Cancel",
+      "import_complete": "Project imported",
+      "sync_complete": "Project synced"
+    },
+    "discovery": {
+      "instruction_label": "What should this project achieve?",
+      "instruction_placeholder": "Add context or focus for the analysis...",
+      "source_warning": "Files are analyzed for this import only. Agents cannot edit them until you attach a local folder or Git repository.",
+      "boundaries": "Boundaries and constraints",
+      "implemented": "Implemented features",
+      "next_tasks": "Next tasks",
+      "blocked_by": "Blocked by"
+    },
+    "preview": {
+      "title": "Change preview",
+      "created": "{{count}} tasks to create",
+      "updated": "{{count}} tasks to update",
+      "unchanged": "{{count}} tasks unchanged",
+      "warnings": "Warnings"
+    }
+  },
   "table": {
     "name": "Name",
     "priority": "Priority",

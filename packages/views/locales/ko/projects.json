@@ -18,6 +18,67 @@
     "selected_other": "{{count}}개 선택됨",
     "clear_selection": "선택 해제"
   },
+  "portability": {
+    "export": {
+      "open_export": "프로젝트 내보내기...",
+      "title": "프로젝트 내보내기",
+      "description": "외부 작업에 사용할 프로젝트와 파일을 다운로드합니다.",
+      "loading": "내보내기를 준비하는 중...",
+      "load_failed": "프로젝트 내보내기를 불러오지 못했습니다.",
+      "retry": "다시 시도",
+      "download_bundle": "프로젝트 번들 다운로드",
+      "download_tasks": "TASKS.md 다운로드",
+      "download_guide": "AGENT_GUIDE.md 다운로드",
+      "copy_export_command": "내보내기 명령 복사",
+      "copy_sync_command": "동기화 명령 복사",
+      "command_copied": "명령을 복사했습니다",
+      "copy_failed": "명령을 복사하지 못했습니다"
+    },
+    "import": {
+      "open_import": "프로젝트 가져오기",
+      "title": "프로젝트 가져오기",
+      "sync_title": "프로젝트 동기화",
+      "description": "적용하기 전에 변경 사항을 확인하세요. 입력에 없는 작업도 유지됩니다.",
+      "file_label": "프로젝트 파일",
+      "choose_file": "파일 선택",
+      "choose_folder": "프로젝트 폴더 선택",
+      "selected_folder": "프로젝트 폴더를 선택했습니다",
+      "format_label": "파일 형식",
+      "json_format": "JSON 번들",
+      "markdown_format": "Markdown 작업 목록",
+      "paste_label": "또는 내용을 붙여넣기",
+      "paste_placeholder": "프로젝트 JSON 번들이나 Markdown 작업 목록을 붙여넣으세요...",
+      "title_hint_label": "프로젝트 이름",
+      "title_hint_placeholder": "Markdown에 프로젝트 이름이 없을 때 사용합니다",
+      "empty_input": "파일을 선택하거나 내용을 붙여넣으세요.",
+      "invalid_json": "올바른 Multica 프로젝트 번들이 아닙니다.",
+      "file_read_failed": "파일을 읽지 못했습니다.",
+      "preview": "변경 사항 미리보기",
+      "preview_failed": "미리보기를 준비하지 못했습니다.",
+      "apply_failed": "변경 사항을 적용하지 못했습니다. 다시 시도할 수 있도록 입력을 유지했습니다.",
+      "apply_import": "프로젝트 가져오기",
+      "apply_sync": "동기화 적용",
+      "cancel": "취소",
+      "import_complete": "프로젝트를 가져왔습니다",
+      "sync_complete": "프로젝트를 동기화했습니다"
+    },
+    "discovery": {
+      "instruction_label": "이 프로젝트가 달성해야 할 목표는 무엇인가요?",
+      "instruction_placeholder": "분석에 필요한 맥락이나 초점을 입력하세요...",
+      "source_warning": "파일은 이번 가져오기를 위해서만 분석됩니다. 로컬 폴더나 Git 저장소를 연결하기 전에는 에이전트가 파일을 수정할 수 없습니다.",
+      "boundaries": "범위와 제약",
+      "implemented": "구현된 기능",
+      "next_tasks": "다음 태스크",
+      "blocked_by": "선행 태스크"
+    },
+    "preview": {
+      "title": "변경 사항 미리보기",
+      "created": "작업 {{count}}개 생성 예정",
+      "updated": "작업 {{count}}개 업데이트 예정",
+      "unchanged": "작업 {{count}}개 변경 없음",
+      "warnings": "경고"
+    }
+  },
   "table": {
     "name": "이름",
     "priority": "우선순위",

@@ -118,6 +118,67 @@
     "selected_other": "{{count}} seçildi",
     "clear_selection": "Seçimi temizle"
   },
+  "portability": {
+    "export": {
+      "open_export": "Projeyi dışa aktar...",
+      "title": "Projeyi dışa aktar",
+      "description": "Projeyi ve dışarıda çalışmak için gereken dosyaları indirin.",
+      "loading": "Dışa aktarma hazırlanıyor...",
+      "load_failed": "Proje dışa aktarılamadı.",
+      "retry": "Tekrar dene",
+      "download_bundle": "Proje paketini indir",
+      "download_tasks": "TASKS.md dosyasını indir",
+      "download_guide": "AGENT_GUIDE.md dosyasını indir",
+      "copy_export_command": "Dışa aktarma komutunu kopyala",
+      "copy_sync_command": "Senkronizasyon komutunu kopyala",
+      "command_copied": "Komut kopyalandı",
+      "copy_failed": "Komut kopyalanamadı"
+    },
+    "import": {
+      "open_import": "Proje içe aktar",
+      "title": "Proje içe aktar",
+      "sync_title": "Projeyi senkronize et",
+      "description": "Uygulamadan önce değişiklikleri gözden geçirin. Pakette olmayan görevler korunur.",
+      "file_label": "Proje dosyası",
+      "choose_file": "Dosya seç",
+      "choose_folder": "Proje klasörü seç",
+      "selected_folder": "Proje klasörü seçildi",
+      "format_label": "Dosya biçimi",
+      "json_format": "JSON paketi",
+      "markdown_format": "Markdown görev listesi",
+      "paste_label": "Veya içeriği yapıştırın",
+      "paste_placeholder": "Proje JSON paketini veya Markdown görev listesini yapıştırın...",
+      "title_hint_label": "Proje başlığı",
+      "title_hint_placeholder": "Markdown içinde başlık yoksa kullanılır",
+      "empty_input": "Bir dosya seçin veya içeriğini yapıştırın.",
+      "invalid_json": "JSON dosyası geçerli bir Multica proje paketi değil.",
+      "file_read_failed": "Dosya okunamadı.",
+      "preview": "Değişiklikleri önizle",
+      "preview_failed": "Önizleme hazırlanamadı.",
+      "apply_failed": "Değişiklikler uygulanamadı. Yeniden denemek için girdiniz korundu.",
+      "apply_import": "Projeyi içe aktar",
+      "apply_sync": "Senkronizasyonu uygula",
+      "cancel": "İptal",
+      "import_complete": "Proje içe aktarıldı",
+      "sync_complete": "Proje senkronize edildi"
+    },
+    "discovery": {
+      "instruction_label": "Bu proje neyi başarmalı?",
+      "instruction_placeholder": "Analiz için bağlam veya odak ekleyin...",
+      "source_warning": "Dosyalar yalnızca bu içe aktarma için analiz edilir. Yerel klasör veya Git deposu bağlanana kadar ajanlar dosyaları düzenleyemez.",
+      "boundaries": "Sınırlar ve kısıtlar",
+      "implemented": "Uygulanmış özellikler",
+      "next_tasks": "Sıradaki görevler",
+      "blocked_by": "Bağımlı olduğu görev"
+    },
+    "preview": {
+      "title": "Değişiklik önizlemesi",
+      "created": "{{count}} görev oluşturulacak",
+      "updated": "{{count}} görev güncellenecek",
+      "unchanged": "{{count}} görev değişmeyecek",
+      "warnings": "Uyarılar"
+    }
+  },
   "table": {
     "name": "Ad",
     "priority": "Öncelik",

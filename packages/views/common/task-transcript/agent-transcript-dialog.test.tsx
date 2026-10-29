@@ -22,6 +22,14 @@ vi.mock("@multica/core/api", () => ({
   },
 }));
 
+vi.mock("@multica/core/hooks", () => ({
+  useWorkspaceId: () => "workspace-1",
+}));
+
+vi.mock("./use-trace-issue-labels", () => ({
+  useTraceIssueLabels: () => (text: string) => text,
+}));
+
 vi.mock("@multica/ui/lib/clipboard", () => ({
   copyText: copyTextMock,
 }));

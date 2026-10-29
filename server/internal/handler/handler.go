@@ -38,6 +38,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/projectbundle"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -425,7 +426,8 @@ type Handler struct {
 	// MUL-4309, so it is internal-only now. Always non-nil (New builds it from
 	// Config); when unconfigured its Enabled() reports false and callers fall
 	// back silently.
-	LLM *llm.Client
+	LLM                      *llm.Client
+	ProjectDiscoveryAnalyzer func(context.Context, projectbundle.ProjectContextPayload, string) (projectbundle.ProjectDiscoveryReport, error)
 	// VCSSecretBox encrypts/decrypts per-workspace Git provider access tokens and
 	// webhook secrets at rest (Forgejo / Gitea / GitLab). Nil when
 	// MULTICA_VCS_SECRET_KEY is unset; connect returns 403 and webhook returns 404
@@ -560,11 +562,12 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 			BaseURL: cfg.CloudURL,
 			Timeout: cfg.CloudTimeout,
 		}),
-		LLM:                  llmClient,
-		DeploymentRepository: deploymentRepo,
-		DeploymentProviders:  deploymentRegistry,
-		DeploymentDispatcher: &deploymentcore.AsyncDispatcher{Repository: deploymentRepo, Workers: 4, Timeout: 2 * time.Minute},
-		cfg:                  cfg,
+		LLM:                      llmClient,
+		ProjectDiscoveryAnalyzer: newProjectDiscoveryAnalyzer(llmClient),
+		DeploymentRepository:     deploymentRepo,
+		DeploymentProviders:      deploymentRegistry,
+		DeploymentDispatcher:     &deploymentcore.AsyncDispatcher{Repository: deploymentRepo, Workers: 4, Timeout: 2 * time.Minute},
+		cfg:                      cfg,
 	}
 	h.VercelOAuthClient = deploymentproviders.NewVercelOAuthClient(cfg.VercelOAuthClientID, cfg.VercelOAuthClientSecret, cfg.VercelOAuthRedirectURL)
 	if executor != nil {

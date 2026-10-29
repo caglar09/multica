@@ -53,6 +53,7 @@ import { RICH_TABLE_CHROME_ATTRIBUTE } from "../../rich-content/rich-table";
 import { PatchedListItem, PatchedTaskItem } from "./list-item";
 import { createMarkdownPasteExtension } from "./markdown-paste";
 import { createMarkdownCopyExtension } from "./markdown-copy";
+import { SelectAllDelete } from "./select-all-delete";
 import { createBlurShortcutExtension } from "./blur-shortcut";
 import { createSubmitShortcutExtension } from "./submit-shortcut";
 import { createFileUploadExtension } from "./file-upload";
@@ -199,6 +200,7 @@ export function createEditorExtensions(
   const { placeholder: placeholderText } = options;
 
   return [
+    SelectAllDelete,
     StarterKit.configure({
       // Every level Markdown can express. The Markdown parser keeps the source
       // depth of `#`…`######`, but Heading.renderHTML falls back to `levels[0]`

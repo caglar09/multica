@@ -118,6 +118,67 @@
     "selected_other": "{{count}} sélectionnés",
     "clear_selection": "Effacer la sélection"
   },
+  "portability": {
+    "export": {
+      "open_export": "Exporter le projet...",
+      "title": "Exporter le projet",
+      "description": "Téléchargez le projet et ses fichiers pour travailler à l’extérieur.",
+      "loading": "Préparation de l’export...",
+      "load_failed": "Impossible de charger l’export du projet.",
+      "retry": "Réessayer",
+      "download_bundle": "Télécharger le paquet du projet",
+      "download_tasks": "Télécharger TASKS.md",
+      "download_guide": "Télécharger AGENT_GUIDE.md",
+      "copy_export_command": "Copier la commande d’export",
+      "copy_sync_command": "Copier la commande de synchronisation",
+      "command_copied": "Commande copiée",
+      "copy_failed": "Impossible de copier la commande"
+    },
+    "import": {
+      "open_import": "Importer un projet",
+      "title": "Importer un projet",
+      "sync_title": "Synchroniser le projet",
+      "description": "Vérifiez les changements avant de les appliquer. Les tâches absentes sont conservées.",
+      "file_label": "Fichier du projet",
+      "choose_file": "Choisir un fichier",
+      "choose_folder": "Choisir un dossier de projet",
+      "selected_folder": "Dossier de projet sélectionné",
+      "format_label": "Format du fichier",
+      "json_format": "Paquet JSON",
+      "markdown_format": "Liste de tâches Markdown",
+      "paste_label": "Ou coller le contenu",
+      "paste_placeholder": "Collez un paquet JSON de projet ou une liste de tâches Markdown...",
+      "title_hint_label": "Nom du projet",
+      "title_hint_placeholder": "Utilisé si Markdown ne contient pas de nom de projet",
+      "empty_input": "Choisissez un fichier ou collez son contenu.",
+      "invalid_json": "Le fichier JSON n’est pas un paquet de projet Multica valide.",
+      "file_read_failed": "Impossible de lire ce fichier.",
+      "preview": "Prévisualiser les changements",
+      "preview_failed": "Impossible de préparer l’aperçu.",
+      "apply_failed": "Impossible d’appliquer ces changements. Votre contenu est conservé pour réessayer.",
+      "apply_import": "Importer le projet",
+      "apply_sync": "Appliquer la synchronisation",
+      "cancel": "Annuler",
+      "import_complete": "Projet importé",
+      "sync_complete": "Projet synchronisé"
+    },
+    "discovery": {
+      "instruction_label": "Quel objectif ce projet doit-il atteindre ?",
+      "instruction_placeholder": "Ajoutez du contexte ou un point d’attention pour l’analyse...",
+      "source_warning": "Les fichiers sont analysés uniquement pour cet import. Les agents ne peuvent pas les modifier avant la connexion d’un dossier local ou d’un dépôt Git.",
+      "boundaries": "Périmètre et contraintes",
+      "implemented": "Fonctionnalités réalisées",
+      "next_tasks": "Prochaines tâches",
+      "blocked_by": "Bloqué par"
+    },
+    "preview": {
+      "title": "Aperçu des changements",
+      "created": "{{count}} tâches à créer",
+      "updated": "{{count}} tâches à mettre à jour",
+      "unchanged": "{{count}} tâches inchangées",
+      "warnings": "Avertissements"
+    }
+  },
   "table": {
     "name": "Nom",
     "priority": "Priorité",

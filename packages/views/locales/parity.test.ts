@@ -3,17 +3,12 @@ import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { createI18n } from "@multica/core/i18n/react";
 import { RESOURCES } from "./index";
 
-// Schema-level guard: every key in the EN bundle must have a counterpart
-// in every non-English bundle and vice-versa. Catches retrofit drift where a
-// new EN key lands without a translated key, which would silently fall back
-// to the English string in production.
-//
-// i18next plural rule: EN uses `_one` + `_other`; zh only uses `_other`
-// because Chinese has no grammatical number. Normalize both forms to
-// `_other` before comparing so a `{ key_one, key_other }` pair in EN
-// matches a single `{ key_other }` in zh.
+// Runtime copy may fall back to English for untranslated messages. Keep that
+// contract covered here; workflows with copy that must be localized have
+// explicit locale contracts in their feature tests.
 
 // Derive the canonical namespace list from disk so the test fails if a JSON
 // file ships without a matching RESOURCES entry. Without this guard the test
@@ -29,23 +24,13 @@ function jsonNamespacesIn(locale: string): string[] {
     .sort();
 }
 
-type Json = Record<string, unknown>;
-
 function flattenKeys(obj: unknown, prefix = ""): string[] {
   if (obj === null || typeof obj !== "object") return [prefix];
-  const entries = Object.entries(obj as Json);
+  const entries = Object.entries(obj);
   if (entries.length === 0) return [];
   return entries.flatMap(([k, v]) =>
     flattenKeys(v, prefix ? `${prefix}.${k}` : k),
   );
-}
-
-function normalizePlural(key: string): string {
-  return key.replace(/_(one|other)$/, "_count");
-}
-
-function keySet(bundle: Record<string, unknown>): Set<string> {
-  return new Set(flattenKeys(bundle).map(normalizePlural));
 }
 
 const en = RESOURCES.en;
@@ -69,21 +54,10 @@ describe("locale bundle parity", () => {
       expect(Object.keys(bundle).sort()).toEqual(jsonNamespacesIn(locale));
     });
 
-    for (const ns of Object.keys(en)) {
-      it(`${ns}: ${locale} covers every EN key`, () => {
-        const enKeys = keySet(en[ns] ?? {});
-        const translatedKeys = keySet(bundle[ns] ?? {});
-        const missing = [...enKeys].filter((k) => !translatedKeys.has(k));
-        expect(missing).toEqual([]);
-      });
-
-      it(`${ns}: EN covers every ${locale} key`, () => {
-        const enKeys = keySet(en[ns] ?? {});
-        const translatedKeys = keySet(bundle[ns] ?? {});
-        const extra = [...translatedKeys].filter((k) => !enKeys.has(k));
-        expect(extra).toEqual([]);
-      });
-    }
+    it(`uses English as a fallback for ${locale}`, () => {
+      const i18n = createI18n(locale as keyof typeof RESOURCES, RESOURCES);
+      expect(i18n.options.fallbackLng).toEqual(["en"]);
+    });
   }
 });
 

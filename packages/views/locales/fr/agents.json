@@ -695,7 +695,12 @@
       "save_failed_toast": "Échec de l'enregistrement de la configuration MCP",
       "redacted_title": "Configuré — masqué pour vous",
       "redacted_hint": "Seul le propriétaire de l'agent ou un administrateur de l'espace de travail peut lire cette configuration.",
-      "dialog_json_help": "Modifiez la configuration complète du serveur en JSON."
+      "dialog_json_help": "Modifiez la configuration complète du serveur en JSON.",
+      "dialog_name_placeholder": "ex. context7",
+      "dialog_pair_key_placeholder": "Clé",
+      "dialog_pair_value_placeholder": "Valeur",
+      "dialog_pair_key_aria": "Clé {{index}} pour {{label}}",
+      "dialog_pair_value_aria": "Valeur {{index}} pour {{label}}"
     },
     "composio_mcp": {
       "subtitle": "Cochez une boîte à outils pour permettre à cet agent de la monter comme serveur MCP — mais uniquement lorsque c'est vous (son créateur) qui avez déclenché l'exécution, directement ou via une chaîne de sous-agents.",

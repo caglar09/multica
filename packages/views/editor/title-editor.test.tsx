@@ -15,9 +15,11 @@ vi.mock("../i18n", () => ({
 }));
 
 const editorRef = vi.hoisted<{ current: unknown }>(() => ({ current: null }));
+const editorExtensions = vi.hoisted(() => ({ current: [] as unknown[] }));
 
 vi.mock("@tiptap/react", () => ({
-  useEditor: () => {
+  useEditor: (options: { extensions: unknown[] }) => {
+    editorExtensions.current = options.extensions;
     if (!editorRef.current) {
       editorRef.current = {
         get isFocused() {
@@ -40,6 +42,7 @@ vi.mock("@tiptap/react", () => ({
 }));
 
 import { createShortcutChord } from "@multica/core/shortcuts";
+import { SelectAllDelete } from "./extensions/select-all-delete";
 import { TitleEditor, titleShortcutSubmitAllowed } from "./title-editor";
 
 describe("TitleEditor", () => {
@@ -49,6 +52,12 @@ describe("TitleEditor", () => {
     editorState.isDestroyed = false;
     editorState.text = "";
     editorRef.current = null;
+    editorExtensions.current = [];
+  });
+
+  it("uses the select-all delete keymap", () => {
+    render(<TitleEditor defaultValue="Issue title" />);
+    expect(editorExtensions.current).toContain(SelectAllDelete);
   });
 
   it("syncs editor content when defaultValue changes externally and editor is unfocused", () => {

@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   deleteProject: vi.fn(),
   createPin: vi.fn(),
   deletePin: vi.fn(),
+  importProject: vi.fn(),
+  syncProject: vi.fn(),
   openModal: vi.fn(),
   projectViewState: {
     viewMode: "compact",
@@ -57,6 +59,8 @@ vi.mock("@multica/core/projects", () => ({
   projectListOptions: () => ({ queryKey: ["projects"] }),
   useUpdateProject: () => ({ mutate: mocks.updateProject }),
   useDeleteProject: () => ({ mutate: mocks.deleteProject }),
+  useImportProject: () => ({ mutateAsync: mocks.importProject, isPending: false }),
+  useSyncProject: () => ({ mutateAsync: mocks.syncProject, isPending: false }),
   useProjectViewStore: (selector: (state: unknown) => unknown) =>
     selector(mocks.projectViewState),
 }));
@@ -284,6 +288,15 @@ describe("ProjectDashboardPage", () => {
 });
 
 describe("ProjectsPage compact row navigation", () => {
+  it("opens the project import dialog from the page header", async () => {
+    const user = userEvent.setup();
+    renderProjects();
+
+    await user.click(screen.getByRole("button", { name: "Import project" }));
+
+    expect(screen.getByRole("heading", { name: "Import project" })).toBeInTheDocument();
+  });
+
   it("renders the project name as text, not a title link", () => {
     renderProjects();
 

@@ -15,6 +15,7 @@ import {
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
 import { createSubmitShortcutExtension } from "./extensions/submit-shortcut";
+import { SelectAllDelete } from "./extensions/select-all-delete";
 import "./title-editor.css";
 
 // Types
@@ -150,6 +151,7 @@ const TitleEditor = forwardRef<TitleEditorRef, TitleEditorProps>(
         SingleLineDocument,
         Paragraph,
         Text,
+        SelectAllDelete,
         Placeholder.configure({
           placeholder: placeholderText,
           showOnlyCurrent: false,

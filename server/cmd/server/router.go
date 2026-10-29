@@ -2269,10 +2269,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/search", h.SearchProjects)
 				r.Get("/", h.ListProjects)
 				r.Post("/", h.CreateProject)
+				r.Post("/import", h.ImportProject)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetProject)
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
+					r.Get("/export", h.ExportProject)
+					r.Post("/sync", h.SyncProject)
 					r.Get("/autonomous", h.GetProjectAutonomousControlCenter)
 					r.Get("/autonomous/leader-chat", h.GetProjectLeaderChat)
 					r.Get("/autonomous/change-requests", h.ListProjectLeaderChanges)

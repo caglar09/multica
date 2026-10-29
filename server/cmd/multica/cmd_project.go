@@ -110,6 +110,9 @@ func validateProjectStatus(status string) error {
 func init() {
 	projectCmd.AddCommand(projectListCmd)
 	projectCmd.AddCommand(projectGetCmd)
+	projectCmd.AddCommand(projectExportCmd)
+	projectCmd.AddCommand(projectImportCmd)
+	projectCmd.AddCommand(projectSyncCmd)
 	projectCmd.AddCommand(projectCreateCmd)
 	projectCmd.AddCommand(projectUpdateCmd)
 	projectCmd.AddCommand(projectDeleteCmd)
@@ -128,6 +131,21 @@ func init() {
 
 	// project get
 	projectGetCmd.Flags().String("output", "json", "Output format: table or json")
+
+	// project portability
+	projectExportCmd.Flags().String("file", "", "Write the JSON bundle to a file")
+	projectExportCmd.Flags().String("dir", "", "Write .multica/project.json, TASKS.md, and .multica/AGENT_GUIDE.md to a directory")
+	projectExportCmd.Flags().String("output", "json", "Output format when writing to stdout: json or markdown")
+	projectImportCmd.Flags().String("file", "", "Read a JSON bundle or Markdown task list")
+	projectImportCmd.Flags().String("dir", "", "Read a project directory (defaults to the current directory)")
+	projectImportCmd.Flags().String("title", "", "Project title hint for Markdown input")
+	projectImportCmd.Flags().String("goal", "", "Goal to guide AI analysis of a raw project directory")
+	projectImportCmd.Flags().Bool("dry-run", false, "Preview changes without applying them")
+	projectImportCmd.Flags().String("output", "table", "Output format: table or json")
+	projectSyncCmd.Flags().String("file", "", "Read a JSON bundle or Markdown task list")
+	projectSyncCmd.Flags().String("dir", "", "Read a project directory (defaults to the current directory)")
+	projectSyncCmd.Flags().Bool("dry-run", false, "Preview changes without applying them")
+	projectSyncCmd.Flags().String("output", "table", "Output format: table or json")
 
 	// project create
 	projectCreateCmd.Flags().String("title", "", "Project title (required)")
@@ -370,8 +388,8 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 		knowledgeItems := []map[string]any{}
 		if strings.TrimSpace(knowledge) != "" {
 			knowledgeItems = append(knowledgeItems, map[string]any{
-				"kind": "prd",
-				"title": "Project bootstrap knowledge",
+				"kind":    "prd",
+				"title":   "Project bootstrap knowledge",
 				"content": strings.TrimSpace(knowledge),
 			})
 		}
@@ -379,15 +397,15 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 		// request stricter policy in the UI/API, while the server remains the
 		// final safety ceiling/floor.
 		body["bootstrap"] = map[string]any{
-			"autonomy_mode": "autonomous",
+			"autonomy_mode":  "autonomous",
 			"autonomy_level": level,
-			"brief": strings.TrimSpace(brief),
-			"knowledge": knowledgeItems,
+			"brief":          strings.TrimSpace(brief),
+			"knowledge":      knowledgeItems,
 			"approvals": map[string]bool{
 				"database_migration": true,
-				"production_deploy": true,
-				"major_dependency": true,
-				"critical_risk": true,
+				"production_deploy":  true,
+				"major_dependency":   true,
+				"critical_risk":      true,
 			},
 			"budget": map[string]int{
 				"max_parallel_nodes": maxParallel,

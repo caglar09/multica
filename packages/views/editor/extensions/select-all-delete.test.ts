@@ -5,11 +5,10 @@ import { Paragraph } from "@tiptap/extension-paragraph";
 import { Text } from "@tiptap/extension-text";
 import { AllSelection, TextSelection } from "@tiptap/pm/state";
 import { createEditorExtensions } from ".";
+import { SelectAllDelete } from "./select-all-delete";
 
-// Regression guard for MUL-7725. Before @tiptap/core 3.29, deleting an
-// `AllSelection` kept the selection "all" over the emptied document, which
-// the browser painted as a lone selected space with no caret. The fix is
-// upstream; these tests pin it through our production keymaps.
+// Regression guard for MUL-7725: Tiptap before 3.29 keeps AllSelection over
+// the emptied document; our shared keymap must leave a caret instead.
 
 let editor: Editor;
 
@@ -68,7 +67,7 @@ describe("select all → delete", () => {
 
   it("leaves a caret in the single-line title editor schema too", () => {
     mount(
-      [Document.extend({ content: "paragraph" }), Paragraph, Text],
+      [Document.extend({ content: "paragraph" }), Paragraph, Text, SelectAllDelete],
       "Issue title",
     );
     editor.commands.selectAll();
@@ -88,5 +87,17 @@ describe("select all → delete", () => {
 
     expect(editor.getText()).toBe("hello world");
     expect(editor.state.selection).toBeInstanceOf(AllSelection);
+  });
+
+  it.each(["Backspace", "Delete"])("does not intercept normal %s with a caret", (key) => {
+    mountContentEditor("hello world");
+    editor.commands.setTextSelection(6);
+    editor.commands.focus();
+
+    // jsdom does not perform the browser's native content-editing default.
+    expect(press(key)).toBe(false);
+    expect(editor.getText()).toBe("hello world");
+    expect(editor.state.selection).toBeInstanceOf(TextSelection);
+    expect(editor.state.selection.empty).toBe(true);
   });
 });

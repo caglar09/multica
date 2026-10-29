@@ -47,7 +47,6 @@ vi.mock("@tanstack/react-query", () => ({
     };
   },
 }));
-vi.mock("./github-tab", () => ({ GitHubTab: () => <div>GitHub detail</div> }));
 vi.mock("./lark-tab", () => ({ LarkTab: () => <div>Lark detail</div> }));
 vi.mock("./composio-tab", () => ({
   ComposioTab: () => <div>Composio detail</div>,
@@ -56,7 +55,6 @@ vi.mock("./slack-tab", () => ({ SlackTab: () => <div>Slack detail</div> }));
 vi.mock("./dingtalk-tab", () => ({
   DingTalkTab: () => <div>DingTalk detail</div>,
 }));
-vi.mock("./vcs-tab", () => ({ VCSTab: () => <div>VCS detail</div> }));
 vi.mock("./wecom-tab", () => ({ WecomTab: () => <div>WeCom detail</div> }));
 vi.mock("./telegram-tab", () => ({
   TelegramTab: () => <div>Telegram detail</div>,
@@ -72,26 +70,22 @@ beforeEach(() => {
   state.calls = [];
   state.push.mockClear();
   configStore.getState().setFeatureFlags({ [COMPOSIO_MCP_APPS_FLAG]: true });
-  configStore
-    .getState()
-    .setAuthConfig({ allowSignup: true, vcsIntegrationAvailable: false });
 });
 
 describe("Integration directory", () => {
   it("shows live connection summaries without mounting configuration forms", () => {
     renderWithI18n(<IntegrationsTab />);
-    expect(
-      screen.getByRole("link", { name: /GitHub Connected/ }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("GitHub detail")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Slack Connected/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /GitHub/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Git providers/ })).not.toBeInTheDocument();
     const shapes = ["lark", "slack", "dingtalk", "wecom", "telegram"].map(
       (channel) =>
         screen.getByTestId(`integration-channel-icon-${channel}`).innerHTML,
     );
     expect(new Set(shapes).size).toBe(5);
-    fireEvent.click(screen.getByRole("link", { name: /GitHub Connected/ }));
+    fireEvent.click(screen.getByRole("link", { name: /Slack Connected/ }));
     expect(state.push).toHaveBeenCalledWith(
-      "/acme/settings?tab=integrations&integration=github",
+      "/acme/settings?tab=integrations&integration=slack",
     );
   });
   it("opens only the selected provider and offers a directory link", () => {
@@ -102,11 +96,6 @@ describe("Integration directory", () => {
     expect(
       screen.getByRole("link", { name: "All integrations" }),
     ).toHaveAttribute("href", "/acme/settings?tab=integrations");
-  });
-  it("handles the existing GitHub bookmark", () => {
-    state.search = "tab=github";
-    renderWithI18n(<IntegrationsTab />);
-    expect(screen.getByText("GitHub detail")).toBeInTheDocument();
   });
   it.each(["connected=notion", "error=composio_connect_failed"])(
     "mounts the OAuth result handler for %s",
@@ -133,19 +122,6 @@ describe("Integration directory", () => {
     expect(
       screen.queryByRole("link", { name: /Composio/ }),
     ).not.toBeInTheDocument();
-  });
-  it("only offers self-hosted Git providers when the deployment enables them", () => {
-    const { unmount } = renderWithI18n(<IntegrationsTab />);
-    expect(
-      screen.queryByRole("link", { name: /Git providers/i }),
-    ).not.toBeInTheDocument();
-    unmount();
-    configStore
-      .getState()
-      .setAuthConfig({ allowSignup: true, vcsIntegrationAvailable: true });
-    state.search = "tab=integrations&integration=vcs";
-    renderWithI18n(<IntegrationsTab />);
-    expect(screen.getByText("VCS detail")).toBeInTheDocument();
   });
   it("does not report failed status reads as disconnected", () => {
     state.connectionError = true;

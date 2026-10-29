@@ -85,6 +85,18 @@ import type {
   RuntimeModelListRequest,
   SearchIssuesResponse,
   SearchProjectsResponse,
+  PortableProjectBundle,
+  PortableProjectExportResponse,
+  PortableProjectSpecification,
+  PortableSpecificationRequirement,
+  ProjectDiscoveryReport,
+  DiscoveredFeature,
+  DiscoveredProject,
+  DiscoveredProjectBoundaries,
+  DiscoveredTask,
+  PortabilityPreview,
+  PortabilityResult,
+  TaskSyncDiff,
   ShareLink,
   ShareLinkInfo,
   Skill,
@@ -1640,6 +1652,214 @@ const ProjectSchema = z.object({
   done_count: z.number().default(0),
   resource_count: z.number().default(0),
   workflow_id: z.string().nullable().default(null),
+}).loose();
+
+const PortableActorRefSchema = z.object({
+  type: z.string().optional(),
+  name: z.string(),
+  email: z.string().optional(),
+}).loose();
+
+const PortableLabelRefSchema = z.object({
+  name: z.string(),
+  color: z.string().optional(),
+}).loose();
+
+const PortableCommentSchema = z.object({
+  key: z.string(),
+  origin_id: z.string().optional(),
+  parent_key: z.string().nullable().optional(),
+  author_type: z.string().optional(),
+  author_name: z.string().optional(),
+  author_email: z.string().optional(),
+  type: z.string().optional(),
+  content: z.string(),
+  created_at: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+}).loose();
+
+const PortablePlanRequirementSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  rationale: z.string().optional(),
+}).loose();
+
+const PortablePlanNodeSchema = z.object({
+  key: z.string(),
+  title: z.string(),
+  description: z.string().optional(),
+  kind: z.string().optional(),
+  status: z.string().optional(),
+  priority: z.number().int().optional(),
+  acceptance_criteria: z.array(z.string()).optional(),
+}).loose();
+
+const PortablePlanEdgeSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  type: z.string().optional(),
+}).loose();
+
+const PortableSpecificationRequirementSchema: z.ZodType<PortableSpecificationRequirement> = z.object({
+  id: z.string(),
+  text: z.string(),
+  rationale: z.string(),
+  source: z.string(),
+}).loose();
+
+const PortableProjectSpecificationSchema: z.ZodType<PortableProjectSpecification> = z.object({
+  goal: z.string(),
+  summary: z.string(),
+  requirements: z.array(PortableSpecificationRequirementSchema),
+  non_functional_requirements: z.array(z.string()).default([]),
+  constraints: z.array(z.string()).default([]),
+  non_goals: z.array(z.string()).default([]),
+  definition_of_done: z.array(z.string()).default([]),
+  acceptance_expectations: z.array(z.string()).default([]),
+}).loose();
+
+const PortablePlanSchema = z.object({
+  goal: z.string().optional(),
+  requirements: z.array(PortablePlanRequirementSchema).optional(),
+  specification: PortableProjectSpecificationSchema.optional(),
+  nodes: z.array(PortablePlanNodeSchema).optional(),
+  edges: z.array(PortablePlanEdgeSchema).optional(),
+}).loose();
+
+const PortableBootstrapSchema = z.object({
+  autonomy_mode: z.string().optional(),
+  autonomy_level: z.string().optional(),
+  brief: z.string().optional(),
+  knowledge: z.array(z.object({
+    kind: z.string(),
+    title: z.string(),
+    content: z.unknown(),
+  }).loose()).optional(),
+  policy: z.unknown().optional(),
+  budget: z.unknown().optional(),
+  plan: PortablePlanSchema.optional(),
+}).loose();
+
+const PortableResourceSchema = z.object({
+  resource_type: z.string(),
+  label: z.string().nullable().optional(),
+  resource_ref: z.record(z.string(), z.unknown()).default({}),
+  position: z.number().int().optional(),
+}).loose();
+
+const PortableProjectSchema = z.object({
+  title: z.string().optional(),
+  description: z.string().nullable().optional(),
+  icon: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  priority: z.string().nullable().optional(),
+  start_date: z.string().nullable().optional(),
+  due_date: z.string().nullable().optional(),
+  lead: PortableActorRefSchema.nullable().optional(),
+}).loose();
+
+const PortableTaskSchema = z.object({
+  key: z.string(),
+  origin_id: z.string().optional(),
+  title: z.string().optional(),
+  description: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  status_category: z.string().nullable().optional(),
+  priority: z.string().nullable().optional(),
+  parent_key: z.string().nullable().optional(),
+  stage: z.number().int().optional(),
+  position: z.number().optional(),
+  blocked_by_keys: z.array(z.string()).optional(),
+  labels: z.array(PortableLabelRefSchema).optional(),
+  assignee: PortableActorRefSchema.nullable().optional(),
+  acceptance_criteria: z.array(z.string()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  comments: z.array(PortableCommentSchema).optional(),
+}).loose();
+
+export const ProjectBundleSchema: z.ZodType<PortableProjectBundle> = z.object({
+  schema_version: z.literal("multica.project.v1"),
+  exported_at: z.string().optional(),
+  origin: z.object({
+    workspace_id: z.string().optional(),
+    project_id: z.string().optional(),
+  }).loose(),
+  project: PortableProjectSchema,
+  resources: z.array(PortableResourceSchema).optional().default([]),
+  bootstrap: PortableBootstrapSchema.nullable().optional(),
+  tasks: z.array(PortableTaskSchema).nullish().transform((tasks) => tasks ?? []),
+}).loose();
+
+export const ProjectExportResponseSchema: z.ZodType<PortableProjectExportResponse> = z.object({
+  bundle: ProjectBundleSchema,
+  tasks_markdown: z.string(),
+  agent_guide_markdown: z.string(),
+}).loose();
+
+const PortableStringListSchema = z.array(z.string()).nullish().transform((values) => values ?? []);
+const PortabilityActionSchema = z.enum(["create", "update", "unchanged"]).catch("unchanged");
+
+const TaskSyncDiffSchema: z.ZodType<TaskSyncDiff> = z.object({
+  key: z.string(),
+  title: z.string(),
+  action: PortabilityActionSchema,
+  changes: PortableStringListSchema,
+}).loose();
+
+const PortabilityPreviewSchema: z.ZodType<PortabilityPreview> = z.object({
+  project_action: PortabilityActionSchema,
+  project_changes: PortableStringListSchema,
+  tasks: z.array(TaskSyncDiffSchema).nullish().transform((tasks) => tasks ?? []),
+  warnings: PortableStringListSchema,
+}).loose();
+
+const DiscoveredProjectSchema: z.ZodType<DiscoveredProject> = z.object({
+  title: z.string(),
+  purpose: z.string(),
+  goal: z.string(),
+  architecture_summary: z.string(),
+}).loose();
+
+const DiscoveredProjectBoundariesSchema: z.ZodType<DiscoveredProjectBoundaries> = z.object({
+  in_scope: PortableStringListSchema,
+  out_of_scope: PortableStringListSchema,
+  constraints: PortableStringListSchema,
+  definition_of_done: PortableStringListSchema,
+}).loose();
+
+const DiscoveredFeatureSchema: z.ZodType<DiscoveredFeature> = z.object({
+  key: z.string(),
+  title: z.string(),
+  description: z.string(),
+  evidence: PortableStringListSchema,
+}).loose();
+
+const DiscoveredTaskSchema: z.ZodType<DiscoveredTask> = z.object({
+  key: z.string(),
+  title: z.string(),
+  description: z.string(),
+  priority: z.string().default("medium"),
+  stage: z.number().int().default(1),
+  parent_key: z.string().default(""),
+  blocked_by_keys: PortableStringListSchema,
+  acceptance_criteria: PortableStringListSchema,
+}).loose();
+
+const ProjectDiscoveryReportSchema: z.ZodType<ProjectDiscoveryReport> = z.object({
+  project: DiscoveredProjectSchema,
+  boundaries: DiscoveredProjectBoundariesSchema,
+  implemented_features: z.array(DiscoveredFeatureSchema).nullish().transform((items) => items ?? []),
+  next_tasks: z.array(DiscoveredTaskSchema).nullish().transform((items) => items ?? []),
+}).loose();
+
+export const ProjectPortabilityResultSchema: z.ZodType<PortabilityResult> = z.object({
+  project_id: z.string().min(1).nullish(),
+  created_count: z.number().int().nonnegative(),
+  updated_count: z.number().int().nonnegative(),
+  unchanged_count: z.number().int().nonnegative(),
+  warnings: PortableStringListSchema,
+  preview: PortabilityPreviewSchema.nullable().optional(),
+  discovery_report: ProjectDiscoveryReportSchema.nullable().optional(),
 }).loose();
 
 const SearchProjectResultSchema = ProjectSchema.extend({

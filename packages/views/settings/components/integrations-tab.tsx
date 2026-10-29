@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { ArrowLeft, ChevronRight, FolderGit2, Blocks } from "lucide-react";
+import { ArrowLeft, ChevronRight, Blocks } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -10,14 +10,12 @@ import {
   composioToolkitsOptions,
   composioConnectionsOptions,
 } from "@multica/core/composio";
-import { githubInstallationsOptions } from "@multica/core/github";
 import { larkInstallationsOptions } from "@multica/core/lark";
 import { slackInstallationsOptions } from "@multica/core/slack";
 import { dingtalkInstallationsOptions } from "@multica/core/dingtalk";
 import { wecomInstallationsOptions } from "@multica/core/wecom";
 import { telegramInstallationsOptions } from "@multica/core/telegram";
-import { vcsConnectionsOptions } from "@multica/core/vcs";
-import { useConfigStore, useFeatureEnabled } from "@multica/core/config";
+import { useFeatureEnabled } from "@multica/core/config";
 import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
 import { cn } from "@multica/ui/lib/utils";
 import { AppLink, useNavigation } from "../../navigation";
@@ -26,11 +24,8 @@ import { LarkTab } from "./lark-tab";
 import { ComposioTab } from "./composio-tab";
 import { SlackTab } from "./slack-tab";
 import { DingTalkTab } from "./dingtalk-tab";
-import { VCSTab } from "./vcs-tab";
 import { WecomTab } from "./wecom-tab";
 import { TelegramTab } from "./telegram-tab";
-import { GitHubTab } from "./github-tab";
-import { GitHubMark } from "./github-mark";
 import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
 import { IntegrationChannelIcon } from "./integration-channel-icon";
 import { resolveSettingsLocation, settingsHref } from "./settings-navigation";
@@ -57,7 +52,6 @@ export function IntegrationsTab() {
   const { member } = useCurrentMember(wsId);
   const canView = !!wsId && !!member;
   const composioEnabled = useFeatureEnabled(COMPOSIO_MCP_APPS_FLAG, false);
-  const vcsAvailable = useConfigStore((s) => s.vcsIntegrationAvailable);
   const toolkits = useQuery({
     ...composioToolkitsOptions(),
     enabled: composioEnabled,
@@ -67,12 +61,7 @@ export function IntegrationsTab() {
     !(toolkits.error instanceof ApiError && toolkits.error.status === 503);
 
   // Reuse the detail pages' query caches. Never report a failed or pending read
-  // as disconnected, and do not issue deployment-disabled integration queries.
-  const github = useQuery({
-    ...githubInstallationsOptions(wsId),
-    enabled: canView,
-    select: (data) => (data.installations?.length ?? 0) > 0,
-  });
+  // as disconnected.
   const lark = useQuery({
     ...larkInstallationsOptions(wsId),
     enabled: canView,
@@ -98,11 +87,6 @@ export function IntegrationsTab() {
     enabled: canView,
     select: (data) => (data.installations?.length ?? 0) > 0,
   });
-  const vcs = useQuery({
-    ...vcsConnectionsOptions(wsId),
-    enabled: canView && vcsAvailable,
-    select: (data) => (data.connections?.length ?? 0) > 0,
-  });
   const composio = useQuery({
     ...composioConnectionsOptions(),
     enabled: composioAvailable,
@@ -114,32 +98,6 @@ export function IntegrationsTab() {
     description?: string;
     entries: IntegrationEntry[];
   }[] = [
-    {
-      id: "code",
-      label: t(($) => $.integrations.code_title),
-      entries: [
-        {
-          id: "github",
-          label: t(($) => $.page.tabs.github),
-          description: t(($) => $.integrations.github_hint),
-          icon: <GitHubMark className="size-5" />,
-          content: <GitHubTab />,
-          state: github,
-        },
-        ...(vcsAvailable
-          ? [
-              {
-                id: "vcs",
-                label: t(($) => $.vcs.section_title),
-                description: t(($) => $.integrations.vcs_hint),
-                icon: <FolderGit2 className="size-5" />,
-                content: <VCSTab />,
-                state: vcs,
-              },
-            ]
-          : []),
-      ],
-    },
     {
       id: "messaging",
       label: t(($) => $.integrations.messaging_title),
@@ -232,16 +190,12 @@ export function IntegrationsTab() {
           <ArrowLeft className="size-4" aria-hidden="true" />
           {t(($) => $.integrations.back)}
         </AppLink>
-        {selected.id === "github" ? (
-          selected.content
-        ) : (
-          <SettingsTab
-            title={selected.label}
-            description={selected.description}
-          >
-            {selected.content}
-          </SettingsTab>
-        )}
+        <SettingsTab
+          title={selected.label}
+          description={selected.description}
+        >
+          {selected.content}
+        </SettingsTab>
       </div>
     );
   }

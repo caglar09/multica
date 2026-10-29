@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ExternalLink,
   Filter,
+  FileUp,
   FolderKanban,
   LayoutGrid,
   MoreHorizontal,
@@ -106,6 +107,7 @@ import {
   CollectionPageState,
 } from "../../layout/collection-page";
 import { ProjectIcon } from "./project-icon";
+import { ProjectImportDialog } from "./project-import-dialog";
 import { useT } from "../../i18n";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { useFormatRelativeDate } from "./labels";
@@ -798,6 +800,7 @@ function ProjectBatchToolbar({
 
 export function ProjectsPage() {
   const { t } = useT("projects");
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const wsId = useWorkspaceId();
   const wsPaths = useWorkspacePaths();
   const rowLink = useRowLink();
@@ -946,11 +949,18 @@ export function ProjectsPage() {
         title={t(($) => $.page.title)}
         count={projects.length}
         actions={
-          <CollectionPageHeaderAction
-            icon={Plus}
-            label={t(($) => $.page.new_project)}
-            onClick={openCreateProject}
-          />
+          <div className="flex items-center gap-2">
+            <CollectionPageHeaderAction
+              icon={FileUp}
+              label={t(($) => $.portability.import.open_import)}
+              onClick={() => setImportDialogOpen(true)}
+            />
+            <CollectionPageHeaderAction
+              icon={Plus}
+              label={t(($) => $.page.new_project)}
+              onClick={openCreateProject}
+            />
+          </div>
         }
       />
 
@@ -1293,6 +1303,12 @@ export function ProjectsPage() {
           />
         </>
       )}
+      {importDialogOpen ? (
+        <ProjectImportDialog
+          open={importDialogOpen}
+          onOpenChange={setImportDialogOpen}
+        />
+      ) : null}
     </div>
   );
 }

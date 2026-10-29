@@ -110,6 +110,10 @@ import type {
   StartMikaOnboardingResponse,
   CancelTaskResponse,
   Project,
+  PortableProjectExportResponse,
+  ImportProjectRequest,
+  SyncProjectRequest,
+  PortabilityResult,
   AutonomousProjectPlanSnapshot,
   ApproveAutonomousProjectPlanResponse,
   AutonomousProjectSnapshot,
@@ -286,6 +290,8 @@ import {
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
+  ProjectExportResponseSchema,
+  ProjectPortabilityResultSchema,
   ApproveAutonomousProjectPlanResponseSchema,
   AutonomousProjectControlSchema,
   AutonomousProjectPlanSnapshotSchema,
@@ -4192,6 +4198,48 @@ export class ApiClient {
 
   async getProject(id: string): Promise<Project> {
     return this.fetch(`/api/projects/${id}`);
+  }
+
+  async exportProject(id: string): Promise<PortableProjectExportResponse | null> {
+    const endpoint = `/api/projects/${id}/export`;
+    const raw = await this.fetch<unknown>(endpoint);
+    return parseWithFallback<PortableProjectExportResponse | null>(
+      raw,
+      ProjectExportResponseSchema,
+      null,
+      { endpoint: `GET ${endpoint}` },
+    );
+  }
+
+  async importProject(data: ImportProjectRequest): Promise<PortabilityResult | null> {
+    const endpoint = "/api/projects/import";
+    const raw = await this.fetch<unknown>(endpoint, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback<PortabilityResult | null>(
+      raw,
+      ProjectPortabilityResultSchema,
+      null,
+      { endpoint: "POST /api/projects/import" },
+    );
+  }
+
+  async syncProject(
+    id: string,
+    data: SyncProjectRequest,
+  ): Promise<PortabilityResult | null> {
+    const endpoint = `/api/projects/${id}/sync`;
+    const raw = await this.fetch<unknown>(endpoint, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback<PortabilityResult | null>(
+      raw,
+      ProjectPortabilityResultSchema,
+      null,
+      { endpoint: `POST ${endpoint}` },
+    );
   }
 
   async getProjectAutonomous(id: string): Promise<AutonomousProjectSnapshot> {

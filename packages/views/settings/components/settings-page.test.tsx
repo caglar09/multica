@@ -254,9 +254,11 @@ describe("SettingsPage information architecture", () => {
     renderWithI18n(<SettingsPage />);
     expect(
       within(nav()).queryByRole("link", {
-        name: /^(Issue|Chat|GitHub|Labs|Integrations|Repositories)$/,
+        name: /^(Issue|Chat|GitHub|Labs)$/,
       }),
     ).not.toBeInTheDocument();
+    expect(within(nav()).getByRole("link", { name: "Integrations" })).toBeInTheDocument();
+    expect(within(nav()).getByRole("link", { name: "Repositories" })).toBeInTheDocument();
   });
 
   it("opens old issue bookmarks in preferences", () => {
@@ -278,6 +280,19 @@ describe("SettingsPage information architecture", () => {
       "page",
     );
   });
+
+  it.each(["tab=github", "tab=integrations&integration=vcs"])(
+    "routes the legacy %s bookmark to the Code page",
+    (search) => {
+      navigationState.search = search;
+      renderWithI18n(<SettingsPage />);
+      expect(screen.getByText("CodeTab")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Code" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    },
+  );
 
   it("lists Connected apps with the personal pages only when Composio is available", () => {
     const first = renderWithI18n(<SettingsPage />);

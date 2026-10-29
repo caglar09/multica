@@ -18,6 +18,67 @@
     "selected_other": "{{count}} 件選択中",
     "clear_selection": "選択を解除"
   },
+  "portability": {
+    "export": {
+      "open_export": "プロジェクトをエクスポート...",
+      "title": "プロジェクトをエクスポート",
+      "description": "プロジェクトと外部作業用のファイルをダウンロードします。",
+      "loading": "エクスポートを準備しています...",
+      "load_failed": "プロジェクトをエクスポートできませんでした。",
+      "retry": "再試行",
+      "download_bundle": "プロジェクトバンドルをダウンロード",
+      "download_tasks": "TASKS.md をダウンロード",
+      "download_guide": "AGENT_GUIDE.md をダウンロード",
+      "copy_export_command": "エクスポートコマンドをコピー",
+      "copy_sync_command": "同期コマンドをコピー",
+      "command_copied": "コマンドをコピーしました",
+      "copy_failed": "コマンドをコピーできませんでした"
+    },
+    "import": {
+      "open_import": "プロジェクトをインポート",
+      "title": "プロジェクトをインポート",
+      "sync_title": "プロジェクトを同期",
+      "description": "適用前に変更を確認してください。入力にないタスクも保持されます。",
+      "file_label": "プロジェクトファイル",
+      "choose_file": "ファイルを選択",
+      "choose_folder": "プロジェクトフォルダーを選択",
+      "selected_folder": "プロジェクトフォルダーを選択しました",
+      "format_label": "ファイル形式",
+      "json_format": "JSON バンドル",
+      "markdown_format": "Markdown タスクリスト",
+      "paste_label": "または内容を貼り付け",
+      "paste_placeholder": "プロジェクト JSON バンドルまたは Markdown タスクリストを貼り付け...",
+      "title_hint_label": "プロジェクト名",
+      "title_hint_placeholder": "Markdown にプロジェクト名がない場合に使用",
+      "empty_input": "ファイルを選択するか、内容を貼り付けてください。",
+      "invalid_json": "有効な Multica プロジェクトバンドルではありません。",
+      "file_read_failed": "ファイルを読み取れませんでした。",
+      "preview": "変更をプレビュー",
+      "preview_failed": "プレビューを準備できませんでした。",
+      "apply_failed": "変更を適用できませんでした。再試行できるよう入力は保持されています。",
+      "apply_import": "プロジェクトをインポート",
+      "apply_sync": "同期を適用",
+      "cancel": "キャンセル",
+      "import_complete": "プロジェクトをインポートしました",
+      "sync_complete": "プロジェクトを同期しました"
+    },
+    "discovery": {
+      "instruction_label": "このプロジェクトで達成したいこと",
+      "instruction_placeholder": "分析の背景や重点を入力...",
+      "source_warning": "ファイルは今回のインポート分析にのみ使用されます。ローカルフォルダーまたは Git リポジトリを接続するまで、エージェントはファイルを編集できません。",
+      "boundaries": "範囲と制約",
+      "implemented": "実装済み機能",
+      "next_tasks": "次のタスク",
+      "blocked_by": "依存先"
+    },
+    "preview": {
+      "title": "変更内容のプレビュー",
+      "created": "{{count}} 件のタスクを作成",
+      "updated": "{{count}} 件のタスクを更新",
+      "unchanged": "{{count}} 件のタスクに変更なし",
+      "warnings": "警告"
+    }
+  },
   "table": {
     "name": "名前",
     "priority": "優先度",

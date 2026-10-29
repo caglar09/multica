@@ -453,7 +453,18 @@
     "updated_toast": "Paylaşılan MCP sunucusu güncellendi",
     "removed_toast": "Paylaşılan MCP sunucusu kaldırıldı",
     "save_failed_toast": "Paylaşılan MCP sunucusu kaydedilemedi",
-    "remove_failed_toast": "Paylaşılan MCP sunucusu kaldırılamadı"
+    "remove_failed_toast": "Paylaşılan MCP sunucusu kaldırılamadı",
+    "rename_server": "Sunucuyu yeniden adlandır",
+    "rename_action": "Yeniden adlandır",
+    "replace_config": "Yapılandırmayı değiştir",
+    "rename_save": "Adı kaydet",
+    "rename_cancel": "Yeniden adlandırmayı iptal et",
+    "rename_required": "Bir sunucu adı girin.",
+    "rename_invalid": "Yalnızca harf, rakam, tire ve alt çizgi kullanın.",
+    "rename_duplicate": "Bu adda bir sunucu zaten var.",
+    "remove_action": "Sil",
+    "renamed_toast": "Paylaşılan MCP sunucusu yeniden adlandırıldı",
+    "rename_failed_toast": "Paylaşılan MCP sunucusu yeniden adlandırılamadı"
   },
   "page": {
     "title": "Ayarlar",
