@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+var ErrPlanApprovalRequired = errors.New("autonomous project plan requires explicit approval before work can start")
+
 type PlanLifecycle struct {
 	Status     string
 	Digest     string

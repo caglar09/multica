@@ -15,6 +15,17 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+func TestProjectPlanRestartRequiresApproval(t *testing.T) {
+	if err := projectPlanRestartApprovalError("awaiting_approval"); !errors.Is(err, projectorchestration.ErrPlanApprovalRequired) {
+		t.Fatalf("awaiting_approval restart error = %v, want approval-required", err)
+	}
+	for _, status := range []string{"active", "blocked", "completed"} {
+		if err := projectPlanRestartApprovalError(status); err != nil {
+			t.Errorf("restart status %q error = %v, want nil", status, err)
+		}
+	}
+}
+
 func TestSoftwareDevelopmentWorkflowDefinition(t *testing.T) {
 	def := definition()
 	if err := def.Validate(); err != nil {

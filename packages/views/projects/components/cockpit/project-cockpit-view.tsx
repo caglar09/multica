@@ -36,10 +36,12 @@ export interface ProjectCockpitViewProps {
   isApproving?: boolean;
   isRejecting?: boolean;
   onRestartWorkflow?: () => void;
+  onApprovePlan?: () => void;
   onResumeExecution?: () => void;
   onRetryAction?: (actionId: string) => void;
   onRerunIssue?: (issueId: string, taskId?: string) => void;
   isRepairing?: boolean;
+  isApprovingPlan?: boolean;
   isRetryingAction?: boolean;
   isRerunningIssue?: boolean;
   className?: string;
@@ -63,10 +65,12 @@ export function ProjectCockpitView({
   isApproving,
   isRejecting,
   onRestartWorkflow,
+  onApprovePlan,
   onResumeExecution,
   onRetryAction,
   onRerunIssue,
   isRepairing,
+  isApprovingPlan,
   isRetryingAction,
   isRerunningIssue,
   className,
@@ -94,12 +98,13 @@ export function ProjectCockpitView({
           mode="nonurgent"
           idPrefix="cockpit-work-waiting"
           canControl={canControl}
+          onApprovePlan={onApprovePlan}
           onRestartWorkflow={onRestartWorkflow}
           onResumeExecution={onResumeExecution}
           onReplan={onReplanTeam}
           onRetryAction={onRetryAction}
           onRerunIssue={onRerunIssue}
-          pending={isRepairing || isRetryingAction || isRerunningIssue}
+          pending={isRepairing || isApprovingPlan || isRetryingAction || isRerunningIssue}
         />
       ) : null}
 

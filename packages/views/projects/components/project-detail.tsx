@@ -57,6 +57,7 @@ import {
 	useRestartAutonomousWorkflow,
 	useRetryAutonomousAction,
 	useRerunAutonomousIssue,
+	useApproveAutonomousProjectPlan,
 } from "@multica/core/projects";
 import type { AutonomousRoleRuntimeAssignment, Project } from "@multica/core/types";
 import {
@@ -309,6 +310,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	const cancelAutonomousProject = useCancelAutonomousProject();
 	const replanAutonomousProject = useReplanAutonomousProject();
 	const restartAutonomousWorkflow = useRestartAutonomousWorkflow();
+	const approveAutonomousPlan = useApproveAutonomousProjectPlan();
 	const retryAutonomousAction = useRetryAutonomousAction();
 	const rerunAutonomousIssue = useRerunAutonomousIssue();
 
@@ -431,6 +433,18 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 			onSuccess: () => toast.success(t(($) => $.cockpit.waiting_repair_continue)),
 			onError: () => toast.error(t(($) => $.cockpit.toast_replan_error)),
 		});
+	};
+
+	const handleApproveAutonomousPlan = () => {
+		const plan = autonomousSnapshot?.plan;
+		if (!plan?.plan_digest || plan.status !== "awaiting_approval") return;
+		approveAutonomousPlan.mutate(
+			{ projectId, planDigest: plan.plan_digest },
+			{
+				onSuccess: () => toast.success(t(($) => $.plan_approval.approve_success)),
+				onError: () => toast.error(t(($) => $.plan_approval.approve_error)),
+			},
+		);
 	};
 
 	const handleRetryWorkflowAction = (actionId: string) => {
@@ -1539,6 +1553,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 									isConfirmingTeam={confirmTeam.isPending}
 									onStartProjectPlanning={handleStartProjectPlanning}
 									isStartingProjectPlanning={startProjectPlanning.isPending}
+									onApprovePlan={handleApproveAutonomousPlan}
 									changeRequests={leaderChanges.data?.items}
 									onApproveChange={(id) =>
 										approveLeaderChange.mutate({ projectId, changeRequestId: id })
@@ -1556,6 +1571,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 									isApproving={approveLeaderChange.isPending}
 									isRejecting={rejectLeaderChange.isPending}
 									isRepairing={restartAutonomousWorkflow.isPending}
+									isApprovingPlan={approveAutonomousPlan.isPending}
 									isRetryingAction={retryAutonomousAction.isPending}
 									isRerunningIssue={rerunAutonomousIssue.isPending}
 								/>

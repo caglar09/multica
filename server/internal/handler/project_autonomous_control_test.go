@@ -434,6 +434,30 @@ func TestAutonomousRestartHandlerInvokesProjectScopedRecovery(t *testing.T) {
 	}
 }
 
+func TestAutonomousRestartReportsPlanApprovalRequired(t *testing.T) {
+	project := createProjectPermissionTestProject(t, "autonomous restart approval project")
+
+	previous := testHandler.AutonomousWorkflowRestart
+	t.Cleanup(func() { testHandler.AutonomousWorkflowRestart = previous })
+	testHandler.AutonomousWorkflowRestart = func(context.Context, pgtype.UUID, pgtype.UUID) error {
+		return projectorchestration.ErrPlanApprovalRequired
+	}
+
+	req := withURLParam(newRequest("POST", "/api/projects/"+project.ID+"/autonomous/workflow/restart", nil), "id", project.ID)
+	w := httptest.NewRecorder()
+	testHandler.RestartProjectAutonomousWorkflow(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("restart status = %d, want 409: %s", w.Code, w.Body.String())
+	}
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode restart error: %v", err)
+	}
+	if body["code"] != "plan_approval_required" {
+		t.Fatalf("restart error code = %q, want plan_approval_required", body["code"])
+	}
+}
+
 func TestAutonomousPauseRepairsStaleControlWorkspaceOwnership(t *testing.T) {
 	project := createProjectPermissionTestProject(t, "autonomous stale control ownership project")
 	_, _ = testPool.Exec(context.Background(), `DELETE FROM autonomous_project_control WHERE project_id = $1`, project.ID)

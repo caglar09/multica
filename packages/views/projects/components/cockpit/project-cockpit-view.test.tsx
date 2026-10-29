@@ -324,6 +324,36 @@ describe("ProjectCockpitView", () => {
     expect(onRestartWorkflow).toHaveBeenCalledTimes(1);
   });
 
+  it("requires explicit plan approval before starting pending work", async () => {
+    const user = userEvent.setup();
+    const onApprovePlan = vi.fn();
+    const onRestartWorkflow = vi.fn();
+
+    renderWithI18n(
+      <WorkWaitingWidget
+        snapshot={{
+          ...MOCK_SNAPSHOT,
+          plan: {
+            id: "plan-1",
+            revision: 1,
+            status: "awaiting_approval",
+            plan_digest: "sha256:plan-digest",
+            nodes: [{ id: "node-1", key: "build", status: "pending" }],
+          },
+          diagnostics: [],
+        } as unknown as AutonomousProjectSnapshot}
+        canControl={true}
+        onApprovePlan={onApprovePlan}
+        onRestartWorkflow={onRestartWorkflow}
+      />,
+    );
+
+    expect(screen.getByText("sha256:plan-digest")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve this revision" }));
+    expect(onApprovePlan).toHaveBeenCalledOnce();
+    expect(onRestartWorkflow).not.toHaveBeenCalled();
+  });
+
   it("groups waiting diagnostics by severity", () => {
     renderWithI18n(
       <WorkWaitingWidget

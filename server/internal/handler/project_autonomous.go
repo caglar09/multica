@@ -2510,6 +2510,10 @@ func (h *Handler) RestartProjectAutonomousWorkflow(w http.ResponseWriter, r *htt
 		return
 	}
 	if err := h.AutonomousWorkflowRestart(r.Context(), workspaceID, projectID); err != nil {
+		if errors.Is(err, projectorchestration.ErrPlanApprovalRequired) {
+			writeErrorCode(w, http.StatusConflict, "plan_approval_required", "approve the current project plan before restarting work")
+			return
+		}
 		slog.Warn("autonomous workflow restart failed",
 			"workspace_id", uuidToString(workspaceID),
 			"project_id", uuidToString(projectID),

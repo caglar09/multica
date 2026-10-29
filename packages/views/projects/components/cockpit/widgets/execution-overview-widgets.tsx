@@ -11,10 +11,12 @@ import type {
 import { cn } from "@multica/ui/lib/utils";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
+import { AutonomousPlanApprovalCard } from "../../autonomous-plan-approval-card";
 
 import { useT } from "../../../../i18n";
 
 type WaitingActions = {
+  onApprovePlan?: () => void;
   onRestartWorkflow?: () => void;
   onResumeExecution?: () => void;
   onReplan?: () => void;
@@ -52,11 +54,11 @@ export function WorkWaitingWidget({
   const plannedNodes = (snapshot?.plan?.nodes ?? []).filter((node) =>
     ["pending", "ready", "running", "verification", "blocked"].includes(node.status),
   );
+  const planAwaitingApproval = snapshot?.plan?.status === "awaiting_approval";
   const showPlannedWork =
     mode !== "urgent" &&
     plannedNodes.length > 0 &&
-    canControl &&
-    Boolean(actions.onRestartWorkflow);
+    (planAwaitingApproval || (canControl && Boolean(actions.onRestartWorkflow)));
   const diagnosticGroups: Array<{
     severity: "error" | "warning" | "info";
     label: string;
@@ -101,23 +103,41 @@ export function WorkWaitingWidget({
 
       <div className={cn("space-y-3 p-4 pt-3", scrollable && "max-h-[32rem] overflow-y-auto")} aria-labelledby={`${idPrefix}-title`}>
         {showPlannedWork ? (
-          <div className="flex flex-col gap-3 rounded-lg border border-primary/25 bg-primary/[0.03] p-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex min-w-0 gap-2.5">
-              <Workflow className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-              <div>
-                <div className="text-sm font-medium text-foreground">
-                  {t(($) => $.cockpit.planned_title)}
+          planAwaitingApproval && snapshot?.plan ? (
+            <AutonomousPlanApprovalCard
+              plan={snapshot.plan}
+              canControl={canControl}
+              isPending={Boolean(actions.pending)}
+              onApprove={() => actions.onApprovePlan?.()}
+              labels={{
+                title: t(($) => $.plan_approval.title),
+                pendingDescription: t(($) => $.plan_approval.pending_description),
+                approvedDescription: t(($) => $.plan_approval.approved_description),
+                digest: t(($) => $.plan_approval.digest),
+                digestMissing: t(($) => $.plan_approval.digest_missing),
+                adminOnly: t(($) => $.plan_approval.admin_only),
+                approve: t(($) => $.plan_approval.approve),
+              }}
+            />
+          ) : (
+            <div className="flex flex-col gap-3 rounded-lg border border-primary/25 bg-primary/[0.03] p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 gap-2.5">
+                <Workflow className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+                <div>
+                  <div className="text-sm font-medium text-foreground">
+                    {t(($) => $.cockpit.planned_title)}
+                  </div>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {t(($) => $.cockpit.planned_description, { count: plannedNodes.length })}
+                  </p>
                 </div>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {t(($) => $.cockpit.planned_description, { count: plannedNodes.length })}
-                </p>
               </div>
+              <Button size="sm" onClick={actions.onRestartWorkflow} disabled={actions.pending}>
+                <RotateCcw className={cn("size-3.5", actions.pending && "animate-spin")} />
+                {t(($) => $.cockpit.planned_run_now)}
+              </Button>
             </div>
-            <Button size="sm" onClick={actions.onRestartWorkflow} disabled={actions.pending}>
-              <RotateCcw className={cn("size-3.5", actions.pending && "animate-spin")} />
-              {t(($) => $.cockpit.planned_run_now)}
-            </Button>
-          </div>
+          )
         ) : null}
         {scheduledWork.length > 0 ? (
           <ScheduledWork

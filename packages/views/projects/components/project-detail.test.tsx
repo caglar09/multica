@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   replanAutonomousProject: vi.fn(),
   projectCancelled: false,
   restartAutonomousWorkflow: vi.fn(),
+  approveAutonomousPlan: vi.fn(),
   retryAutonomousAction: vi.fn(),
   rerunAutonomousIssue: vi.fn(),
 	startProjectPlanning: vi.fn(),
@@ -82,6 +83,10 @@ vi.mock("@multica/core/projects", () => ({
 		mutate: mocks.restartAutonomousWorkflow,
 		isPending: false,
 	}),
+  useApproveAutonomousProjectPlan: () => ({
+    mutate: mocks.approveAutonomousPlan,
+    isPending: false,
+  }),
 	useRetryAutonomousAction: () => ({
 		mutate: mocks.retryAutonomousAction,
 		isPending: false,

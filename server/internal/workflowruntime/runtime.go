@@ -1216,6 +1216,11 @@ func (r *Runtime) RestartProjectWorkflow(
 		if err != nil {
 			return fmt.Errorf("load latest autonomous project plan for repair: %w", err)
 		}
+		if exists {
+			if err := projectPlanRestartApprovalError(stored.Status); err != nil {
+				return err
+			}
+		}
 		if exists && stored.Status == "completed" {
 			planID, err := util.ParseUUID(stored.ID)
 			if err != nil {
@@ -1461,6 +1466,13 @@ func (r *Runtime) RestartProjectWorkflow(
 		"project_id", util.UUIDToString(projectID),
 		"run_count", len(issueIDs),
 	)
+	return nil
+}
+
+func projectPlanRestartApprovalError(status string) error {
+	if status == "awaiting_approval" {
+		return projectorchestration.ErrPlanApprovalRequired
+	}
 	return nil
 }
 
