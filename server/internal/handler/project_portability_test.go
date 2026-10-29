@@ -74,6 +74,18 @@ func TestProjectDiscoveryImportPreviewsBeforeApplyingReviewedReport(t *testing.T
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
+	daemonID := "project-discovery-" + uuid.NewString()
+	var runtimeID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, owner_id)
+		VALUES ($1, $2, 'Discovery test runtime', 'local', 'antigravity', 'online', $3)
+		RETURNING id
+	`, testWorkspaceID, daemonID, testUserID).Scan(&runtimeID); err != nil {
+		t.Fatalf("create discovery runtime fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	})
 	previousAnalyzer := testHandler.ProjectDiscoveryAnalyzer
 	testHandler.ProjectDiscoveryAnalyzer = func(_ context.Context, input ProjectDiscoveryInput) (projectbundle.ProjectDiscoveryReport, error) {
 		if input.Instruction != "Improve the inventory workflow" {
@@ -91,7 +103,10 @@ func TestProjectDiscoveryImportPreviewsBeforeApplyingReviewedReport(t *testing.T
 	}
 	t.Cleanup(func() { testHandler.ProjectDiscoveryAnalyzer = previousAnalyzer })
 
-	contextPayload := projectbundle.ProjectContextPayload{RootName: "inventory", Files: []projectbundle.ProjectContextFile{{Path: "src/auth.any", Content: "sign-in flow"}}}
+	contextPayload := projectbundle.ProjectContextPayload{
+		RootName: "inventory", LocalPath: "/tmp/inventory", DaemonID: daemonID,
+		Files: []projectbundle.ProjectContextFile{{Path: "src/auth.any", Content: "sign-in flow"}},
+	}
 	previewResponse := httptest.NewRecorder()
 	testHandler.ImportProject(previewResponse, newRequest("POST", "/api/projects/import", projectbundle.ImportRequest{
 		Instruction: "Improve the inventory workflow", ProjectContext: &contextPayload, RuntimeID: "11111111-1111-4111-8111-111111111111", Model: "gpt-5.5-codex", DryRun: true,
@@ -109,8 +124,8 @@ func TestProjectDiscoveryImportPreviewsBeforeApplyingReviewedReport(t *testing.T
 	if preview.DiscoveryReport == nil || preview.Preview == nil {
 		t.Fatalf("discovery preview payload = %s, want report and changes", previewResponse.Body.String())
 	}
-	if !strings.Contains(strings.Join(preview.Preview.Warnings, " "), "no agent-accessible") {
-		t.Fatalf("preview did not disclose unattached source: %#v", preview.Preview.Warnings)
+	if strings.Contains(strings.Join(preview.Preview.Warnings, " "), "local_directory resource was skipped") || strings.Contains(strings.Join(preview.Preview.Warnings, " "), "no agent-accessible") {
+		t.Fatalf("preview did not preserve the registered local source: %#v", preview.Preview.Warnings)
 	}
 	if preview.DiscoveryReport.Project.Title != "Discovered inventory" || len(preview.DiscoveryReport.NextTasks) != 1 {
 		t.Fatalf("discovery report = %#v", preview.DiscoveryReport)
@@ -129,7 +144,7 @@ func TestProjectDiscoveryImportPreviewsBeforeApplyingReviewedReport(t *testing.T
 		t.Fatalf("applied discovery result = %+v", applied)
 	}
 	t.Cleanup(func() { cleanupProjectPortabilityFixture(t, applied.ProjectID) })
-	var brainCount, issueCount, specCount int
+	var brainCount, issueCount, specCount, resourceCount int
 	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM autonomous_project_brain_entry WHERE project_id = $1`, applied.ProjectID).Scan(&brainCount); err != nil {
 		t.Fatalf("count imported project brain entries: %v", err)
 	}
@@ -139,8 +154,14 @@ func TestProjectDiscoveryImportPreviewsBeforeApplyingReviewedReport(t *testing.T
 	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM autonomous_project_specification_revision WHERE project_id = $1`, applied.ProjectID).Scan(&specCount); err != nil {
 		t.Fatalf("count imported project specification revisions: %v", err)
 	}
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM project_resource WHERE project_id = $1 AND resource_type = 'local_directory'`, applied.ProjectID).Scan(&resourceCount); err != nil {
+		t.Fatalf("count imported local directory resources: %v", err)
+	}
 	if brainCount == 0 || issueCount != 2 || specCount == 0 {
 		t.Fatalf("imported project OS state: brain=%d issues=%d spec=%d", brainCount, issueCount, specCount)
+	}
+	if resourceCount != 1 {
+		t.Fatalf("imported local directory resources = %d, want 1", resourceCount)
 	}
 	var planStatus string
 	var approvalPending, digestValid bool

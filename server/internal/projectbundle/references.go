@@ -213,9 +213,8 @@ func daemonMatches(ctx context.Context, q Queryer, workspaceID pgtype.UUID, daem
 	var exists bool
 	err := q.QueryRow(ctx, `
 		SELECT EXISTS (
-		  SELECT 1 FROM daemon_connection dc
-		  JOIN agent a ON a.id = dc.agent_id
-		  WHERE a.workspace_id = $1 AND dc.daemon_id = $2
+		  SELECT 1 FROM agent_runtime ar
+		  WHERE ar.workspace_id = $1 AND ar.daemon_id = $2
 		)
 	`, workspaceID, daemonID).Scan(&exists)
 	return exists, err
