@@ -886,6 +886,7 @@ function DiagnosticCard({
   onRetryAction: (actionId: string) => void;
   onRerunIssue: (issueId: string, taskId?: string) => void;
 }) {
+  const { t } = useT("projects");
   const variant =
     diagnostic.severity === "error"
       ? "destructive"
@@ -944,7 +945,9 @@ function DiagnosticCard({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={variant}>{diagnostic.severity}</Badge>
-            <span className="font-medium">{diagnostic.title}</span>
+            <span className="font-medium">
+              {diagnostic.code === "workflow_action_failed" ? t(($) => $.project_report.workflow_action_failed) : diagnostic.title}
+            </span>
             <span className="font-mono text-[11px] text-muted-foreground">
               {diagnostic.code}
             </span>

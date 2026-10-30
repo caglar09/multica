@@ -22,6 +22,17 @@ export function AgentDeskHud({
 }: AgentDeskHudProps) {
   const { t } = useT("projects");
   const statusCfg = getStatusConfig(desk.status);
+  const statusLabel = desk.status === "running"
+    ? t(($) => $.office.desk_status.coding)
+    : desk.status === "debugging"
+      ? t(($) => $.office.desk_status.debugging)
+      : desk.status === "verifying"
+        ? t(($) => $.office.desk_status.testing)
+        : desk.status === "blocked"
+          ? t(($) => $.office.desk_status.blocked)
+          : desk.status === "approved"
+            ? t(($) => $.office.desk_status.approved)
+            : t(($) => $.office.desk_status.standby);
 
   const activeTask = desk.activeTask;
   const queuedTasks = desk.queuedTasks ?? [];
@@ -93,7 +104,7 @@ export function AgentDeskHud({
             )}
           >
             {hasActive && <Play className="size-2 fill-current" />}
-            {statusCfg.label}
+            {statusLabel}
           </Badge>
 
           {desk.currentIssueId && (
@@ -109,7 +120,7 @@ export function AgentDeskHud({
             className="line-clamp-2 text-[11px] font-medium text-slate-200 transition-colors group-hover:text-white"
             title={activeTask?.title || desk.currentTaskTitle}
           >
-            {activeTask?.title || desk.currentTaskTitle || "Standby for tasks"}
+            {activeTask?.title || desk.currentTaskTitle || t(($) => $.office.desk_status.standby_tasks)}
           </p>
         </div>
       </div>
@@ -207,37 +218,37 @@ function getStatusConfig(status: AgentDeskStatus) {
   switch (status) {
     case "running":
       return {
-        label: "Coding",
+        label: "coding",
         dotColor: "bg-cyan-400 shadow-xs shadow-cyan-400/50",
         badgeClass: "bg-cyan-500/15 text-cyan-400 border-cyan-500/30",
       };
     case "debugging":
       return {
-        label: "Debugging",
+        label: "debugging",
         dotColor: "bg-amber-400 shadow-xs shadow-amber-400/50",
         badgeClass: "bg-amber-500/15 text-amber-400 border-amber-500/30",
       };
     case "verifying":
       return {
-        label: "Testing",
+        label: "testing",
         dotColor: "bg-purple-400 shadow-xs shadow-purple-400/50",
         badgeClass: "bg-purple-500/15 text-purple-400 border-purple-500/30",
       };
     case "blocked":
       return {
-        label: "Blocked",
+        label: "blocked",
         dotColor: "bg-rose-400 shadow-xs shadow-rose-400/50",
         badgeClass: "bg-rose-500/15 text-rose-400 border-rose-500/30",
       };
     case "approved":
       return {
-        label: "Approved",
+        label: "approved",
         dotColor: "bg-emerald-400 shadow-xs shadow-emerald-400/50",
         badgeClass: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
       };
     default:
       return {
-        label: "Standby",
+        label: "standby",
         dotColor: "bg-slate-500",
         badgeClass: "bg-slate-800 text-slate-400 border-slate-700",
       };

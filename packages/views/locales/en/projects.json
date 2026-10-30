@@ -690,7 +690,8 @@
     "failed_count": "{{count}} failed",
     "completed_count": "{{count}} completed",
     "active_count": "{{count}} active",
-    "cancelled_count": "{{count}} cancelled"
+    "cancelled_count": "{{count}} cancelled",
+    "workflow_action_failed": "Workflow action failed"
   },
   "plan_approval": {
     "title": "Plan approval",
@@ -796,6 +797,15 @@
       "resolve_escalation": "Resolve Escalation",
       "all_clear": "All Clear & Approved",
       "no_pending": "No decisions or escalations waiting for review."
+    },
+    "desk_status": {
+      "coding": "Coding",
+      "debugging": "Debugging",
+      "testing": "Testing",
+      "blocked": "Blocked",
+      "approved": "Approved",
+      "standby": "Standby",
+      "standby_tasks": "Standby for tasks"
     }
   }
 }

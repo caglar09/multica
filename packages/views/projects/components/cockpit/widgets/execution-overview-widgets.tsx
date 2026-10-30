@@ -330,7 +330,9 @@ function WaitingDiagnostic({
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={diagnostic.severity === "error" ? "destructive" : "secondary"}>{diagnostic.severity}</Badge>
-          <span className="text-sm font-medium text-foreground">{diagnostic.title}</span>
+          <span className="text-sm font-medium text-foreground">
+            {diagnostic.code === "workflow_action_failed" ? t(($) => $.project_report.workflow_action_failed) : diagnostic.title}
+          </span>
           <span className="font-mono text-[10px] text-muted-foreground">{diagnostic.code}</span>
         </div>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{diagnostic.detail}</p>
