@@ -167,6 +167,7 @@
     "execution_autonomous": "In Progress - Autonomous",
     "execution_paused": "Paused",
     "tab_cockpit": "Cockpit",
+    "tab_office": "Office",
     "tab_issues": "Issues",
     "tab_autonomous": "Autonomous Studio",
     "tab_studio": "Studio",
@@ -739,5 +740,62 @@
     },
     "screenshots": "Screenshots",
     "screenshot": "Screenshot"
+  },
+  "office": {
+    "title": "Virtual Office",
+    "subtitle": "2.5D Real-time Multi-Agent Operations & Spectator View",
+    "zones": {
+      "pm_desk": "Planning & PM Desk",
+      "coding_pods": "Active Coding Pods",
+      "qa_lab": "QA & Verification Lab",
+      "approval_lounge": "Decision & Approval Lounge"
+    },
+    "stats": {
+      "active_agents": "Active Agents",
+      "running_tasks": "Running Tasks",
+      "completed_tasks": "Approved Tasks",
+      "pending_approvals": "Pending Approvals"
+    },
+    "spectator_feed": "Spectator Activity Feed",
+    "play_flow": "Play Recent Flow",
+    "fullscreen": "Spectator Fullscreen",
+    "exit_fullscreen": "Exit Fullscreen",
+    "floor_all": "Campus Overview (All Active Agents)",
+    "floor_project": "Floor {{index}}: {{name}}",
+    "select_floor": "Switch Office Floor",
+    "empty_agents": "No active agents in this zone",
+    "empty_activity": "No recent activity events",
+    "active_task": "Active Task",
+    "queued_tasks": "{{count}} Queued",
+    "tasks_progress": "{{completed}}/{{total}} Tasks",
+    "queued_header": "Queued Tasks",
+    "next_in_queue": "Next: {{title}}",
+    "more_queued": "+{{count}} more",
+    "replay_on_map": "Replay on Map",
+    "quick_approve": "Quick Approve",
+    "quick_reject": "Reject",
+    "view_details": "View Details",
+    "controls": {
+      "zoom_in": "Zoom In",
+      "zoom_out": "Zoom Out",
+      "reset_view": "Reset View"
+    },
+    "inspector": {
+      "title": "Inspector",
+      "live_activity_stream": "Live Activity Stream",
+      "events_count": "{{count}} events",
+      "current_directive": "Current Directive",
+      "open_leader_chat": "Open Leader Chat",
+      "pending_count": "{{count}} Pending",
+      "plan_revision": "Plan Revision v{{revision}}",
+      "awaiting_approval": "Awaiting Approval",
+      "approve_plan": "Approve Autonomous Plan",
+      "change_request": "Change Request",
+      "pending": "Pending",
+      "escalation_with_category": "Escalation: {{category}}",
+      "resolve_escalation": "Resolve Escalation",
+      "all_clear": "All Clear & Approved",
+      "no_pending": "No decisions or escalations waiting for review."
+    }
   }
 }

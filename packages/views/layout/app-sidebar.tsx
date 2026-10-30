@@ -88,7 +88,6 @@ import {
 } from "@multica/core/shortcuts";
 import { ShortcutKeycaps } from "../common/shortcut-keycaps";
 import { useAppForeground } from "../common/use-app-foreground";
-import { useDiagnosticsLogsEnabled } from "@multica/core/diagnostics";
 
 // Top-level nav items stay active when the user is on a child route
 // (e.g. "Projects" stays lit on /:slug/projects/:id). Pinned items keep
@@ -120,6 +119,7 @@ type NavKey =
   | "myIssues"
   | "issues"
   | "projects"
+  | "office"
   | "autopilots"
   | "agents"
   | "squads"
@@ -137,6 +137,7 @@ type NavLabelKey =
   | "my_issues"
   | "issues"
   | "projects"
+  | "office"
   | "autopilots"
   | "agents"
   | "squads"
@@ -158,6 +159,7 @@ const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
 const workspaceNav: { key: NavKey; labelKey: NavLabelKey }[] = [
   { key: "issues", labelKey: "issues" },
   { key: "projects", labelKey: "projects" },
+  { key: "office", labelKey: "office" },
   { key: "autopilots", labelKey: "autopilots" },
   { key: "agents", labelKey: "agents" },
   { key: "squads", labelKey: "squads" },
@@ -486,7 +488,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const activeChatSessionId = useChatStore((s) => s.activeSessionId);
   const floatingChatOpen = useChatStore((s) => s.isOpen);
   const appForeground = useAppForeground();
-  const diagnosticsLogsEnabled = useDiagnosticsLogsEnabled();
   const chatHref = p.chat();
   const viewedChatSessionId =
     appForeground && (floatingChatOpen || isNavActive(pathname, chatHref))
@@ -875,9 +876,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             <SidebarGroupLabel>{t(($) => $.sidebar.configure_group)}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
-                {configureNav
-                  .filter((item) => item.key !== "logs" || diagnosticsLogsEnabled)
-                  .map((item) => {
+                {configureNav.map((item) => {
                   const href = p[item.key]();
                   const Icon = routeIconForPath(href);
                   const isActive = isNavActive(pathname, href);

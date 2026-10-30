@@ -5,6 +5,7 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import {
 	BarChart3,
 	Brain,
+	Building2,
 	Check,
 	ChevronRight,
 	Copy,
@@ -97,6 +98,7 @@ import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { ProjectReport } from "./project-report";
 import { ProjectBrainSettings } from "./autonomous-control-center";
 import { ProjectCockpitView } from "./cockpit";
+import { ProjectVirtualOfficeView } from "../../office";
 import { WorkWaitingWidget } from "./cockpit/widgets/execution-overview-widgets";
 import {
 	DecisionGateWidget,
@@ -481,7 +483,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	const [progressOpen, setProgressOpen] = useState(true);
 	const [descriptionOpen, setDescriptionOpen] = useState(true);
 	const tabParam = router.searchParams.get("tab");
-	const contentView: "cockpit" | "issues" | "report" | "brain" | "deployments" =
+	const contentView: "cockpit" | "office" | "issues" | "report" | "brain" | "deployments" =
 		tabParam === "issues"
 			? "issues"
 			: tabParam === "report"
@@ -490,6 +492,8 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 				? "brain"
 				: tabParam === "deployments"
 					? "deployments"
+				: tabParam === "office"
+					? "office"
 				: "cockpit";
 	const hasPendingApproval = hasPendingDecisions(
 		autonomousSnapshot,
@@ -508,7 +512,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 	);
 
 	const handleContentViewChange = useCallback(
-		(view: "cockpit" | "issues" | "report" | "brain" | "deployments") => {
+		(view: "cockpit" | "office" | "issues" | "report" | "brain" | "deployments") => {
 			const params = new URLSearchParams(router.searchParams);
 			if (view === "cockpit") {
 				params.delete("tab");
@@ -1448,6 +1452,19 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 							<Button
 								type="button"
 								size="sm"
+								variant={contentView === "office" ? "secondary" : "ghost"}
+								onClick={() => handleContentViewChange("office")}
+								className={cn(
+									"gap-1.5 text-xs font-medium transition-all",
+									contentView === "office" && "bg-background shadow-xs font-semibold text-foreground",
+								)}
+							>
+								<Building2 className="size-3.5 text-primary" />
+								{t(($) => $.detail.tab_office)}
+							</Button>
+							<Button
+								type="button"
+								size="sm"
 								variant={contentView === "issues" ? "secondary" : "ghost"}
 								onClick={() => handleContentViewChange("issues")}
 								className={cn(
@@ -1501,7 +1518,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 							) : null}
 						</div>
 
-						{autonomousSnapshot?.enabled && (hasUrgentWaiting || hasPendingApproval) ? (
+						{autonomousSnapshot?.enabled && (hasUrgentWaiting || hasPendingApproval) && contentView !== "office" ? (
 							<div className="max-h-[36rem] overflow-y-auto border-b bg-muted/10 px-4 py-3 md:px-6">
 								<div className="space-y-3">
 									<WorkWaitingWidget
@@ -1575,6 +1592,25 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 									isRetryingAction={retryAutonomousAction.isPending}
 									isRerunningIssue={rerunAutonomousIssue.isPending}
 								/>
+							) : contentView === "office" ? (
+								<ProjectVirtualOfficeView
+									snapshot={autonomousSnapshot}
+									changeRequests={leaderChanges.data?.items}
+									agents={agents}
+									canControl={isWorkspaceAdmin && !isExecutionCancelled}
+									onApprovePlan={handleApproveAutonomousPlan}
+									onApproveChange={(id) =>
+										approveLeaderChange.mutate({ projectId, changeRequestId: id })
+									}
+									onRejectChange={(id) =>
+										rejectLeaderChange.mutate({ projectId, changeRequestId: id })
+									}
+									onResolveEscalation={(id) =>
+										resolveEscalation.mutate({ projectId, escalationId: id, decision: "approved" })
+									}
+									onOpenLeaderChat={handleOpenLeaderChat}
+									className="flex-1"
+								/>
 							) : contentView === "issues" ? (
 								<IssueSurface
 									scope={issueScope}
@@ -1598,8 +1634,8 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 						</div>
 					</div>
 				</ResizablePanel>
-				{!isMobile && <ResizableHandle />}
-				{!isMobile && (
+				{!isMobile && contentView !== "office" && <ResizableHandle />}
+				{!isMobile && contentView !== "office" && (
 					<ResizablePanel
 						id="sidebar"
 						{...rightSidebarPanelMotionProps}

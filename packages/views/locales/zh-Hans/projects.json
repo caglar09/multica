@@ -166,6 +166,7 @@
     "execution_autonomous": "进行中 - 自主执行",
     "execution_paused": "已暂停",
     "tab_cockpit": "驾驶舱",
+    "tab_office": "办公室",
     "tab_issues": "议题",
     "tab_autonomous": "自主工作室",
     "tab_studio": "工作室",
@@ -633,5 +634,62 @@
     },
     "screenshots": "截图",
     "screenshot": "截图"
+  },
+  "office": {
+    "title": "虚拟办公室",
+    "subtitle": "2.5D 实时多智能体协作与观摩视图",
+    "zones": {
+      "pm_desk": "规划与项目主管席",
+      "coding_pods": "开发智能体工位",
+      "qa_lab": "测试与质检实验室",
+      "approval_lounge": "决策与审批中心"
+    },
+    "stats": {
+      "active_agents": "活跃智能体",
+      "running_tasks": "进行中任务",
+      "completed_tasks": "已批准任务",
+      "pending_approvals": "待审批事项"
+    },
+    "spectator_feed": "观摩活动流",
+    "play_flow": "回放最近流转",
+    "fullscreen": "全屏观摩模式",
+    "exit_fullscreen": "退出全屏",
+    "floor_all": "园区全景（全部活跃智能体）",
+    "floor_project": "第 {{index}} 层：{{name}}",
+    "select_floor": "切换办公室楼层",
+    "empty_agents": "该区域暂无活跃智能体",
+    "empty_activity": "暂无最近活动",
+    "active_task": "当前任务",
+    "queued_tasks": "{{count}} 个排队中",
+    "tasks_progress": "{{completed}}/{{total}} 个任务",
+    "queued_header": "排队中的任务",
+    "next_in_queue": "下一个: {{title}}",
+    "more_queued": "+{{count}} 更多",
+    "replay_on_map": "在地图上回放",
+    "quick_approve": "快速批准",
+    "quick_reject": "拒绝",
+    "view_details": "查看详情",
+    "controls": {
+      "zoom_in": "放大",
+      "zoom_out": "缩小",
+      "reset_view": "重置视图"
+    },
+    "inspector": {
+      "title": "检查器",
+      "live_activity_stream": "实时活动流",
+      "events_count": "{{count}} 项活动",
+      "current_directive": "当前指令",
+      "open_leader_chat": "打开负责人聊天",
+      "pending_count": "{{count}} 项待处理",
+      "plan_revision": "计划版本 v{{revision}}",
+      "awaiting_approval": "等待批准",
+      "approve_plan": "批准自主计划",
+      "change_request": "变更请求",
+      "pending": "待处理",
+      "escalation_with_category": "升级事项：{{category}}",
+      "resolve_escalation": "解决升级事项",
+      "all_clear": "全部已批准",
+      "no_pending": "暂无待审批或升级事项。"
+    }
   }
 }

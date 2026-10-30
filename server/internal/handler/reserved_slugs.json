@@ -71,6 +71,7 @@
       "slugs": [
         "issues",
         "projects",
+        "office",
         "autopilots",
         "agents",
         "squads",

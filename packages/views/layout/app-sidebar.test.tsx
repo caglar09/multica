@@ -168,6 +168,7 @@ vi.mock("@multica/core/paths", async (importOriginal) => ({
     logs: () => "/acme/logs",
     runtimes: () => "/acme/runtimes",
     skills: () => "/acme/skills",
+    office: () => "/acme/office",
     settings: () => "/acme/settings",
     issueDetail: (id: string) => `/acme/issues/${id}`,
     projectDetail: (id: string) => `/acme/projects/${id}`,

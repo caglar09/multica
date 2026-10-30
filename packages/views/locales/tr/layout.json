@@ -5,6 +5,7 @@
     "my_issues": "Görevlerim",
     "issues": "Görevler",
     "projects": "Projeler",
+    "office": "Sanal Ofis",
     "autopilots": "Autopilot",
     "agents": "Ajanlar",
     "squads": "Takımlar",
@@ -17,6 +18,7 @@
   "tab": {
     "issue": "Görev",
     "project": "Proje",
+    "office": "Sanal Ofis",
     "autopilot": "Autopilot",
     "agent": "Ajan",
     "member": "Üye",

@@ -263,6 +263,7 @@
     "execution_autonomous": "Devam Ediyor - Otonom",
     "execution_paused": "Duraklatıldı",
     "tab_cockpit": "Kokpit",
+    "tab_office": "Sanal Ofis",
     "tab_issues": "Görevler",
     "tab_autonomous": "Otonom Stüdyo",
     "tab_studio": "Stüdyo",
@@ -621,5 +622,62 @@
     },
     "screenshots": "Ekran görüntüleri",
     "screenshot": "Ekran görüntüsü"
+  },
+  "office": {
+    "title": "Sanal Ofis",
+    "subtitle": "2.5D Gerçek Zamanlı Çoklu Ajan Operasyonları ve İzleyici Görünümü",
+    "zones": {
+      "pm_desk": "Planlama & PM Masası",
+      "coding_pods": "Geliştirici Ajan Masaları",
+      "qa_lab": "QA & Doğrulama Laboratuvarı",
+      "approval_lounge": "Karar & Onay Kapısı"
+    },
+    "stats": {
+      "active_agents": "Aktif Ajanlar",
+      "running_tasks": "Devam Eden Görevler",
+      "completed_tasks": "Onaylanan Görevler",
+      "pending_approvals": "Bekleyen Onaylar"
+    },
+    "spectator_feed": "İzleyici Canlı Akışı",
+    "play_flow": "Son Akışı Oynat",
+    "fullscreen": "Tam Ekran İzle",
+    "exit_fullscreen": "Tam Ekrandan Çık",
+    "floor_all": "Genel Kampüs (Tüm Aktif Ajanlar)",
+    "floor_project": "Kat {{index}}: {{name}}",
+    "select_floor": "Kat Seçimi Yap",
+    "empty_agents": "Bu bölgede aktif ajan bulunmuyor",
+    "empty_activity": "Henüz bir etkinlik gerçekleşmedi",
+    "active_task": "Aktif Görev",
+    "queued_tasks": "{{count}} Sırada",
+    "tasks_progress": "{{completed}}/{{total}} Görev",
+    "queued_header": "Sırada Bekleyen Görevler",
+    "next_in_queue": "Sırada: {{title}}",
+    "more_queued": "+{{count}} daha",
+    "replay_on_map": "Haritada Göster",
+    "quick_approve": "Hızlı Onayla",
+    "quick_reject": "Reddet",
+    "view_details": "Detayları Gör",
+    "controls": {
+      "zoom_in": "Yakınlaştır",
+      "zoom_out": "Uzaklaştır",
+      "reset_view": "Görünümü Sıfırla"
+    },
+    "inspector": {
+      "title": "Denetçi",
+      "live_activity_stream": "Canlı Aktivite Akışı",
+      "events_count": "{{count}} olay",
+      "current_directive": "Mevcut Yönerge",
+      "open_leader_chat": "Lider Sohbetini Aç",
+      "pending_count": "{{count}} Bekliyor",
+      "plan_revision": "Plan Revizyonu v{{revision}}",
+      "awaiting_approval": "Onay Bekliyor",
+      "approve_plan": "Otonom Planı Onayla",
+      "change_request": "Değişiklik Talebi",
+      "pending": "Bekliyor",
+      "escalation_with_category": "Eskalasyon: {{category}}",
+      "resolve_escalation": "Eskalasyonu Çöz",
+      "all_clear": "Tümü Temiz ve Onaylandı",
+      "no_pending": "İnceleme bekleyen karar veya eskalasyon bulunmuyor."
+    }
   }
 }

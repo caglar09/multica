@@ -754,3 +754,14 @@ describe("ProjectDetail deployment tab", () => {
     expect(mocks.replace).toHaveBeenCalledWith("/test-workspace/projects/project-1?tab=deployments");
   });
 });
+
+describe("ProjectDetail office tab", () => {
+  it("stores office in the URL and switches to virtual office view", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail();
+
+    await user.click(screen.getByRole("button", { name: "Office" }));
+
+    expect(mocks.replace).toHaveBeenCalledWith("/test-workspace/projects/project-1?tab=office");
+  });
+});

@@ -166,6 +166,7 @@
     "execution_autonomous": "進行中 - 自律実行",
     "execution_paused": "一時停止",
     "tab_cockpit": "コックピット",
+    "tab_office": "オフィス",
     "tab_issues": "イシュー",
     "tab_autonomous": "自律スタジオ",
     "tab_studio": "スタジオ",
@@ -633,5 +634,62 @@
     },
     "screenshots": "スクリーンショット",
     "screenshot": "スクリーンショット"
+  },
+  "office": {
+    "title": "バーチャルオフィス",
+    "subtitle": "2.5D リアルタイムマルチエージェント協調・観戦ビュー",
+    "zones": {
+      "pm_desk": "企画・PMデスク",
+      "coding_pods": "開発エージェント席",
+      "qa_lab": "QA・検証ラボ",
+      "approval_lounge": "意思決定・承認ラウンジ"
+    },
+    "stats": {
+      "active_agents": "稼働中エージェント",
+      "running_tasks": "進行中のタスク",
+      "completed_tasks": "承認済みタスク",
+      "pending_approvals": "承認待ち"
+    },
+    "spectator_feed": "アクティビティフィード",
+    "play_flow": "直近のフローを再生",
+    "fullscreen": "フルスクリーン",
+    "exit_fullscreen": "全画面解除",
+    "floor_all": "キャンパス概要（全稼働エージェント）",
+    "floor_project": "{{index}} 階：{{name}}",
+    "select_floor": "フロアを切り替え",
+    "empty_agents": "このエリアに稼働中のエージェントはありません",
+    "empty_activity": "最近のアクティビティはありません",
+    "active_task": "現在のタスク",
+    "queued_tasks": "{{count}} 件待機中",
+    "tasks_progress": "{{completed}}/{{total}} タスク",
+    "queued_header": "待機中のタスク",
+    "next_in_queue": "次: {{title}}",
+    "more_queued": "+{{count}} 件",
+    "replay_on_map": "マップ上で再生",
+    "quick_approve": "クイック承認",
+    "quick_reject": "却下",
+    "view_details": "詳細を見る",
+    "controls": {
+      "zoom_in": "拡大",
+      "zoom_out": "縮小",
+      "reset_view": "ビューをリセット"
+    },
+    "inspector": {
+      "title": "インスペクター",
+      "live_activity_stream": "ライブアクティビティ",
+      "events_count": "{{count}} 件のイベント",
+      "current_directive": "現在のディレクティブ",
+      "open_leader_chat": "リーダーチャットを開く",
+      "pending_count": "{{count}} 件保留中",
+      "plan_revision": "プランリビジョン v{{revision}}",
+      "awaiting_approval": "承認待ち",
+      "approve_plan": "自律プランを承認",
+      "change_request": "変更リクエスト",
+      "pending": "保留中",
+      "escalation_with_category": "エスカレーション: {{category}}",
+      "resolve_escalation": "エスカレーションを解決",
+      "all_clear": "すべて承認済み",
+      "no_pending": "確認待ちの決定やエスカレーションはありません。"
+    }
   }
 }

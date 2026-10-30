@@ -166,6 +166,7 @@
     "execution_autonomous": "진행 중 - 자율 실행",
     "execution_paused": "일시 중지됨",
     "tab_cockpit": "조종석",
+    "tab_office": "오피스",
     "tab_issues": "이슈",
     "tab_autonomous": "자율 스튜디오",
     "tab_studio": "스튜디오",
@@ -633,5 +634,62 @@
     },
     "screenshots": "스크린샷",
     "screenshot": "스크린샷"
+  },
+  "office": {
+    "title": "가상 오피스",
+    "subtitle": "2.5D 실시간 멀티 에이전트 협업 및 관전 뷰",
+    "zones": {
+      "pm_desk": "기획 & PM 데스크",
+      "coding_pods": "개발 에이전트 포드",
+      "qa_lab": "QA & 검증 랩",
+      "approval_lounge": "의사결정 및 승인 라운지"
+    },
+    "stats": {
+      "active_agents": "활성 에이전트",
+      "running_tasks": "진행 중인 태스크",
+      "completed_tasks": "승인된 태스크",
+      "pending_approvals": "대기 중인 승인"
+    },
+    "spectator_feed": "관전자 활동 피드",
+    "play_flow": "최근 흐름 재생",
+    "fullscreen": "전체 화면 관전",
+    "exit_fullscreen": "전체 화면 종료",
+    "floor_all": "캠퍼스 전체 (모든 활성 에이전트)",
+    "floor_project": "{{index}}층: {{name}}",
+    "select_floor": "오피스 층 전환",
+    "empty_agents": "이 구역에 활성 에이전트가 없습니다",
+    "empty_activity": "최근 활동 내역이 없습니다",
+    "active_task": "진행 중인 작업",
+    "queued_tasks": "{{count}}개 대기 중",
+    "tasks_progress": "{{completed}}/{{total}}개 작업",
+    "queued_header": "대기 중인 작업 목록",
+    "next_in_queue": "다음: {{title}}",
+    "more_queued": "+{{count}}개 더보기",
+    "replay_on_map": "맵에서 재생",
+    "quick_approve": "빠른 승인",
+    "quick_reject": "거부",
+    "view_details": "상세 보기",
+    "controls": {
+      "zoom_in": "확대",
+      "zoom_out": "축소",
+      "reset_view": "뷰 재설정"
+    },
+    "inspector": {
+      "title": "인스펙터",
+      "live_activity_stream": "실시간 활동 스트림",
+      "events_count": "{{count}}개 이벤트",
+      "current_directive": "현재 지시사항",
+      "open_leader_chat": "리더 채팅 열기",
+      "pending_count": "{{count}}개 대기 중",
+      "plan_revision": "계획 리비전 v{{revision}}",
+      "awaiting_approval": "승인 대기 중",
+      "approve_plan": "자율 계획 승인",
+      "change_request": "변경 요청",
+      "pending": "대기 중",
+      "escalation_with_category": "에스컬레이션: {{category}}",
+      "resolve_escalation": "에스컬레이션 해결",
+      "all_clear": "모두 승인됨",
+      "no_pending": "검토 대기 중인 결정 또는 에스컬레이션이 없습니다."
+    }
   }
 }
