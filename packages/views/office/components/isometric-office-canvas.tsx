@@ -21,6 +21,7 @@ import type {
 } from "../types";
 import { PacketFlowLayer } from "./packet-flow-layer";
 import { AgentDeskHud } from "./agent-desk-hud";
+import { OfficeCommanderDock } from "./office-commander-dock";
 
 interface IsometricOfficeCanvasProps {
   scene: VirtualOfficeSceneData;
@@ -29,22 +30,24 @@ interface IsometricOfficeCanvasProps {
   selectedDesk?: OfficeAgentDesk | null;
   isFullscreen?: boolean;
   onSelectStation?: (key: OfficeZoneKey) => void;
-  onSelectDesk?: (desk: OfficeAgentDesk) => void;
+  onSelectDesk?: (desk: OfficeAgentDesk | null) => void;
   onPlayRecentFlow?: () => void;
   onToggleFullscreen?: () => void;
+  onSendMessage?: (payload: { targetAgentId?: string; targetAgentName?: string; text: string }) => Promise<void> | void;
   className?: string;
 }
 
 export function IsometricOfficeCanvas({
   scene,
   activeReplay,
-  selectedStationKey,
+  selectedStationKey: _selectedStationKey,
   selectedDesk,
   isFullscreen,
   onSelectStation,
   onSelectDesk,
   onPlayRecentFlow,
   onToggleFullscreen,
+  onSendMessage,
   className,
 }: IsometricOfficeCanvasProps) {
   const { t } = useT("projects");
@@ -120,7 +123,7 @@ export function IsometricOfficeCanvas({
     };
   }, []);
 
-  const { stations, desks, flowEdges, stats } = scene;
+  const { stations: _stations, desks, flowEdges, stats } = scene;
 
   return (
     <div
@@ -341,134 +344,26 @@ export function IsometricOfficeCanvas({
             {/* Base Grid Background */}
             <rect width="1200" height="750" fill="url(#office-isometric-grid)" />
 
-            {/* 4 Raised Isometric Zone Podiums */}
-            {/* 1. PM Desk Zone */}
-            <g
-              role="button"
-              tabIndex={0}
-              className="cursor-pointer pointer-events-auto"
-              onClick={() => onSelectStation?.("pm_desk")}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelectStation?.("pm_desk")}
-            >
-              <rect
-                x={stations.pm_desk.x - 140}
-                y={stations.pm_desk.y - 80}
-                width={stations.pm_desk.width}
-                height={stations.pm_desk.height}
-                rx="16"
-                fill="url(#grad-pm)"
-                stroke={selectedStationKey === "pm_desk" ? "#38bdf8" : "#0284c7"}
-                strokeWidth={selectedStationKey === "pm_desk" ? "2.5" : "1"}
-                strokeOpacity="0.8"
-                className="transition-all hover:stroke-cyan-400"
-              />
-              <text
-                x={stations.pm_desk.x - 120}
-                y={stations.pm_desk.y - 55}
-                fill="#38bdf8"
-                fontSize="12.5"
-                fontWeight="700"
-                letterSpacing="0.05em"
-              >
-                {t(($) => $.office.zones.pm_desk)}
-              </text>
-            </g>
-
-            {/* 2. Coding Pods Zone */}
-            <g
-              role="button"
-              tabIndex={0}
-              className="cursor-pointer pointer-events-auto"
-              onClick={() => onSelectStation?.("coding_pods")}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelectStation?.("coding_pods")}
-            >
-              <rect
-                x={stations.coding_pods.x - 280}
-                y={stations.coding_pods.y - 140}
-                width={stations.coding_pods.width}
-                height={stations.coding_pods.height}
-                rx="18"
-                fill="url(#grad-coding)"
-                stroke={selectedStationKey === "coding_pods" ? "#818cf8" : "#4f46e5"}
-                strokeWidth={selectedStationKey === "coding_pods" ? "2.5" : "1"}
-                strokeOpacity="0.8"
-                className="transition-all hover:stroke-indigo-400"
-              />
-              <text
-                x={stations.coding_pods.x - 255}
-                y={stations.coding_pods.y - 110}
-                fill="#818cf8"
-                fontSize="13"
-                fontWeight="700"
-                letterSpacing="0.05em"
-              >
-                {t(($) => $.office.zones.coding_pods)}
-              </text>
-            </g>
-
-            {/* 3. QA & Verification Lab Zone */}
-            <g
-              role="button"
-              tabIndex={0}
-              className="cursor-pointer pointer-events-auto"
-              onClick={() => onSelectStation?.("qa_lab")}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelectStation?.("qa_lab")}
-            >
-              <rect
-                x={stations.qa_lab.x - 210}
-                y={stations.qa_lab.y - 140}
-                width={stations.qa_lab.width}
-                height={stations.qa_lab.height}
-                rx="18"
-                fill="url(#grad-qa)"
-                stroke={selectedStationKey === "qa_lab" ? "#c084fc" : "#9333ea"}
-                strokeWidth={selectedStationKey === "qa_lab" ? "2.5" : "1"}
-                strokeOpacity="0.8"
-                className="transition-all hover:stroke-purple-400"
-              />
-              <text
-                x={stations.qa_lab.x - 185}
-                y={stations.qa_lab.y - 110}
-                fill="#c084fc"
-                fontSize="13"
-                fontWeight="700"
-                letterSpacing="0.05em"
-              >
-                {t(($) => $.office.zones.qa_lab)}
-              </text>
-            </g>
-
-            {/* 4. Decision & Approval Lounge Zone */}
-            <g
-              role="button"
-              tabIndex={0}
-              className="cursor-pointer pointer-events-auto"
-              onClick={() => onSelectStation?.("approval_lounge")}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelectStation?.("approval_lounge")}
-            >
-              <rect
-                x={stations.approval_lounge.x - 140}
-                y={stations.approval_lounge.y - 80}
-                width={stations.approval_lounge.width}
-                height={stations.approval_lounge.height}
-                rx="16"
-                fill="url(#grad-approval)"
-                stroke={selectedStationKey === "approval_lounge" ? "#34d399" : "#059669"}
-                strokeWidth={selectedStationKey === "approval_lounge" ? "2.5" : "1"}
-                strokeOpacity="0.8"
-                className="transition-all hover:stroke-emerald-400"
-              />
-              <text
-                x={stations.approval_lounge.x - 120}
-                y={stations.approval_lounge.y - 55}
-                fill="#34d399"
-                fontSize="12.5"
-                fontWeight="700"
-                letterSpacing="0.05em"
-              >
-                {t(($) => $.office.zones.approval_lounge)}
-              </text>
-            </g>
+            {/* Central Leader Sanctuary Aura (Under Project Manager) */}
+            <ellipse
+              cx="600"
+              cy="140"
+              rx="180"
+              ry="75"
+              fill="url(#grad-pm)"
+              opacity="0.4"
+            />
+            <ellipse
+              cx="600"
+              cy="140"
+              rx="130"
+              ry="55"
+              fill="none"
+              stroke="#f59e0b"
+              strokeWidth="1"
+              strokeDasharray="4 4"
+              opacity="0.6"
+            />
           </svg>
 
           {/* Animated Neon Packet Flow Layer */}
@@ -504,6 +399,16 @@ export function IsometricOfficeCanvas({
             })}
           </div>
         </div>
+      </div>
+
+      {/* Interactive Commander Dock for Asking CEO & Direct Agents */}
+      <div className="pointer-events-none absolute bottom-4 inset-x-0 z-20 flex justify-center">
+        <OfficeCommanderDock
+          desks={desks}
+          selectedDesk={selectedDesk}
+          onSelectDesk={onSelectDesk}
+          onSendMessage={onSendMessage}
+        />
       </div>
     </div>
   );

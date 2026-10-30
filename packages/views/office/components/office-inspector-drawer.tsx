@@ -246,6 +246,40 @@ export function OfficeInspectorDrawer({
                 </div>
               )}
 
+              {/* Live Tool Invocation Stream */}
+              {selectedDesk.activeTool && (
+                <div className="rounded-md bg-slate-950/90 p-2 border border-cyan-500/30 text-xs font-mono space-y-1">
+                  <div className="flex items-center gap-1.5 text-cyan-400 font-semibold text-[10.5px]">
+                    <span className="size-2 rounded-full bg-cyan-400 animate-pulse" />
+                    <span>CANLI ARAÇ ÇAĞRISI (TOOL)</span>
+                  </div>
+                  <div className="text-slate-300 flex items-center gap-1 text-[11px]">
+                    <span className="text-cyan-300 font-bold">{selectedDesk.activeTool.name}:</span>
+                    <span className="text-slate-400 truncate">{selectedDesk.activeTool.target}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Scoped Allowed Skills */}
+              {(selectedDesk.allowedSkills?.length ?? 0) > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    Yetkili Skill Seti ({selectedDesk.allowedSkills?.length})
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {selectedDesk.allowedSkills?.map((skill) => (
+                      <Badge
+                        key={skill}
+                        variant="secondary"
+                        className="text-[10px] font-mono bg-amber-500/10 text-amber-300 border-amber-500/20"
+                      >
+                        ⚡ {skill}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Queued Tasks List in Drawer */}
               {(selectedDesk.queuedTasks?.length ?? 0) > 0 && (
                 <div className="rounded-md bg-muted/30 p-2 text-xs space-y-1.5 border border-border/50">

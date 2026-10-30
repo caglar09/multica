@@ -21,6 +21,7 @@ export function ProjectVirtualOfficeView({
   onRejectChange,
   onResolveEscalation,
   onOpenLeaderChat,
+  onSendChatMessage,
   className,
 }: VirtualOfficeViewProps) {
   const [selectedStationKey, setSelectedStationKey] = useState<OfficeZoneKey | null>(null);
@@ -82,11 +83,14 @@ export function ProjectVirtualOfficeView({
         }}
         onSelectDesk={(desk) => {
           setSelectedDesk(desk);
-          setSelectedStationKey(desk.stationKey);
+          if (desk) {
+            setSelectedStationKey(desk.stationKey);
+          }
           setIsDrawerOpen(true);
         }}
         onPlayRecentFlow={handlePlayRecentFlow}
         onToggleFullscreen={handleToggleFullscreen}
+        onSendMessage={onSendChatMessage}
         className="flex-1"
       />
 

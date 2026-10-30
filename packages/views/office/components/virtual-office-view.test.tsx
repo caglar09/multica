@@ -149,7 +149,7 @@ describe("ProjectVirtualOfficeView", () => {
     },
   ] as Agent[];
 
-  it("renders 4 stations, agent desks and activity items", () => {
+  it("renders leader and engineer agent workstations, commander dock and activity items", () => {
     renderWithI18n(
       <ProjectVirtualOfficeView
         snapshot={mockSnapshot}
@@ -159,15 +159,12 @@ describe("ProjectVirtualOfficeView", () => {
       />,
     );
 
-    // Verify 4 Zone headings on canvas
-    expect(screen.getByText("Planning & PM Desk")).toBeInTheDocument();
-    expect(screen.getByText("Active Coding Pods")).toBeInTheDocument();
-    expect(screen.getByText("QA & Verification Lab")).toBeInTheDocument();
-    expect(screen.getAllByText("Decision & Approval Lounge").length).toBeGreaterThanOrEqual(1);
-
-    // Verify agent desks
+    // Verify agent desks and roles
     expect(screen.getAllByText("Ada").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Devon").length).toBeGreaterThanOrEqual(1);
+
+    // Verify Commander Dock is rendered with Project Manager by default
+    expect(screen.getByText("Project Manager")).toBeInTheDocument();
 
     // Verify activity feed item
     expect(screen.getByText("Dispatched canvas task to Devon")).toBeInTheDocument();

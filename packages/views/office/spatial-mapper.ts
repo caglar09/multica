@@ -4,6 +4,7 @@ import type {
   Agent,
   Issue,
 } from "@multica/core/types";
+import { filterSkillsForRole } from "@multica/core/skills";
 import type {
   OfficeZoneKey,
   OfficeStation,
@@ -12,6 +13,11 @@ import type {
   OfficeReplayEvent,
   VirtualOfficeSceneData,
   AgentDeskStatus,
+  ActiveToolCall,
+  InOfficeSpeechBubble,
+  OfficeChatMessage,
+  AgentCategory,
+  AgentCharacterType,
 } from "./types";
 
 export interface BuildVirtualOfficeParams {
@@ -19,16 +25,135 @@ export interface BuildVirtualOfficeParams {
   changeRequests?: ProjectLeaderChangeRequest[] | null;
   agents?: Agent[];
   issues?: Issue[];
+  availableSkills?: string[];
+  chatHistory?: OfficeChatMessage[];
+}
+
+export function resolveAgentCategoryAndCharacter(
+  role: string,
+  isLeader = false,
+): {
+  category: AgentCategory;
+  categoryLabel: string;
+  categoryColor: string;
+  characterType: AgentCharacterType;
+} {
+  const r = role.toLowerCase();
+  if (
+    isLeader ||
+    r.includes("leader") ||
+    r.includes("project_manager") ||
+    r.includes("pm") ||
+    r.includes("product_manager") ||
+    r.includes("yönetici") ||
+    r.includes("lider")
+  ) {
+    return {
+      category: "management",
+      categoryLabel: "Proje Yöneticisi & Lider",
+      categoryColor: "#f59e0b", // Amber / Gold
+      characterType: "lion_lead",
+    };
+  }
+  if (
+    r.includes("architect") ||
+    r.includes("solution") ||
+    r.includes("system") ||
+    r.includes("mimar")
+  ) {
+    return {
+      category: "architecture",
+      categoryLabel: "Sistem & Çözüm Mimarisi",
+      categoryColor: "#0ea5e9", // Sky Blue
+      characterType: "owl_architect",
+    };
+  }
+  if (
+    r.includes("mobile") ||
+    r.includes("android") ||
+    r.includes("ios") ||
+    r.includes("react-native") ||
+    r.includes("flutter")
+  ) {
+    return {
+      category: "mobile",
+      categoryLabel: "Mobil Geliştirme",
+      categoryColor: "#ec4899", // Pink
+      characterType: "cat_mobile",
+    };
+  }
+  if (
+    r.includes("front") ||
+    r.includes("ui") ||
+    r.includes("web") ||
+    r.includes("design") ||
+    r.includes("css")
+  ) {
+    return {
+      category: "frontend",
+      categoryLabel: "Frontend & UI Mühendisliği",
+      categoryColor: "#06b6d4", // Cyan
+      characterType: "cat_frontend",
+    };
+  }
+  if (
+    r.includes("back") ||
+    r.includes("api") ||
+    r.includes("server") ||
+    r.includes("go") ||
+    r.includes("sql") ||
+    r.includes("database")
+  ) {
+    return {
+      category: "backend",
+      categoryLabel: "Backend & Servis Çekirdeği",
+      categoryColor: "#8b5cf6", // Purple
+      characterType: "raccoon_backend",
+    };
+  }
+  if (
+    r.includes("qa") ||
+    r.includes("test") ||
+    r.includes("review") ||
+    r.includes("quality") ||
+    r.includes("doğrulama")
+  ) {
+    return {
+      category: "qa",
+      categoryLabel: "Test & Kalite Güvencesi",
+      categoryColor: "#10b981", // Emerald
+      characterType: "panda_qa",
+    };
+  }
+  if (
+    r.includes("sec") ||
+    r.includes("guard") ||
+    r.includes("privacy") ||
+    r.includes("güvenlik")
+  ) {
+    return {
+      category: "security",
+      categoryLabel: "Güvenlik & Gizlilik",
+      categoryColor: "#ef4444", // Red
+      characterType: "fox_security",
+    };
+  }
+  return {
+    category: "general",
+    categoryLabel: "Yazılım Mühendisliği",
+    categoryColor: "#6366f1", // Indigo
+    characterType: "robot_general",
+  };
 }
 
 export const STATION_COORDINATES: Record<
   OfficeZoneKey,
   { x: number; y: number; width: number; height: number }
 > = {
-  pm_desk: { x: 250, y: 150, width: 280, height: 160 },
-  coding_pods: { x: 350, y: 490, width: 560, height: 320 },
-  qa_lab: { x: 950, y: 490, width: 420, height: 320 },
-  approval_lounge: { x: 920, y: 150, width: 280, height: 160 },
+  pm_desk: { x: 600, y: 140, width: 280, height: 160 },
+  coding_pods: { x: 380, y: 480, width: 560, height: 320 },
+  qa_lab: { x: 920, y: 480, width: 420, height: 320 },
+  approval_lounge: { x: 1050, y: 140, width: 280, height: 160 },
 };
 
 export function buildVirtualOfficeScene({
@@ -36,6 +161,28 @@ export function buildVirtualOfficeScene({
   changeRequests = [],
   agents = [],
   issues = [],
+  availableSkills = [
+    "architecture",
+    "senior-architect",
+    "ultrathink",
+    "frontend-ui-engineering",
+    "design-system",
+    "shadcn-ui",
+    "react-doctor",
+    "mobile",
+    "react-native-best-practices",
+    "react-native-animations",
+    "backend",
+    "drizzle-orm",
+    "prisma-cli",
+    "debugging",
+    "testing",
+    "unlazy",
+    "codebase-design",
+    "code-mentor",
+    "dependency-management",
+  ],
+  chatHistory = [],
 }: BuildVirtualOfficeParams): VirtualOfficeSceneData {
   const pendingChangeRequests = (changeRequests ?? []).filter(
     (cr) => cr.state === "pending",
@@ -55,12 +202,12 @@ export function buildVirtualOfficeScene({
       (w) => w.state === "reviewing" || Boolean(w.reviewer_agent_id),
     ) ?? [];
 
-  // 1. Build 4 Stations
+  // 1. Build 4 Stations with Real Office Theming
   const stations: Record<OfficeZoneKey, OfficeStation> = {
     pm_desk: {
       key: "pm_desk",
       titleKey: "office.zones.pm_desk",
-      defaultTitle: "Planning & PM Desk",
+      defaultTitle: "Planning & Architecture Suite",
       description: "Strategy, Roadmap Breakdown & Autonomous Coordination",
       x: STATION_COORDINATES.pm_desk.x,
       y: STATION_COORDINATES.pm_desk.y,
@@ -68,6 +215,7 @@ export function buildVirtualOfficeScene({
       height: STATION_COORDINATES.pm_desk.height,
       statusColor: "#0ea5e9", // Sky Blue
       iconName: "FolderKanban",
+      roomTheme: "architecture",
       metrics: [
         {
           label: "Leader",
@@ -86,14 +234,15 @@ export function buildVirtualOfficeScene({
     coding_pods: {
       key: "coding_pods",
       titleKey: "office.zones.coding_pods",
-      defaultTitle: "Active Coding Pods",
-      description: "Parallel Agent Workbenches & Feature Implementation",
+      defaultTitle: "Engineering & Dev Studio",
+      description: "Parallel Dual-Monitor Workbenches & Feature Implementation",
       x: STATION_COORDINATES.coding_pods.x,
       y: STATION_COORDINATES.coding_pods.y,
       width: STATION_COORDINATES.coding_pods.width,
       height: STATION_COORDINATES.coding_pods.height,
       statusColor: "#6366f1", // Indigo
       iconName: "Code",
+      roomTheme: "engineering",
       metrics: [
         {
           label: "Active Pods",
@@ -109,13 +258,14 @@ export function buildVirtualOfficeScene({
       key: "qa_lab",
       titleKey: "office.zones.qa_lab",
       defaultTitle: "QA & Verification Lab",
-      description: "Quality Gates, Test Runner & Peer Code Review",
+      description: "Security Gates, Test Runner & Peer Code Review",
       x: STATION_COORDINATES.qa_lab.x,
       y: STATION_COORDINATES.qa_lab.y,
       width: STATION_COORDINATES.qa_lab.width,
       height: STATION_COORDINATES.qa_lab.height,
       statusColor: "#a855f7", // Purple
       iconName: "CheckCircle2",
+      roomTheme: "qa",
       metrics: [
         {
           label: "Gates",
@@ -130,14 +280,15 @@ export function buildVirtualOfficeScene({
     approval_lounge: {
       key: "approval_lounge",
       titleKey: "office.zones.approval_lounge",
-      defaultTitle: "Decision & Approval Lounge",
-      description: "Human-in-the-Loop Gate, Plan Approvals & Completed Goals",
+      defaultTitle: "Executive & Review Lounge",
+      description: "Human-in-the-Loop Decision Gate, Approvals & Completed Goals",
       x: STATION_COORDINATES.approval_lounge.x,
       y: STATION_COORDINATES.approval_lounge.y,
       width: STATION_COORDINATES.approval_lounge.width,
       height: STATION_COORDINATES.approval_lounge.height,
       statusColor: pendingApprovalsCount > 0 ? "#f59e0b" : "#10b981", // Amber or Emerald
       iconName: "ShieldAlert",
+      roomTheme: "executive",
       metrics: [
         {
           label: "Pending",
@@ -150,6 +301,132 @@ export function buildVirtualOfficeScene({
       ],
     },
   };
+
+function determineDeskToolAndSkills(
+  role: string,
+  status: AgentDeskStatus,
+  activeTaskTitle: string | undefined,
+  availableSkills: string[],
+  stationKey: OfficeZoneKey,
+  index: number
+): {
+  allowedSkills: string[];
+  activeSkill?: { name: string; title: string; category: string; description: string };
+  activeTool?: ActiveToolCall;
+  furniture: {
+    dualMonitors: boolean;
+    verticalScreen: boolean;
+    coffeeMug: boolean;
+    serverRack: boolean;
+    decorTheme: "engineering" | "architecture" | "qa" | "executive";
+  };
+  tokenUsageMode: "zero_token_idle" | "active_running" | "verifying";
+  activeSpeechBubble?: InOfficeSpeechBubble;
+} {
+  const { allowedSkills, profile } = filterSkillsForRole(role, availableSkills);
+  const isWorking = status === "running" || status === "debugging";
+  const isVerifying = status === "verifying";
+
+  // Furniture assignment
+  const decorTheme: "engineering" | "architecture" | "qa" | "executive" =
+    stationKey === "coding_pods"
+      ? "engineering"
+      : stationKey === "qa_lab"
+        ? "qa"
+        : stationKey === "pm_desk"
+          ? "architecture"
+          : "executive";
+
+  const furniture = {
+    dualMonitors: decorTheme !== "executive",
+    verticalScreen: decorTheme === "engineering" && index % 2 === 0,
+    coffeeMug: true,
+    serverRack: decorTheme === "engineering" || decorTheme === "qa",
+    decorTheme,
+  };
+
+  // Token usage mode
+  const tokenUsageMode = isWorking
+    ? "active_running"
+    : isVerifying
+      ? "verifying"
+      : "zero_token_idle";
+
+  // Active Tool Call simulation / extraction
+  let activeTool: ActiveToolCall | undefined = undefined;
+  if (isWorking) {
+    const roleCat = profile.roleId;
+    if (roleCat === "qa") {
+      activeTool = { name: "Bash", target: "pnpm test --run", status: "running", startedAt: Date.now() - 9000 };
+    } else if (roleCat === "mobile") {
+      activeTool = { name: "Read", target: "apps/mobile/src/navigation.tsx", status: "running", startedAt: Date.now() - 5000 };
+    } else if (roleCat === "frontend") {
+      activeTool = { name: "Edit", target: "packages/views/office/canvas.tsx", status: "running", startedAt: Date.now() - 4000 };
+    } else if (roleCat === "backend") {
+      activeTool = { name: "Grep", target: "server/internal/handler/*.go", status: "running", startedAt: Date.now() - 12000 };
+    } else if (roleCat === "lead" || roleCat === "architecture") {
+      activeTool = { name: "Plan", target: "roadmap-decomposition", status: "running", startedAt: Date.now() - 15000 };
+    } else {
+      activeTool = { name: "Edit", target: "src/worker.ts", status: "running", startedAt: Date.now() - 3000 };
+    }
+  } else if (isVerifying) {
+    activeTool = { name: "Verify", target: "quality-gates --audit", status: "running", startedAt: Date.now() - 6000 };
+  }
+
+  // Active Skill
+  const recommended = profile.recommendedSkills[0] || allowedSkills[0];
+  const activeSkill = recommended
+    ? {
+        name: recommended,
+        title: profile.title,
+        category: profile.roleId,
+        description: profile.description,
+      }
+    : undefined;
+
+  // Active Speech Bubble
+  let activeSpeechBubble: InOfficeSpeechBubble | undefined = undefined;
+  if (isWorking && activeTaskTitle) {
+    activeSpeechBubble = {
+      id: `bubble-${role}-${Date.now()}`,
+      deskId: `desk-${role}`,
+      agentName: profile.title,
+      text: `Çalışıyor: ${activeTaskTitle.slice(0, 48)}...`,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60000,
+      kind: "thought",
+    };
+  } else if (status === "idle") {
+    activeSpeechBubble = {
+      id: `bubble-idle-${role}-${Date.now()}`,
+      deskId: `desk-${role}`,
+      agentName: profile.title,
+      text: "Boşta • 0-Token Standby",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60000,
+      kind: "thought",
+    };
+  } else if (isVerifying) {
+    activeSpeechBubble = {
+      id: `bubble-verif-${role}-${Date.now()}`,
+      deskId: `desk-${role}`,
+      agentName: profile.title,
+      text: "Test ve kalite doğrulaması yapılıyor...",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60000,
+      kind: "qa",
+    };
+  }
+
+  return {
+    allowedSkills,
+    activeSkill,
+    activeTool,
+    furniture,
+    tokenUsageMode,
+    activeSpeechBubble,
+  };
+}
 
   // 2. Build Agent Desks
   const desks: OfficeAgentDesk[] = [];
@@ -181,6 +458,17 @@ export function buildVirtualOfficeScene({
     );
     const queuedLeaderNodes = leaderPlanNodes.filter(
       (n) => n.id !== activeLeaderNode?.id && ["pending", "ready", "blocked"].includes(n.status),
+    );
+
+    const leaderVisual = resolveAgentCategoryAndCharacter(leaderRole, true);
+
+    const leaderMeta = determineDeskToolAndSkills(
+      leaderRole,
+      leaderStatus,
+      activeLeaderNode?.title || snapshot?.plan?.goal || undefined,
+      availableSkills,
+      "pm_desk",
+      0,
     );
 
     desks.push({
@@ -217,19 +505,37 @@ export function buildVirtualOfficeScene({
       stationKey: "pm_desk",
       deskCoord: {
         x: STATION_COORDINATES.pm_desk.x,
-        y: STATION_COORDINATES.pm_desk.y + 15,
+        y: STATION_COORDINATES.pm_desk.y,
       },
+      isLeader: true,
+      category: leaderVisual.category,
+      categoryLabel: leaderVisual.categoryLabel,
+      categoryColor: leaderVisual.categoryColor,
+      characterType: leaderVisual.characterType,
       rawAgent: leaderAgent,
+      ...leaderMeta,
     });
   }
 
   // Team Members
   const members = snapshot?.team?.members ?? [];
   if (members.length > 0) {
-    let devIndex = 0;
-    let qaIndex = 0;
+    const memberCount = members.length;
+    const row1Count = memberCount <= 3 ? memberCount : Math.ceil(memberCount / 2);
+    const row2Count = memberCount <= 3 ? 0 : memberCount - row1Count;
+    const horizontalSpacing = 340;
 
-    for (const member of members) {
+    for (let index = 0; index < memberCount; index++) {
+      const member = members[index];
+      if (!member) continue;
+      const isRow2 = index >= row1Count;
+      const indexInRow = isRow2 ? index - row1Count : index;
+      const countInCurrentRow = isRow2 ? row2Count : row1Count;
+
+      const startX = 600 - ((countInCurrentRow - 1) * horizontalSpacing) / 2;
+      const deskX = startX + indexInRow * horizontalSpacing;
+      const deskY = isRow2 ? 650 : 410;
+
       const agent = agentsMap.get(member.agent_id);
       const isQaRole =
         member.role.toLowerCase().includes("qa") ||
@@ -314,68 +620,66 @@ export function buildVirtualOfficeScene({
         member.responsibilities?.[0] ||
         "Standby for next sprint node";
 
-      if (isQaRole) {
-        // QA Station Desk - 2 columns grid with 200px column gap and 130px row gap
-        const col = qaIndex % 2;
-        const row = Math.floor(qaIndex / 2);
-        const deskX = STATION_COORDINATES.qa_lab.x - 90 + col * 200;
-        const deskY = STATION_COORDINATES.qa_lab.y - 40 + row * 135;
+      const stationKey: OfficeZoneKey = isQaRole ? "qa_lab" : "coding_pods";
+      const resolvedStatus = status === "idle" && activeTask ? "running" : status;
+      const memberVisual = resolveAgentCategoryAndCharacter(member.role, false);
 
-        desks.push({
-          id: `desk-qa-${member.agent_id}`,
-          agentId: member.agent_id,
-          agentName: agent?.name || member.agent_name || member.role,
-          role: member.role,
-          avatarUrl: agent?.avatar_url,
-          status: status === "idle" && inReviewWorkflows.length > 0 ? "verifying" : status,
-          currentTaskTitle: taskTitle,
-          currentIssueId: activeTask?.issueId || member.current_task_id || undefined,
-          activeTask,
-          queuedTasks,
-          completedTasksCount: completedCount,
-          totalAssignedTasksCount: totalAssignedCount,
-          stationKey: "qa_lab",
-          deskCoord: { x: deskX, y: deskY },
-          rawMember: member,
-          rawAgent: agent,
-        });
-        qaIndex++;
-      } else {
-        // Coding Pods Station Desk - 2 columns grid with 240px column gap and 135px row gap (generous spacing!)
-        const col = devIndex % 2;
-        const row = Math.floor(devIndex / 2);
-        const deskX = STATION_COORDINATES.coding_pods.x - 120 + col * 240;
-        const deskY = STATION_COORDINATES.coding_pods.y - 45 + row * 135;
+      const deskMeta = determineDeskToolAndSkills(
+        member.role,
+        resolvedStatus,
+        taskTitle,
+        availableSkills,
+        stationKey,
+        index,
+      );
 
-        desks.push({
-          id: `desk-dev-${member.agent_id}`,
-          agentId: member.agent_id,
-          agentName: agent?.name || member.agent_name || member.role,
-          role: member.role,
-          avatarUrl: agent?.avatar_url,
-          status: status === "idle" && activeTask ? "running" : status,
-          currentTaskTitle: taskTitle,
-          currentIssueId: activeTask?.issueId || member.current_task_id || undefined,
-          activeTask,
-          queuedTasks,
-          completedTasksCount: completedCount,
-          totalAssignedTasksCount: totalAssignedCount,
-          stationKey: "coding_pods",
-          deskCoord: { x: deskX, y: deskY },
-          rawMember: member,
-          rawAgent: agent,
-        });
-        devIndex++;
-      }
+      desks.push({
+        id: `desk-${member.agent_id}`,
+        agentId: member.agent_id,
+        agentName: agent?.name || member.agent_name || member.role,
+        role: member.role,
+        avatarUrl: agent?.avatar_url,
+        status: resolvedStatus,
+        currentTaskTitle: taskTitle,
+        currentIssueId: activeTask?.issueId || member.current_task_id || undefined,
+        activeTask,
+        queuedTasks,
+        completedTasksCount: completedCount,
+        totalAssignedTasksCount: totalAssignedCount,
+        stationKey,
+        deskCoord: { x: deskX, y: deskY },
+        isLeader: false,
+        category: memberVisual.category,
+        categoryLabel: memberVisual.categoryLabel,
+        categoryColor: memberVisual.categoryColor,
+        characterType: memberVisual.characterType,
+        rawMember: member,
+        rawAgent: agent,
+        ...deskMeta,
+      });
     }
   } else if (agents.length > 1) {
     // Fallback when no autonomous team snapshot exists (e.g. Campus Overview)
     const otherAgents = agents.slice(1);
+    const agentCount = otherAgents.length;
+    const row1Count = agentCount <= 3 ? agentCount : Math.ceil(agentCount / 2);
+    const row2Count = agentCount <= 3 ? 0 : agentCount - row1Count;
+    const horizontalSpacing = 340;
+
     otherAgents.forEach((agent, i) => {
-      const isQa = agent.name.toLowerCase().includes("qa") || agent.name.toLowerCase().includes("review");
+      const isRow2 = i >= row1Count;
+      const indexInRow = isRow2 ? i - row1Count : i;
+      const countInCurrentRow = isRow2 ? row2Count : row1Count;
+
+      const startX = 600 - ((countInCurrentRow - 1) * horizontalSpacing) / 2;
+      const deskX = startX + indexInRow * horizontalSpacing;
+      const deskY = isRow2 ? 650 : 410;
+
       const assignedIssues = issues.filter((issue) => issue.assignee_id === agent.id);
       const inProgressIssue = assignedIssues.find((issue) => issue.status === "in_progress");
-      const todoIssues = assignedIssues.filter((issue) => issue.status !== "in_progress" && issue.status !== "done");
+      const todoIssues = assignedIssues.filter(
+        (issue) => issue.status !== "in_progress" && issue.status !== "done",
+      );
       const doneIssues = assignedIssues.filter((issue) => issue.status === "done");
 
       const activeTask = inProgressIssue
@@ -396,53 +700,43 @@ export function buildVirtualOfficeScene({
         isCurrent: false,
       }));
 
-      if (isQa) {
-        const col = i % 2;
-        const row = Math.floor(i / 2);
-        desks.push({
-          id: `desk-qa-fb-${agent.id}`,
-          agentId: agent.id,
-          agentName: agent.name,
-          role: "Quality & Review",
-          avatarUrl: agent.avatar_url,
-          status: activeTask ? "verifying" : "idle",
-          currentTaskTitle: activeTask?.title || queuedTasks[0]?.title || "Standby verification",
-          currentIssueId: activeTask?.issueId,
-          activeTask,
-          queuedTasks,
-          completedTasksCount: doneIssues.length,
-          totalAssignedTasksCount: (activeTask ? 1 : 0) + queuedTasks.length + doneIssues.length,
-          stationKey: "qa_lab",
-          deskCoord: {
-            x: STATION_COORDINATES.qa_lab.x - 90 + col * 200,
-            y: STATION_COORDINATES.qa_lab.y - 40 + row * 135,
-          },
-          rawAgent: agent,
-        });
-      } else {
-        const col = i % 2;
-        const row = Math.floor(i / 2);
-        desks.push({
-          id: `desk-dev-fb-${agent.id}`,
-          agentId: agent.id,
-          agentName: agent.name,
-          role: "Engineer",
-          avatarUrl: agent.avatar_url,
-          status: activeTask ? "running" : "idle",
-          currentTaskTitle: activeTask?.title || queuedTasks[0]?.title || "Ready for assignment",
-          currentIssueId: activeTask?.issueId,
-          activeTask,
-          queuedTasks,
-          completedTasksCount: doneIssues.length,
-          totalAssignedTasksCount: (activeTask ? 1 : 0) + queuedTasks.length + doneIssues.length,
-          stationKey: "coding_pods",
-          deskCoord: {
-            x: STATION_COORDINATES.coding_pods.x - 120 + col * 240,
-            y: STATION_COORDINATES.coding_pods.y - 45 + row * 135,
-          },
-          rawAgent: agent,
-        });
-      }
+      const visual = resolveAgentCategoryAndCharacter(agent.name, false);
+      const isQa = visual.category === "qa";
+      const stationKey: OfficeZoneKey = isQa ? "qa_lab" : "coding_pods";
+      const resolvedStatus = activeTask ? (isQa ? "verifying" : "running") : "idle";
+
+      const deskMeta = determineDeskToolAndSkills(
+        agent.name,
+        resolvedStatus,
+        activeTask?.title || queuedTasks[0]?.title || "Ready for assignment",
+        availableSkills,
+        stationKey,
+        i,
+      );
+
+      desks.push({
+        id: `desk-fb-${agent.id}`,
+        agentId: agent.id,
+        agentName: agent.name,
+        role: visual.categoryLabel,
+        avatarUrl: agent.avatar_url,
+        status: resolvedStatus,
+        currentTaskTitle: activeTask?.title || queuedTasks[0]?.title || "Ready for assignment",
+        currentIssueId: activeTask?.issueId,
+        activeTask,
+        queuedTasks,
+        completedTasksCount: doneIssues.length,
+        totalAssignedTasksCount: (activeTask ? 1 : 0) + queuedTasks.length + doneIssues.length,
+        stationKey,
+        deskCoord: { x: deskX, y: deskY },
+        isLeader: false,
+        category: visual.category,
+        categoryLabel: visual.categoryLabel,
+        categoryColor: visual.categoryColor,
+        characterType: visual.characterType,
+        rawAgent: agent,
+        ...deskMeta,
+      });
     });
   }
 
@@ -453,12 +747,12 @@ export function buildVirtualOfficeScene({
       fromStation: "pm_desk",
       toStation: "coding_pods",
       fromCoord: {
-        x: STATION_COORDINATES.pm_desk.x + 40,
-        y: STATION_COORDINATES.pm_desk.y + 70,
+        x: STATION_COORDINATES.pm_desk.x,
+        y: STATION_COORDINATES.pm_desk.y + 80,
       },
       toCoord: {
-        x: STATION_COORDINATES.coding_pods.x - 30,
-        y: STATION_COORDINATES.coding_pods.y - 100,
+        x: STATION_COORDINATES.coding_pods.x,
+        y: STATION_COORDINATES.coding_pods.y - 60,
       },
       color: "#06b6d4", // Cyan
       label: "Task Dispatch",
@@ -470,12 +764,12 @@ export function buildVirtualOfficeScene({
       fromStation: "coding_pods",
       toStation: "qa_lab",
       fromCoord: {
-        x: STATION_COORDINATES.coding_pods.x + 220,
-        y: STATION_COORDINATES.coding_pods.y + 10,
+        x: STATION_COORDINATES.coding_pods.x + 120,
+        y: STATION_COORDINATES.coding_pods.y + 40,
       },
       toCoord: {
-        x: STATION_COORDINATES.qa_lab.x - 180,
-        y: STATION_COORDINATES.qa_lab.y + 10,
+        x: STATION_COORDINATES.qa_lab.x - 100,
+        y: STATION_COORDINATES.qa_lab.y + 40,
       },
       color: "#a855f7", // Purple
       label: "Code & PR Handoff",
@@ -488,11 +782,11 @@ export function buildVirtualOfficeScene({
       toStation: "approval_lounge",
       fromCoord: {
         x: STATION_COORDINATES.qa_lab.x + 30,
-        y: STATION_COORDINATES.qa_lab.y - 90,
+        y: STATION_COORDINATES.qa_lab.y - 120,
       },
       toCoord: {
-        x: STATION_COORDINATES.approval_lounge.x - 20,
-        y: STATION_COORDINATES.approval_lounge.y + 70,
+        x: STATION_COORDINATES.approval_lounge.x - 40,
+        y: STATION_COORDINATES.approval_lounge.y + 60,
       },
       color: "#10b981", // Emerald
       label: "Verification Passed",
@@ -504,12 +798,12 @@ export function buildVirtualOfficeScene({
       fromStation: "pm_desk",
       toStation: "approval_lounge",
       fromCoord: {
-        x: STATION_COORDINATES.pm_desk.x + 130,
-        y: STATION_COORDINATES.pm_desk.y - 20,
+        x: STATION_COORDINATES.pm_desk.x + 100,
+        y: STATION_COORDINATES.pm_desk.y - 10,
       },
       toCoord: {
-        x: STATION_COORDINATES.approval_lounge.x - 130,
-        y: STATION_COORDINATES.approval_lounge.y - 20,
+        x: STATION_COORDINATES.approval_lounge.x - 90,
+        y: STATION_COORDINATES.approval_lounge.y - 10,
       },
       color: "#f59e0b", // Amber
       label: "Approval Required",
@@ -521,12 +815,12 @@ export function buildVirtualOfficeScene({
       fromStation: "approval_lounge",
       toStation: "pm_desk",
       fromCoord: {
-        x: STATION_COORDINATES.approval_lounge.x - 130,
-        y: STATION_COORDINATES.approval_lounge.y + 20,
+        x: STATION_COORDINATES.approval_lounge.x - 90,
+        y: STATION_COORDINATES.approval_lounge.y + 25,
       },
       toCoord: {
-        x: STATION_COORDINATES.pm_desk.x + 130,
-        y: STATION_COORDINATES.pm_desk.y + 20,
+        x: STATION_COORDINATES.pm_desk.x + 100,
+        y: STATION_COORDINATES.pm_desk.y + 25,
       },
       color: "#3b82f6", // Blue
       label: "Approved Plan & Revision",
@@ -599,11 +893,17 @@ export function buildVirtualOfficeScene({
     }
   }
 
+  const speechBubbles: InOfficeSpeechBubble[] = desks
+    .map((d) => d.activeSpeechBubble)
+    .filter((b): b is InOfficeSpeechBubble => Boolean(b));
+
   return {
     stations,
     desks,
     flowEdges,
     recentEvents,
+    speechBubbles,
+    chatHistory,
     stats: {
       activeAgents: desks.filter((d) => d.status !== "idle").length || desks.length,
       runningTasks: runningWorkflows.length || desks.filter((d) => d.status === "running").length,

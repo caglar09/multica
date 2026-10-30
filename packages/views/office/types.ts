@@ -12,6 +12,26 @@ export type OfficeZoneKey =
   | "qa_lab"
   | "approval_lounge";
 
+export type AgentCategory =
+  | "management"
+  | "architecture"
+  | "frontend"
+  | "mobile"
+  | "backend"
+  | "qa"
+  | "security"
+  | "general";
+
+export type AgentCharacterType =
+  | "lion_lead"
+  | "owl_architect"
+  | "cat_mobile"
+  | "cat_frontend"
+  | "raccoon_backend"
+  | "panda_qa"
+  | "fox_security"
+  | "robot_general";
+
 export type AgentDeskStatus =
   | "idle"
   | "running"
@@ -26,6 +46,50 @@ export interface AgentTaskItem {
   status: "running" | "in_progress" | "pending" | "ready" | "blocked" | "completed" | "in_review" | string;
   issueId?: string;
   isCurrent?: boolean;
+}
+
+export interface ActiveToolCall {
+  name: string;
+  target?: string;
+  status: "running" | "completed";
+  startedAt?: number;
+}
+
+export interface ActiveSkillInfo {
+  name: string;
+  title?: string;
+  category?: string;
+  description?: string;
+}
+
+export interface DeskFurniture {
+  dualMonitors?: boolean;
+  verticalScreen?: boolean;
+  coffeeMug?: boolean;
+  serverRack?: boolean;
+  chairColor?: string;
+  decorTheme?: "engineering" | "architecture" | "qa" | "executive";
+}
+
+export interface InOfficeSpeechBubble {
+  id: string;
+  deskId: string;
+  agentName: string;
+  text: string;
+  createdAt: number;
+  expiresAt: number;
+  kind?: "thought" | "announcement" | "qa";
+}
+
+export interface OfficeChatMessage {
+  id: string;
+  sender: "user" | "pm" | "ceo" | "agent";
+  senderName: string;
+  targetAgentId?: string;
+  targetAgentName?: string;
+  text: string;
+  timestamp: string;
+  relatedTaskId?: string;
 }
 
 export interface OfficeStationMetric {
@@ -45,6 +109,7 @@ export interface OfficeStation {
   statusColor: string;
   iconName: "FolderKanban" | "Code" | "CheckCircle2" | "ShieldAlert";
   metrics: OfficeStationMetric[];
+  roomTheme?: "engineering" | "architecture" | "qa" | "executive";
 }
 
 export interface OfficeAgentDesk {
@@ -64,6 +129,22 @@ export interface OfficeAgentDesk {
   deskCoord: { x: number; y: number };
   rawMember?: AutonomousTeamMember;
   rawAgent?: Agent;
+
+  // Living Office & Specialized Visuals
+  category?: AgentCategory;
+  categoryLabel?: string;
+  categoryColor?: string;
+  characterType?: AgentCharacterType;
+  isLeader?: boolean;
+
+  // Tooling & Living Atmosphere
+  activeTool?: ActiveToolCall;
+  recentTools?: ActiveToolCall[];
+  allowedSkills?: string[];
+  activeSkill?: ActiveSkillInfo;
+  activeSpeechBubble?: InOfficeSpeechBubble;
+  furniture?: DeskFurniture;
+  tokenUsageMode?: "zero_token_idle" | "active_running" | "verifying";
 }
 
 export interface OfficeFlowEdge {
@@ -96,6 +177,8 @@ export interface VirtualOfficeSceneData {
   desks: OfficeAgentDesk[];
   flowEdges: OfficeFlowEdge[];
   recentEvents: OfficeReplayEvent[];
+  speechBubbles: InOfficeSpeechBubble[];
+  chatHistory: OfficeChatMessage[];
   stats: {
     activeAgents: number;
     runningTasks: number;
@@ -116,5 +199,6 @@ export interface VirtualOfficeViewProps {
   onRejectChange?: (changeRequestId: string) => void;
   onResolveEscalation?: (escalationId: string) => void;
   onOpenLeaderChat?: () => void;
+  onSendChatMessage?: (message: { targetAgentId?: string; text: string }) => Promise<void> | void;
   className?: string;
 }

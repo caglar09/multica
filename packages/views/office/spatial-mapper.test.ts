@@ -650,5 +650,19 @@ describe("buildVirtualOfficeScene", () => {
     // Verify spatial coordinates have no overlap (distance between desks > 200px)
     const dx = Math.abs(mobileDesk!.deskCoord.x - securityDesk!.deskCoord.x);
     expect(dx).toBeGreaterThanOrEqual(200);
+
+    // Verify Role-Scoped Skills & Living Office Meta
+    expect(mobileDesk?.allowedSkills).toBeDefined();
+    expect(mobileDesk?.allowedSkills?.some((s) => s.includes("mobile") || s.includes("react-native"))).toBe(true);
+    expect(mobileDesk?.allowedSkills?.some((s) => s.includes("backend"))).toBe(false);
+
+    expect(mobileDesk?.furniture?.decorTheme).toBe("engineering");
+    expect(mobileDesk?.furniture?.dualMonitors).toBe(true);
+    expect(mobileDesk?.tokenUsageMode).toBe("active_running");
+    expect(mobileDesk?.activeTool).toBeDefined();
+    expect(mobileDesk?.activeTool?.status).toBe("running");
+
+    expect(scene.speechBubbles.length).toBeGreaterThan(0);
+    expect(scene.chatHistory).toBeDefined();
   });
 });

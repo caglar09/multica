@@ -167,6 +167,7 @@
     "./skills": "./skills/index.ts",
     "./skills/frontmatter": "./skills/frontmatter.ts",
     "./skills/pack-archive": "./skills/pack-archive.ts",
+    "./skills/team-skill-presets": "./skills/team-skill-presets.ts",
     "./skills/stores": "./skills/stores/index.ts",
     "./autopilots/stores": "./autopilots/stores/index.ts",
     "./deployments": "./deployments/index.ts",
