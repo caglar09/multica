@@ -171,6 +171,16 @@ const maxSynthesizedFallbackCommentRunes = 8000
 
 const oversizedFallbackCommentNotice = "This task completed, but its output was too large to post safely. The raw output was not posted. Review the task in this issue's Execution log."
 
+func fallbackCommentOutput(output string) string {
+	var report struct {
+		Summary string `json:"summary"`
+	}
+	if json.Unmarshal([]byte(output), &report) == nil && strings.TrimSpace(report.Summary) != "" {
+		return strings.TrimSpace(report.Summary)
+	}
+	return output
+}
+
 // truncateFallbackCommentBody bounds a synthesized completion-fallback comment
 // body. Unlike truncateForSummary (which flattens newlines for a one-line row
 // snapshot), it preserves genuine final messages below the cap verbatim. Output
@@ -4814,7 +4824,7 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 					// emit literal `\n` 4-char sequences (Python/JSON-style) get them
 					// decoded into real newlines before the comment hits the DB. See
 					// util.UnescapeBackslashEscapes for the exact contract.
-					body := util.UnescapeBackslashEscapes(payload.Output)
+					body := util.UnescapeBackslashEscapes(fallbackCommentOutput(payload.Output))
 					if task.TriggerCommentID.Valid && isTrivialDoneOutput(body) {
 						slog.Warn("suppressing trivial comment-trigger fallback output",
 							"task_id", util.UUIDToString(task.ID),

@@ -10,7 +10,6 @@ import type {
   DiagnosticLogLevel,
   DiagnosticLogQuery,
 } from "@multica/core/types";
-import { useDiagnosticsLogsEnabled } from "@multica/core/diagnostics";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Switch } from "@multica/ui/components/ui/switch";
@@ -61,7 +60,6 @@ function sortEntries(
 
 export function LogsPage() {
   const { t } = useT("settings");
-  const enabled = useDiagnosticsLogsEnabled();
   const [source, setSource] = useState("");
   const [search, setSearch] = useState("");
   const [tail, setTail] = useState<number>(1000);
@@ -83,7 +81,6 @@ export function LogsPage() {
   const logs = useQuery({
     queryKey: ["diagnostics", "logs", source, search, tail, windowSeconds],
     queryFn: () => api.getDiagnosticLogs(buildQuery()),
-    enabled,
     refetchInterval: live ? 2500 : false,
     refetchIntervalInBackground: false,
   });
@@ -113,16 +110,6 @@ export function LogsPage() {
         return t(($) => $.labs.logs_page.window_all);
     }
   };
-
-  if (!enabled) {
-    return (
-      <CollectionPageState
-        icon={ShieldAlert}
-        title={t(($) => $.labs.logs_page.disabled_title)}
-        description={t(($) => $.labs.logs_page.disabled_description)}
-      />
-    );
-  }
 
   const exportLogs = async () => {
     if (exporting) return;

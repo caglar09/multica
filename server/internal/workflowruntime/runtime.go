@@ -298,7 +298,7 @@ func definition() workflow.Definition {
 						Params: map[string]string{
 							"selector":     "owner",
 							"when_state":   issuestatus.InProgress,
-							"instructions": "Implement or revise the issue against its acceptance criteria and the structured handoff. Do not change issue status, post issue comments, route work, mention another agent, or encode workflow decisions in prose; the workflow consumes only your final response. Your FINAL response must be exactly one JSON object with keys: summary (string), decisions (string[]), artifacts ({type,ref,description}[]), changed_files (string[]), commit_sha (string), diff (string), tests ({name,status,evidence}[] where status is passed|failed|skipped|not_run), findings ({id,severity,category,description,evidence,blocking}[]), risks (string[]), blockers (string[]). No markdown fence or surrounding prose.",
+							"instructions": "Implement or revise the issue against its acceptance criteria and the structured handoff. Work only in the provided task worktree, save the changes there, and commit them on its task branch before finishing. Verify the commit and changed files from that worktree; do not claim changes or a commit that are not present. Do not change issue status, post issue comments, route work, mention another agent, or encode workflow decisions in prose; the workflow consumes only your final response. Your FINAL response must be exactly one JSON object with keys: summary (string), decisions (string[]), artifacts ({type,ref,description}[]), changed_files (string[]), commit_sha (string), diff (string; concise prose summary only, never raw diff, source code, or command output), tests ({name,status,evidence}[] where status is passed|failed|skipped|not_run), findings ({id,severity,category,description,evidence,blocking}[]), risks (string[]), blockers (string[]). Keep all string values concise and plain text; do not paste source code, diff hunks, or raw command output into any field. Ensure quotes and backslashes are escaped as valid JSON. No markdown fence or surrounding prose.",
 						},
 					},
 				},
@@ -311,7 +311,7 @@ func definition() workflow.Definition {
 						Params: map[string]string{
 							"selector":     "reviewer",
 							"when_state":   issuestatus.InReview,
-							"instructions": "Independently review the structured implementation handoff, diff/artifacts, tests, acceptance criteria, and project standards. NEVER change issue status, post issue comments, or trigger another agent; the workflow consumes only your final response. Your FINAL response must be exactly one JSON object: {\"verdict\":\"approved|changes_requested\",\"summary\":\"...\",\"findings\":[{\"id\":\"F-001\",\"severity\":\"low|medium|high|critical\",\"category\":\"lower_snake_case\",\"description\":\"...\",\"evidence\":\"...\",\"blocking\":true}]}. changes_requested requires at least one blocking finding; approved may contain only non-blocking findings. No markdown fence or surrounding prose.",
+							"instructions": "Independently review the structured implementation handoff, diff/artifacts, tests, acceptance criteria, and project standards. NEVER change issue status, post issue comments, or trigger another agent; the workflow consumes only your final response. For autonomous project issues, read the authoritative canonical project review context in the issue and attest to every requirement using its exact ID. Your FINAL response must be exactly one JSON object: {\"verdict\":\"approved|changes_requested\",\"summary\":\"...\",\"goal_alignment_score\":0,\"goal_alignment_rationale\":\"...\",\"requirement_attestations\":[\"exact requirement ID\"],\"findings\":[{\"id\":\"F-001\",\"severity\":\"low|medium|high|critical\",\"category\":\"lower_snake_case\",\"description\":\"...\",\"evidence\":\"...\",\"blocking\":true}]}. goal_alignment_score must be 0-100; approved requires at least 80 and all canonical requirements attested. changes_requested requires at least one blocking finding; approved may contain only non-blocking findings. Keep string values concise plain text; use short prose evidence references, not source snippets or raw command output. Ensure quotes and backslashes are escaped as valid JSON. No markdown fence or surrounding prose.",
 						},
 					},
 				},
@@ -968,6 +968,7 @@ func (r *Runtime) projectTerminalDeployment(ctx context.Context, item autonomous
 			SET status = 'completed', updated_at = now()
 			WHERE p.id = $1 AND p.status IN ('active', 'blocked')
 			  AND NOT EXISTS (SELECT 1 FROM autonomous_project_plan_node n WHERE n.plan_id = p.id AND n.status NOT IN ('completed','cancelled'))
+			  AND NOT EXISTS (SELECT 1 FROM autonomous_project_change_set c WHERE c.plan_id = p.id AND c.merge_status NOT IN ('merged','cancelled'))
 		`, item.planID)
 		if err != nil {
 			return fmt.Errorf("complete autonomous project plan after deployment: %w", err)
@@ -1274,6 +1275,23 @@ func (r *Runtime) RestartProjectWorkflow(
 	`, workspaceID, projectID); err != nil {
 		return fmt.Errorf("resolve recoverable project escalations before restart: %w", err)
 	}
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE autonomous_control_plane_job j
+		SET status='pending', attempts=0, available_at=now(),
+		    lease_owner=NULL, lease_expires_at=NULL, claimed_at=NULL, started_at=NULL,
+		    completed_at=NULL, last_error=NULL,
+		    payload=jsonb_set(j.payload, '{execution_id}', to_jsonb(gen_random_uuid()::text), true),
+		    updated_at=now()
+		WHERE j.workspace_id=$1 AND j.project_id=$2
+		  AND j.job_type=$3 AND j.status='failed'
+		  AND j.payload->>'plan_id' = (
+		    SELECT p.id::text FROM autonomous_project_plan p
+		    WHERE p.workspace_id=$1 AND p.project_id=$2 AND p.status IN ('active','blocked')
+		    ORDER BY p.revision DESC LIMIT 1
+		  )
+	`, workspaceID, projectID, controlPlaneJobGoalDriftAudit); err != nil {
+		return fmt.Errorf("requeue failed goal drift audit before restart: %w", err)
+	}
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT issue_id
@@ -1460,6 +1478,25 @@ func (r *Runtime) RestartProjectWorkflow(
 			return fmt.Errorf("resume project scheduling after restart: %w", err)
 		}
 	}
+	var failedAudit string
+	err = r.pool.QueryRow(ctx, `
+		SELECT COALESCE(j.last_error, 'goal drift audit failed')
+		FROM autonomous_control_plane_job j
+		WHERE j.workspace_id=$1 AND j.project_id=$2
+		  AND j.job_type=$3 AND j.status='failed'
+		  AND j.payload->>'plan_id' = (
+		    SELECT p.id::text FROM autonomous_project_plan p
+		    WHERE p.workspace_id=$1 AND p.project_id=$2 AND p.status IN ('active','blocked')
+		    ORDER BY p.revision DESC LIMIT 1
+		  )
+		ORDER BY j.created_at DESC LIMIT 1
+	`, workspaceID, projectID, controlPlaneJobGoalDriftAudit).Scan(&failedAudit)
+	if err == nil {
+		return fmt.Errorf("project work remains blocked because goal drift audit failed: %s", failedAudit)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("verify goal drift audit restart status: %w", err)
+	}
 
 	slog.Info("autonomous project workflow restart completed",
 		"workspace_id", workspaceIDString,
@@ -1570,6 +1607,30 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 		}
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+	if run.State == issuestatus.Done && effective == issuestatus.InReview && issue.ProjectID.Valid {
+		var awaitingDevelopIntegration bool
+		if err := r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_change_set c ON c.plan_id=n.plan_id AND c.node_id=n.id
+				WHERE n.workspace_id=$1 AND n.project_id=$2 AND n.materialized_issue_id=$3
+				  AND n.status='verification'
+				  AND c.merge_status NOT IN ('merged','cancelled')
+			)
+		`, issue.WorkspaceID, issue.ProjectID, issue.ID).Scan(&awaitingDevelopIntegration); err != nil {
+			return fmt.Errorf("check project issue integration state: %w", err)
+		}
+		if awaitingDevelopIntegration {
+			return nil
+		}
+	}
+	if issue.ProjectID.Valid && (effective == issuestatus.InProgress || effective == issuestatus.InReview) {
+		issue, err = r.ensureCanonicalProjectReviewContext(ctx, issue)
+		if err != nil {
+			return fmt.Errorf("prepare canonical project review context: %w", err)
+		}
+	}
 	if run.State == issuestatus.Blocked && effective == issuestatus.InProgress {
 		// The issue row may have committed its retry/resume transition while the
 		// process was down before issue:updated reached the in-process bus. Repair
@@ -1717,6 +1778,12 @@ func (r *Runtime) reconcileRun(ctx context.Context, run workflow.Run) error {
 			switch {
 			case util.UUIDToString(contractTask.AgentID) == run.ReviewerAgentID:
 				verdict, parseErr := parseReviewVerdict(contractTask.Result)
+				if parseErr == nil {
+					parseErr = r.validateProjectReview(ctx, issue, verdict)
+				}
+				if parseErr != nil {
+					_ = r.recordContractViolation(ctx, contractTask, issue, "review_verdict", parseErr)
+				}
 				if parseErr == nil {
 					if err := r.persistReviewVerdict(ctx, run, contractTask, issue, verdict); err != nil {
 						return fmt.Errorf("persist recovered review verdict: %w", err)
@@ -2333,6 +2400,12 @@ func (r *Runtime) handleIssueEvent(ctx context.Context, event events.Event) erro
 		}
 	}
 	effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+	if issue.ProjectID.Valid && (effective == issuestatus.InProgress || effective == issuestatus.InReview) {
+		issue, err = r.ensureCanonicalProjectReviewContext(ctx, issue)
+		if err != nil {
+			return fmt.Errorf("prepare canonical project review context: %w", err)
+		}
+	}
 
 	// While a durable run is In Review, issue status is a projection only; it
 	// must never be interpreted as reviewer intent. The only review decision
@@ -2552,6 +2625,19 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 	if err != nil || !task.ID.Valid {
 		return err
 	}
+	superseded, err := r.hasNewerIssueTask(ctx, task, issue)
+	if err != nil {
+		return fmt.Errorf("check for newer autonomous task: %w", err)
+	}
+	if superseded {
+		slog.Info("ignoring superseded autonomous task completion",
+			"issue_id", util.UUIDToString(issue.ID), "task_id", util.UUIDToString(task.ID))
+		return nil
+	}
+	issue, err = r.ensureCanonicalProjectReviewContext(ctx, issue)
+	if err != nil {
+		return fmt.Errorf("prepare canonical project review context: %w", err)
+	}
 	// Some runtimes still mirror the structured handoff to the issue comment
 	// while returning a prose wrapper as the task result. Accept only an exact,
 	// task-linked JSON comment as a compatibility bridge; prose/comments remain
@@ -2620,6 +2706,9 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 		}
 		if effective == issuestatus.InReview && reviewerID == task.AgentID {
 			verdict, contractErr := parseReviewVerdict(task.Result)
+			if contractErr == nil {
+				contractErr = r.validateProjectReview(ctx, issue, verdict)
+			}
 			if contractErr != nil {
 				_ = r.recordContractViolation(ctx, task, issue, "review_verdict", contractErr)
 				_, err = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked)
@@ -2697,6 +2786,9 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 			}
 		case "review.retry_completed":
 			verdict, contractErr := parseReviewVerdict(task.Result)
+			if contractErr == nil {
+				contractErr = r.validateProjectReview(ctx, issue, verdict)
+			}
 			if contractErr != nil {
 				_ = r.recordContractViolation(ctx, task, issue, "review_verdict", contractErr)
 				return nil
@@ -2768,6 +2860,9 @@ func (r *Runtime) handleTaskCompleted(ctx context.Context, event events.Event) e
 
 	case run.State == issuestatus.InReview && run.ReviewerAgentID == util.UUIDToString(task.AgentID):
 		verdict, contractErr := parseReviewVerdict(task.Result)
+		if contractErr == nil {
+			contractErr = r.validateProjectReview(ctx, issue, verdict)
+		}
 		if contractErr != nil {
 			_ = r.recordContractViolation(ctx, task, issue, "review_verdict", contractErr)
 			_, err = r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
@@ -2849,11 +2944,11 @@ func normalizeTaskResultFromAgentCommentContent(result []byte, kind projectorche
 	}
 	setCandidate := func(candidate json.RawMessage) bool {
 		if _, reviewErr := parseReviewVerdict(candidate); reviewErr == nil {
-			result = candidate
+			result = replaceTaskResultContract(result, candidate)
 			return true
 		}
 		if _, handoffErr := parseImplementationHandoff(candidate); handoffErr == nil {
-			result = candidate
+			result = replaceTaskResultContract(result, candidate)
 			return true
 		}
 		return false
@@ -2865,6 +2960,30 @@ func normalizeTaskResultFromAgentCommentContent(result []byte, kind projectorche
 		_ = setCandidate(extractEmbeddedContractJSONObject(output))
 	}
 	return result
+}
+
+func replaceTaskResultContract(result, candidate json.RawMessage) json.RawMessage {
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(result, &envelope) == nil && envelope != nil {
+		for _, key := range []string{
+			"branch_name", "worktree_base_sha", "worktree_commit_sha",
+			"worktree_changed_files", "worktree_path", "worktree_repo_path",
+		} {
+			if _, ok := envelope[key]; !ok {
+				continue
+			}
+			output, err := json.Marshal(string(candidate))
+			if err != nil {
+				break
+			}
+			envelope["output"] = output
+			if normalized, err := json.Marshal(envelope); err == nil {
+				return normalized
+			}
+			break
+		}
+	}
+	return candidate
 }
 
 func (r *Runtime) onTaskFailed(event events.Event) {
@@ -2880,6 +2999,15 @@ func (r *Runtime) handleTaskFailed(ctx context.Context, event events.Event) erro
 	task, issue, err := r.loadIssueTask(ctx, event)
 	if err != nil || !task.ID.Valid {
 		return err
+	}
+	superseded, err := r.hasNewerIssueTask(ctx, task, issue)
+	if err != nil {
+		return fmt.Errorf("check for newer autonomous task: %w", err)
+	}
+	if superseded {
+		slog.Info("ignoring superseded autonomous task failure",
+			"issue_id", util.UUIDToString(issue.ID), "task_id", util.UUIDToString(task.ID))
+		return nil
 	}
 	if err := r.recordAgentPerformance(ctx, task, issue, projectorchestration.OutcomeFailed); err != nil {
 		return fmt.Errorf("record autonomous agent failure: %w", err)
@@ -2941,6 +3069,24 @@ func (r *Runtime) loadIssueTask(ctx context.Context, event events.Event) (db.Age
 	return task, issue, nil
 }
 
+func (r *Runtime) hasNewerIssueTask(ctx context.Context, task db.AgentTaskQueue, issue db.Issue) (bool, error) {
+	if !task.CreatedAt.Valid {
+		return false, nil
+	}
+	var newerExists bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM agent_task_queue newer
+			WHERE newer.issue_id=$1
+			  AND newer.id<>$2
+			  AND newer.created_at>$3
+			  AND newer.status<>'cancelled'
+		)
+	`, issue.ID, task.ID, task.CreatedAt).Scan(&newerExists)
+	return newerExists, err
+}
+
 func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgtype.UUID) (pgtype.UUID, pgtype.UUID, error) {
 	ownerID := ownerHint
 	preferredSquad := pgtype.UUID{}
@@ -2988,6 +3134,33 @@ func (r *Runtime) resolveTeam(ctx context.Context, issue db.Issue, ownerHint pgt
 			return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf(
 				"issue is assigned to non-implementation project role %q", ownerRole,
 			)
+		}
+		if ownerIsGeneratedImplementation {
+			var plannedAgentID pgtype.UUID
+			err := r.pool.QueryRow(ctx, `
+				SELECT n.assigned_agent_id
+				FROM autonomous_project_plan_node n
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				WHERE n.workspace_id = $1
+				  AND n.project_id = $2
+				  AND n.materialized_issue_id = $3
+				  AND p.status IN ('active', 'blocked')
+				ORDER BY p.revision DESC
+				LIMIT 1
+			`, issue.WorkspaceID, issue.ProjectID, issue.ID).Scan(&plannedAgentID)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return pgtype.UUID{}, pgtype.UUID{}, fmt.Errorf("resolve project plan implementation assignment: %w", err)
+			}
+			if err == nil && plannedAgentID.Valid && plannedAgentID == ownerID {
+				reviewerID, _, ok := existingTeam.AgentByFamily("review")
+				if !ok {
+					return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project team has no review-family agent")
+				}
+				if reviewerID == ownerID {
+					return pgtype.UUID{}, pgtype.UUID{}, errors.New("autonomous project implementation and review agents must differ")
+				}
+				return ownerID, reviewerID, nil
+			}
 		}
 
 		// The LLM is authoritative for generated-team delivery ownership.

@@ -1136,6 +1136,32 @@ func (c claimProjectContext) applyTo(resp *AgentTaskResponse) {
 	resp.Repos = c.Repos
 }
 
+func (h *Handler) claimProjectDevelopmentBranch(ctx context.Context, workspaceID, projectID, issueID, agentID pgtype.UUID) (string, error) {
+	if !workspaceID.Valid || !projectID.Valid || !issueID.Valid || !agentID.Valid {
+		return "", nil
+	}
+	var isProjectCodeTask bool
+	err := h.DB.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan_node n
+			JOIN autonomous_project_plan p ON p.id=n.plan_id
+			WHERE n.workspace_id=$1 AND n.project_id=$2 AND n.materialized_issue_id=$3
+			  AND n.assigned_agent_id=$4
+			  AND n.kind IN ('implementation','migration','integration')
+			  AND n.status IN ('ready','running','completed')
+			  AND p.status IN ('active','blocked')
+		)
+	`, workspaceID, projectID, issueID, agentID).Scan(&isProjectCodeTask)
+	if err != nil {
+		return "", fmt.Errorf("resolve autonomous project code task branch: %w", err)
+	}
+	if isProjectCodeTask {
+		return "develop", nil
+	}
+	return "", nil
+}
+
 // resolveClaimProjectContext loads the project context for one daemon claim.
 //
 // Every claim path (issue, chat, autopilot, quick-create) resolves the same

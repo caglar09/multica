@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -52,6 +54,20 @@ func (r *Runtime) ProcessProjectMergeQueue(
 	queue := projectorchestration.NewMergeQueue(r.projectStore, r.qualityGateRunner).
 		WithConflictResolver(NewConflictExecutor(r))
 	result, outcome, err := queue.ProcessNextWithConflictResolution(ctx, workspaceID, projectID)
+	if err == nil && result.Status == "merged" {
+		if err := r.completeIntegratedProjectIssue(ctx, result.ChangeSetID); err != nil {
+			return result, err
+		}
+	}
+	if errors.Is(err, projectorchestration.ErrMergeQueueEmpty) && outcome == nil {
+		if err := r.completeIntegratedProjectIssues(ctx, workspaceID, projectID); err != nil {
+			return result, err
+		}
+		promotion, handled, promotionErr := queue.PromoteCompletedProject(ctx, workspaceID, projectID)
+		if handled || promotionErr != nil {
+			return promotion, promotionErr
+		}
+	}
 	if err != nil || outcome == nil || outcome.Status != "resolution_pending_review" {
 		return result, err
 	}
@@ -62,6 +78,72 @@ func (r *Runtime) ProcessProjectMergeQueue(
 		return result, fmt.Errorf("queue fresh conflict resolution review: %w", err)
 	}
 	return result, nil
+}
+
+func (r *Runtime) completeIntegratedProjectIssues(ctx context.Context, workspaceID, projectID pgtype.UUID) error {
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT c.id
+		FROM autonomous_project_change_set c
+		JOIN autonomous_project_plan_node n ON n.id=c.node_id AND n.plan_id=c.plan_id
+		WHERE c.workspace_id=$1 AND c.project_id=$2 AND c.merge_status='merged'
+		  AND n.status='completed'
+		ORDER BY c.id
+	`, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("list integrated project change sets: %w", err)
+	}
+	changeSetIDs := make([]pgtype.UUID, 0)
+	for rows.Next() {
+		var changeSetID pgtype.UUID
+		if err := rows.Scan(&changeSetID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan integrated project change set: %w", err)
+		}
+		changeSetIDs = append(changeSetIDs, changeSetID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate integrated project change sets: %w", err)
+	}
+	rows.Close()
+	for _, changeSetID := range changeSetIDs {
+		if err := r.completeIntegratedProjectIssue(ctx, changeSetID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) completeIntegratedProjectIssue(ctx context.Context, changeSetID pgtype.UUID) error {
+	var issueID pgtype.UUID
+	err := r.pool.QueryRow(ctx, `
+		SELECT c.issue_id
+		FROM autonomous_project_change_set c
+		JOIN autonomous_project_plan_node n ON n.id=c.node_id AND n.plan_id=c.plan_id
+		WHERE c.id=$1 AND c.merge_status='merged' AND n.status='completed'
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_change_set pending
+			WHERE pending.plan_id=c.plan_id AND pending.node_id=c.node_id
+			  AND pending.merge_status NOT IN ('merged','cancelled')
+		  )
+	`, changeSetID).Scan(&issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load integrated project issue: %w", err)
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		return fmt.Errorf("load integrated project issue status: %w", err)
+	}
+	if issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status) != issuestatus.InReview {
+		return nil
+	}
+	if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, issuestatus.Done); err != nil {
+		return fmt.Errorf("complete project issue after develop integration: %w", err)
+	}
+	return nil
 }
 
 func (r *Runtime) requeueConflictResolutionForReview(ctx context.Context, outcome projectorchestration.MergeQueueConflictOutcome) error {
@@ -214,9 +296,37 @@ func (r *Runtime) runMergeQueueWorker(ctx context.Context) {
 
 func (r *Runtime) processMergeQueueProjects(ctx context.Context) error {
 	rows, err := r.pool.Query(ctx, `
-		SELECT DISTINCT workspace_id, project_id
+		SELECT workspace_id, project_id
 		FROM autonomous_project_change_set
 		WHERE merge_status IN ('ready','queued','merging')
+		UNION
+		SELECT p.workspace_id, p.project_id
+		FROM autonomous_project_plan p
+		JOIN LATERAL (
+			SELECT c.merge_evidence
+			FROM autonomous_project_change_set c
+			WHERE c.plan_id=p.id AND c.merge_status='merged'
+			ORDER BY c.merge_order DESC NULLS LAST, c.merged_at DESC, c.id DESC
+			LIMIT 1
+		) final ON TRUE
+		WHERE p.status IN ('active','blocked','completed')
+		  AND p.revision=(
+			SELECT MAX(latest.revision) FROM autonomous_project_plan latest
+			WHERE latest.workspace_id=p.workspace_id AND latest.project_id=p.project_id
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_plan_node n
+			WHERE n.plan_id=p.id AND n.status NOT IN ('completed','cancelled')
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_change_set c
+			WHERE c.plan_id=p.id AND c.merge_status NOT IN ('merged','cancelled')
+		  )
+		  AND COALESCE(final.merge_evidence #>> '{project_promotion,status}','') <> 'promoted'
+		  AND (
+			COALESCE(final.merge_evidence #>> '{project_promotion,status}','') <> 'blocked'
+			OR COALESCE((final.merge_evidence #>> '{project_promotion,retry_after}')::timestamptz,'-infinity'::timestamptz) <= now()
+		  )
 		ORDER BY workspace_id, project_id
 	`)
 	if err != nil {

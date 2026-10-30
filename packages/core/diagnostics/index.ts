@@ -5,8 +5,3 @@ export {
   resetDiagnosticContext,
   setDiagnosticRoute,
 } from "./diagnostic-context";
-export {
-  isDiagnosticsLogsEnabled,
-  setDiagnosticsLogsEnabled,
-  useDiagnosticsLogsEnabled,
-} from "./logs-experiment";

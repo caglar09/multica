@@ -720,17 +720,8 @@ func reviewApproved(artifact map[string]any) bool {
 	if err != nil {
 		return false
 	}
-	var approval struct {
-		Verdict            string `json:"verdict"`
-		GoalAlignmentScore *int   `json:"goal_alignment_score"`
-	}
-	if err := json.Unmarshal(encoded, &approval); err != nil {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(approval.Verdict), "approved") {
-		return false
-	}
-	return approval.GoalAlignmentScore == nil || *approval.GoalAlignmentScore >= 80
+	approval, err := parseReviewVerdict(encoded)
+	return err == nil && approval.Verdict == "approved"
 }
 
 func (r *Runtime) reconcileCompletedProjectQuality(ctx context.Context, issue db.Issue) error {

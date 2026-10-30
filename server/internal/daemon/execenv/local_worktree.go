@@ -80,6 +80,8 @@ type LocalWorktreeParams struct {
 	// or any subdirectory of it; the worktree always covers the whole repo,
 	// and the agent's cwd is the matching subdirectory inside it.
 	LocalPath string
+	// BaseRef selects a project integration branch for a new task branch.
+	BaseRef string
 	// EnvRoot is the daemon-owned task env root. The worktree is created
 	// inside it so the ordinary env-root GC reclaims it.
 	EnvRoot string
@@ -358,35 +360,53 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 	}
 	pruneOrphanedStateRefs(gitRoot, logger)
 
-	headSHA, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "HEAD")
-	if err != nil {
-		return nil, fmt.Errorf("execenv: repository %q has no commit to branch from "+
-			"(worktree mode needs at least one commit; make an initial commit or switch the resource back to in_place): %w", gitRoot, err)
+	var headSHA, baseSHA string
+	if params.BaseRef != "" {
+		if params.BaseRef != "develop" {
+			return nil, fmt.Errorf("execenv: unsupported project worktree base %q", params.BaseRef)
+		}
+		baseSHA, err = ensureProjectDevelopmentBranch(gitRoot)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		headSHA, err = runGitTrimmed(gitRoot, "rev-parse", "--verify", "HEAD")
+		if err != nil {
+			return nil, fmt.Errorf("execenv: repository %q has no commit to branch from "+
+				"(worktree mode needs at least one commit; make an initial commit or switch the resource back to in_place): %w", gitRoot, err)
+		}
+		baseSHA = headSHA
 	}
 
-	// Refuse an untracked payload too large to reproduce BEFORE snapshotting it:
-	// the snapshot writes every one of those bytes into the user's own object
-	// database, which is not something to do by accident on a directory full of
-	// un-ignored build output.
-	if err := checkUntrackedReplayable(gitRoot, logger); err != nil {
-		return nil, err
+	var userState string
+	if params.BaseRef != "" {
+		userState = baseSHA
+	} else {
+		// Refuse an untracked payload too large to reproduce BEFORE snapshotting it:
+		// the snapshot writes every one of those bytes into the user's own object
+		// database, which is not something to do by accident on a directory full of
+		// un-ignored build output.
+		if err := checkUntrackedReplayable(gitRoot, logger); err != nil {
+			return nil, err
+		}
+		// The commit describing the user's directory as this task sees it — their
+		// tracked edits and their untracked files in one tree. Everything below
+		// reasons about the user's state through this single object.
+		userState, err = captureUserSnapshot(gitRoot, params.EnvRoot, headSHA, logger)
+		if err != nil {
+			return nil, fmt.Errorf("execenv: could not capture the uncommitted changes in %q, "+
+				"so the worktree would not match what you have on disk: %w", gitRoot, err)
+		}
 	}
 
-	// The commit describing the user's directory as this task sees it — their
-	// tracked edits and their untracked files in one tree. Everything below
-	// reasons about the user's state through this single object.
-	userState, err := captureUserSnapshot(gitRoot, params.EnvRoot, headSHA, logger)
-	if err != nil {
-		// Fail closed. The promise of this mode is that the agent reasons about
-		// the code the user actually has; silently starting from HEAD instead
-		// would have it review a tree the user never saw and report confidently
-		// on it. A task that does not start is recoverable — one that answers
-		// from the wrong sources is not.
-		return nil, fmt.Errorf("execenv: could not capture the uncommitted changes in %q, "+
-			"so the worktree would not match what you have on disk: %w", gitRoot, err)
+	branchParams := params
+	if params.BaseRef != "" {
+		branchParams.ConversationKey = ""
+		branchParams.WorkspaceID = ""
+		branchParams.AgentID = ""
+		branchParams.ConversationID = ""
 	}
-
-	plan := resolveTaskBranch(gitRoot, params, headSHA, logger)
+	plan := resolveTaskBranch(gitRoot, branchParams, baseSHA, logger)
 	actualBranch, createdBranch, err := addLocalWorktree(gitRoot, worktreePath, plan, params.TaskID)
 	if err != nil {
 		return nil, err
@@ -439,8 +459,10 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 	wt.snapshotPending = len(replay.conflicts) > 0
 	// Whether the user has uncommitted work at all — replayed by this turn or
 	// already carried by the branch it continued.
-	_, diffErr := runGit(gitRoot, "diff", "--quiet", headSHA, userState)
-	wt.DirtyBaseCaptured = diffErr != nil
+	if params.BaseRef == "" {
+		_, diffErr := runGit(gitRoot, "diff", "--quiet", headSHA, userState)
+		wt.DirtyBaseCaptured = diffErr != nil
+	}
 
 	// Commit the replayed state as a baseline so "did this task change
 	// anything?" has an exact answer later. Without it the user's own
@@ -453,7 +475,7 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 	// Skipped entirely while the replay is unresolved: an index with unmerged
 	// entries cannot be committed without committing conflict markers, and the
 	// agent has not had its turn at them yet.
-	if len(replay.conflicts) == 0 {
+	if len(replay.conflicts) == 0 && params.BaseRef == "" {
 		dirty, dirtyErr := worktreeIsDirty(worktreePath)
 		if dirtyErr != nil {
 			rollback()
@@ -1246,6 +1268,41 @@ func resolveTaskBranch(gitRoot string, params LocalWorktreeParams, headSHA strin
 		}
 	}
 	return taskScoped
+}
+
+func ensureProjectDevelopmentBranch(gitRoot string) (string, error) {
+	const developRef = "refs/heads/develop"
+	if sha, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", developRef+"^{commit}"); err == nil {
+		return sha, nil
+	}
+	if sha, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "refs/remotes/origin/develop^{commit}"); err == nil {
+		if output, err := runGit(gitRoot, "branch", "develop", sha); err == nil {
+			return sha, nil
+		} else if localSHA, resolveErr := runGitTrimmed(gitRoot, "rev-parse", "--verify", developRef+"^{commit}"); resolveErr == nil {
+			return localSHA, nil
+		} else {
+			return "", fmt.Errorf("execenv: create develop from origin/develop: %s: %w", strings.TrimSpace(output), err)
+		}
+	}
+
+	var masterSHA string
+	for _, ref := range []string{"refs/heads/master", "refs/remotes/origin/master"} {
+		if sha, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", ref+"^{commit}"); err == nil {
+			masterSHA = sha
+			break
+		}
+	}
+	if masterSHA == "" {
+		return "", fmt.Errorf("execenv: cannot initialize develop: repository %q has no master or origin/master commit", gitRoot)
+	}
+	if output, err := runGit(gitRoot, "branch", "develop", masterSHA); err != nil {
+		// A user may have created develop between the lookup and branch command.
+		if sha, resolveErr := runGitTrimmed(gitRoot, "rev-parse", "--verify", developRef+"^{commit}"); resolveErr == nil {
+			return sha, nil
+		}
+		return "", fmt.Errorf("execenv: create develop from master: %s: %w", strings.TrimSpace(output), err)
+	}
+	return masterSHA, nil
 }
 
 // planForConversationBranch reports how this task would use one candidate

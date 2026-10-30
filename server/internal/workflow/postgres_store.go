@@ -265,6 +265,27 @@ func (s *PostgresStore) ListActiveRuns(ctx context.Context, limit int) ([]Run, e
 		FROM autonomous_workflow_run wr
 		WHERE wr.state IN ('in_progress', 'in_review')
 		   OR (
+			wr.state = 'done'
+			AND EXISTS (
+				SELECT 1
+				FROM issue i
+				JOIN autonomous_project_plan_node n
+				  ON n.workspace_id = i.workspace_id
+				 AND n.project_id = i.project_id
+				 AND n.materialized_issue_id = i.id
+				JOIN autonomous_project_plan p ON p.id = n.plan_id
+				WHERE i.id = wr.issue_id
+				  AND i.workspace_id = wr.workspace_id
+				  AND (i.status = 'done' OR EXISTS (
+					  SELECT 1 FROM issue_status s
+					  WHERE s.workspace_id = i.workspace_id
+						AND s.key = i.status AND s.category = 'done'
+				  ))
+				  AND n.status NOT IN ('completed', 'cancelled', 'blocked')
+				  AND p.status IN ('active', 'blocked')
+			)
+		   )
+		   OR (
 			wr.state = 'blocked'
 			AND (
 				-- Normal post-block Retry/Rerun lineage.

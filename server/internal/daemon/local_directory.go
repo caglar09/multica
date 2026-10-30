@@ -122,7 +122,11 @@ func localDirectoryAssignmentForTask(task Task, daemonID string) (*localDirector
 	if task.IsLeaderTask {
 		return nil, nil
 	}
-	return findLocalDirectoryAssignment(task.ProjectResources, daemonID)
+	assignment, err := findLocalDirectoryAssignment(task.ProjectResources, daemonID)
+	if err == nil && assignment != nil && task.ProjectDevelopmentBranch == "develop" {
+		assignment.Ref.ExecutionMode = localDirectoryModeWorktree
+	}
+	return assignment, err
 }
 
 // localDirectoryLockExempt reports whether a task may run inside an in_place

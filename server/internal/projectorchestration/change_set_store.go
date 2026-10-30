@@ -40,6 +40,41 @@ func RecordTaskCommit(ctx context.Context, tx pgx.Tx, commit TaskCommit) error {
 	if err != nil {
 		return fmt.Errorf("encode project change set files: %w", err)
 	}
+	lockKey := projectMergeLockKey(commit.WorkspaceID, commit.ProjectID)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lockKey); err != nil {
+		return fmt.Errorf("lock project merge queue before recording a replacement change set: %w", err)
+	}
+	var alreadyRecorded bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM autonomous_project_change_set WHERE source_task_id=$1
+		)
+	`, commit.TaskID).Scan(&alreadyRecorded); err != nil {
+		return fmt.Errorf("check existing project task change set: %w", err)
+	}
+	if alreadyRecorded {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_change_set c
+		SET merge_status='cancelled', merge_order=NULL, approved_review_task_id=NULL,
+		    approved_review_artifact_id=NULL,
+		    last_error='superseded by a newer implementation task',
+		    merge_evidence=COALESCE(c.merge_evidence,'{}'::jsonb) ||
+		      jsonb_build_object('superseded_by_task_id',$3::text,'superseded_at',now()),
+		    updated_at=now()
+		WHERE c.plan_id=$1 AND c.node_id=$2
+		  AND c.merge_status NOT IN ('merged','cancelled')
+		  AND EXISTS (
+			SELECT 1
+			FROM agent_task_queue current_task
+			JOIN agent_task_queue prior_task ON prior_task.id=c.source_task_id
+			WHERE current_task.id=$3 AND current_task.issue_id=prior_task.issue_id
+			  AND (prior_task.created_at,prior_task.id) < (current_task.created_at,current_task.id)
+		  )
+	`, commit.PlanID, commit.NodeID, commit.TaskID); err != nil {
+		return fmt.Errorf("cancel superseded project change sets: %w", err)
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO autonomous_project_change_set (
 			workspace_id, project_id, plan_id, node_id, issue_id, source_task_id,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"sort"
 	"strings"
 	"time"
 
@@ -1591,6 +1592,19 @@ func (r *Runtime) processProjectSchedulingForProject(
 			materialized = true
 			continue
 		}
+		if node.Status == "pending" || node.Status == "ready" {
+			if _, err := r.ensureMaterializedProjectNodeAssignment(ctx, workspaceID, projectID, node); err != nil {
+				if escalationErr := r.openProjectEscalation(ctx, workspaceID, projectID, node.ReadyNode, err); escalationErr != nil {
+					slog.Warn("project conductor assignment escalation failed",
+						"project_id", util.UUIDToString(projectID), "node", node.Key, "error", escalationErr)
+				}
+				if blockErr := r.blockProjectNodeForSchedulingCause(ctx, workspaceID, projectID, node.ReadyNode, err); blockErr != nil {
+					slog.Warn("project conductor assignment block failed",
+						"project_id", util.UUIDToString(projectID), "node", node.Key, "error", blockErr)
+				}
+				continue
+			}
+		}
 		if err := r.syncProjectNodeBoardState(ctx, workspaceID, node); err != nil {
 			slog.Warn("project conductor board projection failed",
 				"project_id", util.UUIDToString(projectID), "node", node.Key, "error", err)
@@ -1656,6 +1670,83 @@ func (r *Runtime) processProjectSchedulingForProject(
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) ensureMaterializedProjectNodeAssignment(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	node projectorchestration.PlannedNode,
+) (bool, error) {
+	if node.MaterializedIssueID == "" || (node.Status != "pending" && node.Status != "ready") {
+		return false, nil
+	}
+	if r == nil || r.taskSvc == nil || r.taskSvc.Queries == nil || r.team == nil || r.projectStore == nil {
+		return false, errors.New("project assignment services are not configured")
+	}
+	issueID, err := util.ParseUUID(node.MaterializedIssueID)
+	if err != nil {
+		return false, fmt.Errorf("parse materialized issue id for node %q: %w", node.Key, err)
+	}
+	issue, err := r.taskSvc.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		return false, fmt.Errorf("load materialized issue for node %q: %w", node.Key, err)
+	}
+	team, ok, err := r.team.FindProject(ctx, workspaceID, projectID)
+	if err != nil {
+		return false, fmt.Errorf("load project team for node %q: %w", node.Key, err)
+	}
+	if !ok {
+		return false, errors.New("project team unavailable")
+	}
+
+	var agentID pgtype.UUID
+	role := ""
+	if node.AssignedAgentID != "" {
+		agentID, err = util.ParseUUID(node.AssignedAgentID)
+		if err != nil {
+			return false, fmt.Errorf("parse assigned agent for node %q: %w", node.Key, err)
+		}
+		var member bool
+		role, member = team.RoleForAgent(agentID)
+		if !member {
+			return false, fmt.Errorf("node %q is assigned to an agent outside its project team", node.Key)
+		}
+	}
+	issueAssigned := issue.AssigneeType.Valid || issue.AssigneeID.Valid
+	if issueAssigned {
+		if issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
+			return false, fmt.Errorf("node %q has an issue assigned outside its project team", node.Key)
+		}
+		issueRole, member := team.RoleForAgent(issue.AssigneeID)
+		if !member {
+			return false, fmt.Errorf("node %q issue is assigned to an agent outside its project team", node.Key)
+		}
+		if agentID.Valid && agentID != issue.AssigneeID {
+			return false, fmt.Errorf("node %q plan and issue assignments do not match", node.Key)
+		}
+		agentID, role = issue.AssigneeID, issueRole
+	}
+	if !agentID.Valid {
+		agentID, role, _, err = r.selectProjectNodeAgent(ctx, team, node.ReadyNode)
+		if err != nil {
+			return false, fmt.Errorf("select project agent for node %q: %w", node.Key, err)
+		}
+	}
+	if !issueAssigned {
+		if r.taskSvc == nil {
+			return false, errors.New("task service unavailable for project issue assignment")
+		}
+		if _, err := r.taskSvc.AssignIssueToAgentForWorkflow(ctx, issueID, agentID); err != nil {
+			return false, fmt.Errorf("assign issue for node %q: %w", node.Key, err)
+		}
+	}
+	if node.AssignedAgentID == util.UUIDToString(agentID) && node.AssignedRole == role {
+		return false, nil
+	}
+	if err := r.projectStore.BindNodeIssue(ctx, workspaceID, projectID, node.Key, issueID, role, agentID); err != nil {
+		return false, fmt.Errorf("persist project assignment for node %q: %w", node.Key, err)
+	}
+	return true, nil
 }
 
 func (r *Runtime) expandReadyProjectEpic(
@@ -1867,6 +1958,69 @@ func (r *Runtime) canonicalGoalReviewContextForNode(
 	return canonicalGoalReviewContext(revision.Specification)
 }
 
+func (r *Runtime) ensureCanonicalProjectReviewContext(ctx context.Context, issue db.Issue) (db.Issue, error) {
+	if !issue.ProjectID.Valid {
+		return issue, nil
+	}
+	quality, err := r.loadNodeQualityByIssue(ctx, issue.WorkspaceID, issue.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return issue, nil
+	}
+	if err != nil {
+		return db.Issue{}, fmt.Errorf("load project review context target: %w", err)
+	}
+	if !projectNodeUsesIssueWorkflow(quality.Kind) {
+		return issue, nil
+	}
+	const marker = "Canonical project review context (authoritative):\n"
+	if strings.Contains(issue.Description.String, marker) {
+		return issue, nil
+	}
+	goalContext, err := r.canonicalGoalReviewContextForNode(
+		ctx, issue.WorkspaceID, issue.ProjectID, util.UUIDToString(quality.NodeID),
+	)
+	if err != nil {
+		return db.Issue{}, err
+	}
+	text, err := goalContext.promptText()
+	if err != nil {
+		return db.Issue{}, err
+	}
+	description := strings.TrimRight(issue.Description.String, "\n") + "\n\n" + marker + text
+	expectedRevision := issue.Revision
+	updated, err := r.issueSvc.UpdateContent(ctx, issue, service.IssueContentPatch{
+		Description:      &description,
+		ExpectedRevision: &expectedRevision,
+	})
+	if err != nil {
+		return db.Issue{}, fmt.Errorf("attach canonical project review context: %w", err)
+	}
+	return updated, nil
+}
+
+func (r *Runtime) validateProjectReview(ctx context.Context, issue db.Issue, verdict reviewVerdictOutput) error {
+	if !issue.ProjectID.Valid {
+		return nil
+	}
+	quality, err := r.loadNodeQualityByIssue(ctx, issue.WorkspaceID, issue.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load project review requirements: %w", err)
+	}
+	if !projectNodeUsesIssueWorkflow(quality.Kind) {
+		return nil
+	}
+	goalContext, err := r.canonicalGoalReviewContextForNode(
+		ctx, issue.WorkspaceID, issue.ProjectID, util.UUIDToString(quality.NodeID),
+	)
+	if err != nil {
+		return err
+	}
+	return validateGoalDriftReview(verdict, goalContext.requirementIDs())
+}
+
 func (r *Runtime) syncProjectNodeBoardState(
 	ctx context.Context,
 	workspaceID pgtype.UUID,
@@ -1965,6 +2119,8 @@ func (r *Runtime) syncProjectNodeBoardState(
 		}
 	case "verification":
 		target = issuestatus.InReview
+	case "completed":
+		target = issuestatus.Done
 	case "blocked":
 		target = issuestatus.Blocked
 	}
@@ -2100,9 +2256,46 @@ func (r *Runtime) startReadyProjectNode(
 		return err
 	}
 	if err := r.startMaterializedNode(ctx, issue, node, agentID, ownerUserID); err != nil {
-		_ = r.projectStore.ReleaseNodeClaim(ctx, workspaceID, projectID, node.Key, "dispatch failed: "+err.Error())
-		_, _ = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Todo)
-		return err
+		dispatchErr := err
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		var dispatched bool
+		if projectNodeUsesIssueWorkflow(node.Kind) {
+			_, dispatched, err = r.store.FindRun(
+				cleanupCtx,
+				softwareDevelopmentWorkflow,
+				util.UUIDToString(workspaceID),
+				util.UUIDToString(issue.ID),
+			)
+		} else {
+			err = r.pool.QueryRow(cleanupCtx, `
+				SELECT EXISTS (
+					SELECT 1 FROM agent_task_queue
+					WHERE issue_id = $1
+					  AND agent_id = $2
+					  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+				)
+			`, issue.ID, agentID).Scan(&dispatched)
+		}
+		if err != nil {
+			slog.Warn("project node dispatch state could not be verified; keeping claim",
+				"project_id", util.UUIDToString(projectID), "node", node.Key, "error", err)
+			return fmt.Errorf("dispatch failed (%v) and durable state could not be verified: %w", dispatchErr, err)
+		}
+		if dispatched {
+			slog.Warn("project node dispatch failed after durable work was created; keeping claim",
+				"project_id", util.UUIDToString(projectID), "node", node.Key, "issue_id", util.UUIDToString(issue.ID))
+			return dispatchErr
+		}
+		if releaseErr := r.projectStore.ReleaseNodeClaim(cleanupCtx, workspaceID, projectID, node.Key, "dispatch failed: "+dispatchErr.Error()); releaseErr != nil {
+			slog.Warn("project node claim release failed after dispatch error",
+				"project_id", util.UUIDToString(projectID), "node", node.Key, "error", releaseErr)
+		}
+		if _, resetErr := r.taskSvc.SetIssueStatusForWorkflow(cleanupCtx, issue.ID, issuestatus.Todo); resetErr != nil {
+			slog.Warn("project issue reset failed after dispatch error",
+				"project_id", util.UUIDToString(projectID), "node", node.Key, "issue_id", util.UUIDToString(issue.ID), "error", resetErr)
+		}
+		return dispatchErr
 	}
 	_ = assignedRole // retained for durable assignment/debug projection.
 	return nil
@@ -2313,6 +2506,7 @@ func (r *Runtime) reconcileProjectBlockedNodes(
 blockedNodeLoop:
 	for _, node := range blocked {
 		resolved := false
+		var retryIssueID pgtype.UUID
 		switch node.Category {
 		case "dependency":
 			resolved = true // ResumeBlockedNode performs the authoritative dependency check.
@@ -2491,6 +2685,7 @@ blockedNodeLoop:
 				if parseErr != nil {
 					return parseErr
 				}
+				retryIssueID = issueID
 				issue, loadErr := r.taskSvc.Queries.GetIssue(ctx, issueID)
 				if errors.Is(loadErr, pgx.ErrNoRows) {
 					resolved = true
@@ -2498,6 +2693,46 @@ blockedNodeLoop:
 					return loadErr
 				} else {
 					effective := issuestatus.Effective(ctx, r.taskSvc.Queries, issue.WorkspaceID, issue.Status)
+					workflowRun, workflowExists, runErr := r.store.FindRun(
+						ctx, softwareDevelopmentWorkflow, util.UUIDToString(workspaceID), util.UUIDToString(issueID),
+					)
+					if runErr != nil {
+						return runErr
+					}
+					if workflowExists && workflowRun.State == issuestatus.Done && effective != issuestatus.Done {
+						if err := r.reconcileCompletedProjectQuality(ctx, issue); err != nil {
+							return err
+						}
+						nodeID, parseErr := util.ParseUUID(node.ID)
+						if parseErr != nil {
+							return parseErr
+						}
+						var qualityPassed bool
+						if err := r.pool.QueryRow(ctx, `
+							SELECT NOT EXISTS (
+								SELECT 1 FROM autonomous_project_quality_gate_run
+								WHERE workspace_id=$1 AND project_id=$2 AND node_id=$3
+								  AND required=TRUE AND evidence ->> 'policy_requirement' = 'true'
+								  AND status <> 'passed'
+							)
+						`, workspaceID, projectID, nodeID).Scan(&qualityPassed); err != nil {
+							return err
+						}
+						if qualityPassed {
+							if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issueID, issuestatus.Done); err != nil {
+								return err
+							}
+							if err := r.projectStore.CompleteNodeByIssue(ctx, workspaceID, issueID); err != nil {
+								return err
+							}
+							slog.Info("project conductor restored issue status from completed workflow",
+								"project_id", util.UUIDToString(projectID),
+								"node", node.Key,
+								"issue_id", node.MaterializedIssueID,
+							)
+							continue blockedNodeLoop
+						}
+					}
 					if effective == issuestatus.Done {
 						// Done is terminal evidence, not an "unblocked" retry
 						// request. The old path resumed the node and immediately
@@ -2586,14 +2821,18 @@ blockedNodeLoop:
 				err := r.pool.QueryRow(ctx, `
 					SELECT EXISTS (
 						SELECT 1
-						FROM autonomous_project_escalation
-						WHERE workspace_id = $1
-						  AND project_id = $2
-						  AND status = 'resolved'
-						  AND context ->> 'node_key' = $3
-						  AND category IN ('technical_failure', 'external_dependency')
+						FROM autonomous_project_escalation e
+						WHERE e.workspace_id = $1
+						  AND e.project_id = $2
+						  AND e.status = 'resolved'
+						  AND (e.context ->> 'node_key' = $3 OR e.context ->> 'node_id' = $5::text)
+						  AND e.category IN ('technical_failure', 'external_dependency')
+						  AND e.resolved_at > COALESCE(
+							  (SELECT max(t.created_at) FROM agent_task_queue t WHERE t.issue_id = $4),
+							  '-infinity'::timestamptz
+						  )
 					)
-				`, workspaceID, projectID, node.Key).Scan(&resolved)
+				`, workspaceID, projectID, node.Key, retryIssueID, node.ID).Scan(&resolved)
 				if err != nil {
 					return err
 				}
@@ -2601,6 +2840,54 @@ blockedNodeLoop:
 		}
 		if !resolved {
 			continue
+		}
+		if node.Category == "technical_failure" && projectNodeUsesIssueWorkflow(node.Kind) && node.MaterializedIssueID != "" {
+			issueID, err := util.ParseUUID(node.MaterializedIssueID)
+			if err != nil {
+				return err
+			}
+			run, exists, err := r.store.FindRun(
+				ctx, softwareDevelopmentWorkflow, util.UUIDToString(workspaceID), node.MaterializedIssueID,
+			)
+			if err != nil {
+				return err
+			}
+			if exists && (run.State == issuestatus.Blocked || run.State == issuestatus.Done) {
+				resumed, err := r.projectStore.ResumeNodeForWorkflowRetry(ctx, workspaceID, issueID)
+				if err != nil {
+					return fmt.Errorf("resume blocked project node for explicit workflow retry: %w", err)
+				}
+				if !resumed {
+					continue blockedNodeLoop
+				}
+				if r.engine == nil {
+					_ = r.projectStore.SetNodeBlocked(ctx, workspaceID, projectID, node.Key, "technical_failure", "workflow engine is unavailable for explicit retry")
+					return errors.New("autonomous workflow engine is unavailable for explicit retry")
+				}
+				result, err := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+					ID:                fmt.Sprintf("project-repair-retry:%s:%d", run.ID, run.Revision),
+					Type:              "issue.retry_requested",
+					WorkspaceID:       util.UUIDToString(workspaceID),
+					ProjectID:         util.UUIDToString(projectID),
+					IssueID:           node.MaterializedIssueID,
+					ActorType:         "system",
+					AccountableUserID: run.AccountableUserID,
+					Payload:           map[string]any{"source": "project_repair"},
+				})
+				if err != nil {
+					_ = r.projectStore.SetNodeBlocked(ctx, workspaceID, projectID, node.Key, "technical_failure", "workflow retry transition failed: "+err.Error())
+					return fmt.Errorf("transition blocked project workflow for explicit retry: %w", err)
+				}
+				if result.Applied || result.Duplicate {
+					slog.Info("project conductor queued explicit retry for blocked workflow",
+						"project_id", util.UUIDToString(projectID),
+						"node", node.Key,
+						"issue_id", node.MaterializedIssueID,
+						"run_id", run.ID,
+					)
+				}
+				continue blockedNodeLoop
+			}
 		}
 		resumed, err := r.projectStore.ResumeBlockedNode(ctx, workspaceID, projectID, node.Key)
 		if err != nil {
@@ -3077,6 +3364,27 @@ func (r *Runtime) startMaterializedNode(
 		return err
 	}
 	if projectNodeUsesIssueWorkflow(node.Kind) {
+		event := events.Event{
+			Type:        protocol.EventIssueUpdated,
+			WorkspaceID: util.UUIDToString(updated.WorkspaceID),
+			ActorType:   "system",
+			Payload: map[string]any{
+				"issue": map[string]any{
+					"id":       util.UUIDToString(updated.ID),
+					"status":   updated.Status,
+					"revision": updated.Revision,
+				},
+				"prev_status": issue.Status,
+			},
+		}
+		if err := r.handleIssueEvent(ctx, event); err != nil {
+			return fmt.Errorf("start issue workflow for project node %q: %w", node.Key, err)
+		}
+		if _, exists, err := r.store.FindRun(ctx, softwareDevelopmentWorkflow, util.UUIDToString(updated.WorkspaceID), util.UUIDToString(updated.ID)); err != nil {
+			return fmt.Errorf("verify issue workflow for project node %q: %w", node.Key, err)
+		} else if !exists {
+			return fmt.Errorf("issue workflow for project node %q was not created", node.Key)
+		}
 		return nil
 	}
 	handoff := fmt.Sprintf(
@@ -3778,6 +4086,7 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 	valid := len(task.Result) > 0
 	validationError := ""
 	var changeSet *projectorchestration.TaskCommit
+	var handoff implementationHandoffOutput
 	changeSetMetadataError := ""
 	if !valid {
 		validationError = "task result is empty"
@@ -3804,15 +4113,22 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			validationError = "qa_handoff must contain a passing verdict and completed acceptance evidence"
 		}
 	} else if projectNodeUsesIssueWorkflow(projectorchestration.NodeKind(kind)) {
-		if _, parseErr := parseImplementationHandoff(task.Result); parseErr != nil {
+		if handoff, err = parseImplementationHandoff(task.Result); err != nil {
 			valid = false
-			validationError = parseErr.Error()
+			validationError = err.Error()
 		}
 	}
-	if valid && !reviewerTask && kind == "implementation" {
+	if valid && !reviewerTask && projectNodeUsesIssueWorkflow(projectorchestration.NodeKind(kind)) {
 		changeSet, err = taskCommitFromResult(task.Result, issue.WorkspaceID, issue.ProjectID, planID, nodeID, issue.ID, task.ID, task.AgentID)
 		if err != nil {
-			changeSetMetadataError = err.Error()
+			commitErr := err
+			var reused bool
+			changeSet, reused, err = r.reusePreviousTaskCommitForNoop(ctx, task, issue, planID, nodeID, handoff)
+			if err != nil {
+				changeSetMetadataError = err.Error()
+			} else if !reused {
+				changeSetMetadataError = commitErr.Error()
+			}
 		}
 		if changeSetMetadataError != "" {
 			valid = false
@@ -3901,7 +4217,7 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			if err := tx.Commit(ctx); err != nil {
 				return false, err
 			}
-			return r.finalizeProjectChangeSetQuality(ctx, task, issue, artifactType, artifactPayload, true)
+			return r.finalizeProjectChangeSetQuality(ctx, task, issue, artifactType, artifactPayload, true, changeSet.TaskID)
 		}
 		if changeSetMetadataError != "" {
 			if err := tx.Commit(ctx); err != nil {
@@ -3932,7 +4248,7 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 			}
 			artifactPayload["artifact_id"] = util.UUIDToString(existingID)
 			artifactPayload["valid"] = existingValid && existingStatus == "active"
-			return r.finalizeProjectChangeSetQuality(ctx, task, issue, artifactType, artifactPayload, false)
+			return r.finalizeProjectChangeSetQuality(ctx, task, issue, artifactType, artifactPayload, false, task.ID)
 		}
 		return false, tx.Commit(ctx)
 	}
@@ -4016,10 +4332,14 @@ func (r *Runtime) recordProjectTaskArtifact(ctx context.Context, task db.AgentTa
 	artifactPayload["artifact_id"] = util.UUIDToString(artifactID)
 	artifactPayload["valid"] = valid
 
-	return r.finalizeProjectChangeSetQuality(ctx, task, issue, artifactType, artifactPayload, changeSet != nil)
+	changeSetTaskID := task.ID
+	if changeSet != nil {
+		changeSetTaskID = changeSet.TaskID
+	}
+	return r.finalizeProjectChangeSetQuality(ctx, task, issue, artifactType, artifactPayload, changeSet != nil, changeSetTaskID)
 }
 
-func (r *Runtime) finalizeProjectChangeSetQuality(ctx context.Context, task db.AgentTaskQueue, issue db.Issue, artifactType string, artifact map[string]any, hasChangeSet bool) (bool, error) {
+func (r *Runtime) finalizeProjectChangeSetQuality(ctx context.Context, task db.AgentTaskQueue, issue db.Issue, artifactType string, artifact map[string]any, hasChangeSet bool, changeSetTaskID pgtype.UUID) (bool, error) {
 	blocked, err := r.runTaskQualityIfRequired(ctx, task, issue, artifactType, artifact)
 	if err != nil {
 		return blocked, err
@@ -4043,29 +4363,139 @@ func (r *Runtime) finalizeProjectChangeSetQuality(ctx context.Context, task db.A
 			UPDATE autonomous_project_change_set
 			SET merge_status='ready', ready_at=now(), updated_at=now()
 			WHERE source_task_id=$1 AND merge_status='changes_requested'
-		`, task.ID); err != nil {
+		`, changeSetTaskID); err != nil {
 			return false, fmt.Errorf("mark project change set ready after quality gates: %w", err)
 		}
 	}
 	return blocked, nil
 }
 
-func (r *Runtime) blockProjectChangeSetEvidence(ctx context.Context, task db.AgentTaskQueue, issue db.Issue, planID, nodeID pgtype.UUID, nodeKey, message string) (bool, error) {
-	if r.projectStore != nil {
-		_ = r.projectStore.SetNodeBlocked(ctx, issue.WorkspaceID, issue.ProjectID, nodeKey, "contract_violation", message)
+func (r *Runtime) reusePreviousTaskCommitForNoop(
+	ctx context.Context,
+	task db.AgentTaskQueue,
+	issue db.Issue,
+	planID, nodeID pgtype.UUID,
+	handoff implementationHandoffOutput,
+) (*projectorchestration.TaskCommit, bool, error) {
+	var current struct {
+		BranchName           string   `json:"branch_name"`
+		WorktreeBaseSHA      string   `json:"worktree_base_sha"`
+		WorktreeCommitSHA    string   `json:"worktree_commit_sha"`
+		WorktreeChangedFiles []string `json:"worktree_changed_files"`
+		WorktreePath         string   `json:"worktree_path"`
+		WorktreeRepoPath     string   `json:"worktree_repo_path"`
 	}
-	_, _ = r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked)
+	if json.Unmarshal(task.Result, &current) != nil || !task.CreatedAt.Valid ||
+		len(current.WorktreeChangedFiles) != 0 || strings.TrimSpace(current.BranchName) == "" ||
+		strings.TrimSpace(current.WorktreeBaseSHA) == "" || current.WorktreeBaseSHA != current.WorktreeCommitSHA ||
+		strings.TrimSpace(current.WorktreePath) == "" || strings.TrimSpace(current.WorktreeRepoPath) == "" {
+		return nil, false, nil
+	}
+
+	var previousTaskID pgtype.UUID
+	var previousResult []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, result
+		FROM agent_task_queue
+		WHERE issue_id=$1 AND agent_id=$2 AND status='completed' AND created_at<$3
+		  AND result->>'worktree_commit_sha'=$4
+		  AND CASE WHEN jsonb_typeof(result->'worktree_changed_files')='array'
+		           THEN jsonb_array_length(result->'worktree_changed_files')>0 ELSE FALSE END
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, issue.ID, task.AgentID, task.CreatedAt, current.WorktreeBaseSHA).Scan(&previousTaskID, &previousResult)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	previous, err := taskCommitFromResult(
+		previousResult, issue.WorkspaceID, issue.ProjectID, planID, nodeID, issue.ID, previousTaskID, task.AgentID,
+	)
+	if err != nil || previous.BaseSHA == previous.CommitSHA ||
+		previous.CommitSHA != current.WorktreeBaseSHA || previous.BranchName != current.BranchName ||
+		previous.RepoPath != current.WorktreeRepoPath ||
+		!sameFileSet(handoff.ChangedFiles, previous.ChangedFiles) {
+		return nil, false, nil
+	}
+	return previous, true, nil
+}
+
+func sameFileSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	leftSorted := append([]string(nil), left...)
+	rightSorted := append([]string(nil), right...)
+	sort.Strings(leftSorted)
+	sort.Strings(rightSorted)
+	for i := range leftSorted {
+		if leftSorted[i] != rightSorted[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Runtime) blockProjectChangeSetEvidence(ctx context.Context, task db.AgentTaskQueue, issue db.Issue, planID, nodeID pgtype.UUID, nodeKey, message string) (bool, error) {
+	if r.store != nil {
+		run, exists, err := r.store.FindRun(
+			ctx, softwareDevelopmentWorkflow, util.UUIDToString(issue.WorkspaceID), util.UUIDToString(issue.ID),
+		)
+		if err != nil {
+			return true, fmt.Errorf("load workflow before blocking incomplete worktree evidence: %w", err)
+		}
+		if exists {
+			switch {
+			case run.State == issuestatus.InProgress && run.OwnerAgentID == util.UUIDToString(task.AgentID):
+				if r.engine == nil {
+					return true, errors.New("autonomous workflow engine is unavailable for invalid implementation evidence")
+				}
+				_, err := r.engine.Handle(softwareDevelopmentWorkflow, workflow.Event{
+					ID:                "implementation-evidence-failed:" + util.UUIDToString(task.ID),
+					Type:              "implementation.failed",
+					WorkspaceID:       util.UUIDToString(issue.WorkspaceID),
+					ProjectID:         util.UUIDToString(issue.ProjectID),
+					IssueID:           util.UUIDToString(issue.ID),
+					AccountableUserID: util.UUIDToString(task.AccountableUserID),
+					Payload:           map[string]any{"task_id": util.UUIDToString(task.ID), "contract_error": message},
+				})
+				if err != nil {
+					return true, fmt.Errorf("block workflow after incomplete worktree evidence: %w", err)
+				}
+			case run.State == issuestatus.Blocked:
+			default:
+				return true, fmt.Errorf("cannot block incomplete worktree evidence for workflow in %q owned by another task", run.State)
+			}
+		}
+	}
+	if r.projectStore != nil {
+		if err := r.projectStore.SetNodeBlocked(ctx, issue.WorkspaceID, issue.ProjectID, nodeKey, "technical_failure", message); err != nil {
+			return true, fmt.Errorf("block project node after incomplete worktree evidence: %w", err)
+		}
+	}
+	if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Blocked); err != nil {
+		return true, fmt.Errorf("block issue after incomplete worktree evidence: %w", err)
+	}
 	contextJSON, _ := json.Marshal(map[string]any{
-		"node_id": util.UUIDToString(nodeID), "issue_id": util.UUIDToString(issue.ID),
+		"node_key": nodeKey,
+		"node_id":  util.UUIDToString(nodeID), "issue_id": util.UUIDToString(issue.ID),
 		"task_id": util.UUIDToString(task.ID), "error": message,
 	})
 	if _, err := r.pool.Exec(ctx, `
 		INSERT INTO autonomous_project_escalation (
 			workspace_id, project_id, plan_id, node_id, category, severity, summary, context
-		) VALUES ($1,$2,$3,$4,'contract_violation','high',$5,$6)
+		)
+		SELECT $1,$2,$3,$4,'technical_failure','high',$5,$6
+		WHERE NOT EXISTS (
+			SELECT 1 FROM autonomous_project_escalation
+			WHERE workspace_id=$1 AND project_id=$2 AND category='technical_failure'
+			  AND context ->> 'task_id' = $7
+		)
 	`, issue.WorkspaceID, issue.ProjectID, planID, nodeID,
-		"Daemon commit evidence is incomplete: "+issue.Title, contextJSON); err != nil {
-		return true, fmt.Errorf("record missing project change set evidence: %w", err)
+		"Daemon commit evidence is incomplete: "+issue.Title, contextJSON, util.UUIDToString(task.ID)); err != nil {
+		return true, fmt.Errorf("record incomplete project worktree evidence: %w", err)
 	}
 	return true, nil
 }

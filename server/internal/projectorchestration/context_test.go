@@ -29,7 +29,7 @@ func TestContextCompiler(t *testing.T) {
 			"constraints": []string{"Do not discard safety limits."},
 			"non_goals":   []string{longNonGoal},
 		})
-		specificationItems, err := authoritativeSpecificationItems(goal, specification, "plan-1")
+		specificationItems, err := authoritativeSpecificationItems(goal, specification, "plan-1", nil)
 		if err != nil {
 			t.Fatalf("authoritativeSpecificationItems() error = %v", err)
 		}
@@ -78,12 +78,35 @@ func TestContextCompiler(t *testing.T) {
 		}
 	})
 
+	t.Run("allocates unused optional-section budgets to the authoritative specification", func(t *testing.T) {
+		requirements := make([]any, 10)
+		for i := range requirements {
+			requirements[i] = map[string]any{"text": strings.Repeat("requirement detail ", 24)}
+		}
+		specification := marshalSpecification(t, map[string]any{"requirements": requirements})
+		specificationItems, err := authoritativeSpecificationItems("Keep every requirement", specification, "plan-budget", nil)
+		if err != nil {
+			t.Fatalf("authoritativeSpecificationItems() error = %v", err)
+		}
+		items := testContextItems(specificationItems, `{"autonomy":"assisted"}`)
+		for _, name := range []string{"brain", "predecessor_artifacts", "structured_handoffs", "unresolved_findings", "repository_facts"} {
+			items[name] = []ContextItem{{Source: "test", Text: strings.Repeat("optional context ", DefaultContextSectionBudgets[name]*4)}}
+		}
+		pkg := NewBoundedContext("implementation", NodeImplementation, "node-budget", 1, 1, "", items)
+		if err := validateAuthoritativeContext(pkg); err != nil {
+			t.Fatalf("validateAuthoritativeContext() error = %v", err)
+		}
+		if got := findContextSection(t, pkg, "specification").Omitted; got != 0 {
+			t.Fatalf("specification omitted %d items, want none when optional sections compete for context", got)
+		}
+	})
+
 	t.Run("fails closed when an oversized specification cannot fit", func(t *testing.T) {
 		specification := marshalSpecification(t, map[string]any{
 			"summary":   "Preserve this authored summary.",
-			"non_goals": []string{strings.Repeat("x", 2400)},
+			"non_goals": []string{strings.Repeat("x", 12000)},
 		})
-		specificationItems, err := authoritativeSpecificationItems("Retain all project scope", specification, "plan-2")
+		specificationItems, err := authoritativeSpecificationItems("Retain all project scope", specification, "plan-2", nil)
 		if err != nil {
 			t.Fatalf("authoritativeSpecificationItems() error = %v", err)
 		}
@@ -93,8 +116,9 @@ func TestContextCompiler(t *testing.T) {
 			items[name] = []ContextItem{{Source: "test", Text: strings.Repeat("x", DefaultContextSectionBudgets[name]*4)}}
 		}
 		pkg := NewBoundedContext("implementation", NodeImplementation, "node-2", 1, 1, "", items)
-		if got := findContextSection(t, pkg, "specification").TokenBudget; got != DefaultContextSectionBudgets["specification"] {
-			t.Fatalf("specification budget = %d, want %d when other sections use their reserves", got, DefaultContextSectionBudgets["specification"])
+		wantSpecificationBudget := pkg.TotalTokenBudget - findContextSection(t, pkg, "policy").TokenBudget
+		if got := findContextSection(t, pkg, "specification").TokenBudget; got != wantSpecificationBudget {
+			t.Fatalf("specification budget = %d, want %d after reserving required policy", got, wantSpecificationBudget)
 		}
 		if err := validateAuthoritativeContext(pkg); !errors.Is(err, ErrAuthoritativeContextTruncated) {
 			t.Fatalf("validateAuthoritativeContext() error = %v, want ErrAuthoritativeContextTruncated", err)
@@ -102,7 +126,7 @@ func TestContextCompiler(t *testing.T) {
 	})
 
 	t.Run("fails closed when policy is truncated", func(t *testing.T) {
-		specificationItems, err := authoritativeSpecificationItems("A valid project goal", []byte(`{"summary":"Valid summary"}`), "plan-3")
+		specificationItems, err := authoritativeSpecificationItems("A valid project goal", []byte(`{"summary":"Valid summary"}`), "plan-3", nil)
 		if err != nil {
 			t.Fatalf("authoritativeSpecificationItems() error = %v", err)
 		}
@@ -114,7 +138,7 @@ func TestContextCompiler(t *testing.T) {
 	})
 
 	t.Run("fails closed when a required section has no retained content", func(t *testing.T) {
-		specificationItems, err := authoritativeSpecificationItems("A valid project goal", []byte(`{"summary":"Valid summary"}`), "plan-4")
+		specificationItems, err := authoritativeSpecificationItems("A valid project goal", []byte(`{"summary":"Valid summary"}`), "plan-4", nil)
 		if err != nil {
 			t.Fatalf("authoritativeSpecificationItems() error = %v", err)
 		}
@@ -131,7 +155,7 @@ func TestContextCompiler(t *testing.T) {
 			"malformed": []byte(`{"summary":`),
 		} {
 			t.Run(name, func(t *testing.T) {
-				if _, err := authoritativeSpecificationItems("", raw, "plan-5"); err == nil {
+				if _, err := authoritativeSpecificationItems("", raw, "plan-5", nil); err == nil {
 					t.Fatal("authoritativeSpecificationItems() error = nil, want an explicit failure")
 				}
 			})
@@ -142,10 +166,10 @@ func TestContextCompiler(t *testing.T) {
 			nested = map[string]any{"child": nested}
 		}
 		deepSpecification := marshalSpecification(t, map[string]any{"goal": "Keep nested detail", "detail": nested})
-		if _, err := authoritativeSpecificationItems("", deepSpecification, "plan-6"); !errors.Is(err, ErrAuthoritativeContextTruncated) {
+		if _, err := authoritativeSpecificationItems("", deepSpecification, "plan-6", nil); !errors.Is(err, ErrAuthoritativeContextTruncated) {
 			t.Fatalf("deep specification error = %v, want ErrAuthoritativeContextTruncated", err)
 		}
-		if _, err := authoritativeSpecificationItems("", []byte(`{"requirements":[]}`), "plan-7"); !errors.Is(err, ErrAuthoritativeContextTruncated) {
+		if _, err := authoritativeSpecificationItems("", []byte(`{"requirements":[]}`), "plan-7", nil); !errors.Is(err, ErrAuthoritativeContextTruncated) {
 			t.Fatalf("specification without a goal or summary error = %v, want ErrAuthoritativeContextTruncated", err)
 		}
 	})
@@ -206,7 +230,7 @@ func TestContextCompiler(t *testing.T) {
 	})
 
 	t.Run("reuses complete durable context without recompiling", func(t *testing.T) {
-		specificationItems, err := authoritativeSpecificationItems("A durable project goal", []byte(`{"summary":"Keep the persisted prompt stable."}`), "plan-8")
+		specificationItems, err := authoritativeSpecificationItems("A durable project goal", []byte(`{"summary":"Keep the persisted prompt stable."}`), "plan-8", nil)
 		if err != nil {
 			t.Fatalf("authoritativeSpecificationItems() error = %v", err)
 		}

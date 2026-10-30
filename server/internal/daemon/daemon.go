@@ -7963,6 +7963,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// LocalWorkDir into execenv. handleTask already validated + locked the
 	// path for worker tasks; leader tasks intentionally skip the assignment.
 	localAssignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
+	if task.ProjectDevelopmentBranch != "" && task.ProjectDevelopmentBranch != "develop" {
+		return TaskResult{}, fmt.Errorf("unsupported autonomous project branch %q", task.ProjectDevelopmentBranch)
+	}
+	if task.ProjectDevelopmentBranch != "" && localAssignment == nil {
+		return TaskResult{}, errors.New("autonomous project code tasks require a local_directory resource on this daemon")
+	}
 	// Reuse intentionally skipped for local_directory tasks: the prior
 	// WorkDir is the user's own path (always present) but the reuse path
 	// loses the envRoot association the GC loop needs, and re-running
@@ -8253,7 +8259,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Task:                  taskCtx,
 		}
 		if localAssignment.UsesWorktree() {
-			prepParams.LocalWorktree = &execenv.LocalWorktreeParams{LocalPath: localAssignment.AbsPath}
+			prepParams.LocalWorktree = &execenv.LocalWorktreeParams{
+				LocalPath: localAssignment.AbsPath,
+				BaseRef:   task.ProjectDevelopmentBranch,
+			}
 			// Take the per-path mutex for the snapshot alone, then hand it
 			// straight back — long enough to read a consistent tree, short
 			// enough that worktree tasks still overlap for the run itself.
@@ -8355,8 +8364,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				taskResult.EnvRoot = env.RootDir
 			}
 			outcome, finalizeErr := env.LocalWorktree.Finalize(taskLog)
-		taskResult.WorktreePath = env.LocalWorktree.Path
-		taskResult.WorktreeRepoPath = env.LocalWorktree.GitRoot
+			taskResult.WorktreePath = env.LocalWorktree.Path
+			taskResult.WorktreeRepoPath = env.LocalWorktree.GitRoot
 			if outcome.Branch != "" {
 				taskResult.BranchName = outcome.Branch
 				taskResult.WorktreeBaseSHA = outcome.BaseSHA

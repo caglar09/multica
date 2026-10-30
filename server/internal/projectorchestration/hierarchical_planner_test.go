@@ -121,6 +121,9 @@ func TestHierarchicalPlanning_TotalGraphIntegrity(t *testing.T) {
 	if len(logicalNodes) == 0 || !logicalNodes[0].Spec.IsEpic {
 		t.Fatalf("logical plan loader lost Epic flag: %#v", logicalNodes)
 	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `DELETE FROM autonomous_project_budget WHERE workspace_id=$1 AND project_id=$2`, fixture.workspaceID, fixture.projectID); err != nil {
+		t.Fatalf("remove optional project budget: %v", err)
+	}
 	ready, err := fixture.store.ListReadyNodes(fixture.ctx, fixture.workspaceID, fixture.projectID, 20)
 	if err != nil {
 		t.Fatalf("list ready compact Epics: %v", err)

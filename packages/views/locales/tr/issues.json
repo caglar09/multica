@@ -153,7 +153,8 @@
     "active_count_other": "{{count}} filtre",
     "in_view": "Zaten bu görünümde",
     "chip_edit": "Düzenle",
-    "chip_save_as": "Farklı kaydet"
+    "chip_save_as": "Farklı kaydet",
+    "section_project_status": "Proje durumu"
   },
   "display": {
     "tooltip": "Görünüm ayarları",
@@ -183,7 +184,9 @@
     "card_project": "Proje",
     "card_labels": "Etiketler",
     "card_child_progress": "Alt görev ilerlemesi",
-    "show_sub_issues": "Alt görevleri göster"
+    "show_sub_issues": "Alt görevleri göster",
+    "columns_section": "Sütunlar",
+    "newest_first": "En yeniden eskiye"
   },
   "view": {
     "tooltip_board": "Pano görünümü",
@@ -443,7 +446,8 @@
     "project_directory_path_copied": "Proje dizini yolu kopyalandı",
     "project_directory_path_copied_with_branch": "Proje dizini yolu kopyalandı — çalışma {{branch}} dalında",
     "workdir_path_copy_failed": "Çalışma dizini yolu kopyalanamadı",
-    "workdir_path_unavailable": "Henüz yerel bir çalışma dizini yok — görev yerel bir ajan tarafından çalıştırılmadı"
+    "workdir_path_unavailable": "Henüz yerel bir çalışma dizini yok — görev yerel bir ajan tarafından çalıştırılmadı",
+    "pull_requests_empty_title": "Bağlı pull request yok."
   },
   "timeline": {
     "loading": "Yükleniyor..."
@@ -554,7 +558,10 @@
     }
   },
   "reply": {
-    "placeholder": "Bir yanıt bırak..."
+    "placeholder": "Bir yanıt bırak...",
+    "annotations": {
+      "add_comment": "Yoruma ekle"
+    }
   },
   "agent_activity": {
     "hover_header_one": "{{count}} ajan çalışıyor",
@@ -888,5 +895,33 @@
     "surface_loading": "{{name}} yükleniyor…",
     "surface_unavailable": "{{name}} arayüzünü yükleyemedi. Yüklü sürüm bunu içermiyor olabilir.",
     "surface_navigated": "{{name}}, panelini başka bir yerden yüklenen bir sayfayla değiştirmeye çalıştı. Durduruldu ve bağlantısı kesildi — çalışma alanı yöneticinize bildirin."
+  },
+  "wakeups": {
+    "title": "Uyandırmalar",
+    "instruction_title": "Uyandırıldığında ne yapılmalı?",
+    "create": {
+      "title": "Yeni uyandırma",
+      "when": "Ne zaman",
+      "choose_condition": "Koşul seçin",
+      "wake": "Uyandır",
+      "choose_agent": "Ajan seçin",
+      "on_behalf": "Çalıştırmalar sizin adınıza gerçekleştirilir.",
+      "cancel": "İptal",
+      "submit": "Oluştur",
+      "open": "Yeni uyandırma"
+    }
+  },
+  "dependencies": {
+    "title": "Bağımlılıklar",
+    "blocked_by": "Engelleyen görevler",
+    "blocks": "Engellediği görevler",
+    "add": "Ekle",
+    "remove": "Bağımlılığı kaldır",
+    "issue_identifier_label": "Bağımlılık oluşturulacak görev numarası",
+    "issue_identifier_placeholder": "Görev numarası (örn. MUL-123)"
+  },
+  "pr_automation": {
+    "link_action": "Pull request bağla",
+    "section_menu": "Pull request otomasyonu"
   }
 }

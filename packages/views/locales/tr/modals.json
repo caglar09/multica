@@ -141,7 +141,10 @@
     "local_clear": "Temizle",
     "local_pick_failed": "Dizin seçici açılamadı.",
     "local_invalid_dir": "Bu dizin kullanılamaz. Başka bir tane seçin.",
-    "local_hint": "Diğer makinelerdeki ajanlar bu yolu göremez — başlatılamazlar. Paylaşılan çalışma için depoları kullanın."
+    "local_hint": "Diğer makinelerdeki ajanlar bu yolu göremez — başlatılamazlar. Paylaşılan çalışma için depoları kullanın.",
+    "bootstrap": {
+      "standard_project": "Standart proje"
+    }
   },
   "create_issue": {
     "sr_manual": "Yeni Görev",

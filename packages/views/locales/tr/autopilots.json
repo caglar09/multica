@@ -463,6 +463,30 @@
     }
   },
   "wakeups": {
-    "title": "Görev uyandırmaları"
+    "title": "Görev uyandırmaları",
+    "create": "Yeni uyandırma",
+    "scopes": {
+      "active": "Bekleyen veya çalışan",
+      "paused": "Duraklatıldı",
+      "disabled": "Kapatıldı",
+      "ended": "Sona erdi",
+      "all": "Tümü"
+    },
+    "sources": {
+      "all": "Kaynak: Tümü"
+    },
+    "all_triggers": "Tüm tetikleyiciler",
+    "all_agents": "Tüm ajanlar",
+    "empty_filtered": "Eşleşen uyandırma yok",
+    "results": "Sayfa {{page}} · {{count}} sonuç",
+    "previous": "Önceki",
+    "next_page": "Sonraki",
+    "create_pick_issue": "Uyandırma eklemek için görevi seçin",
+    "create_pick_issue_description": "Uyandırma bu göreve bağlıdır ve görev sona erdiğinde biter.",
+    "scope": "Kapsam",
+    "source": "Kaynak",
+    "trigger": "Tetikleyici",
+    "target_agent": "Ajanı uyandır",
+    "search": "Görev veya ajan ara"
   }
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,12 +16,14 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 const (
-	projectPlannerPollPeriod = 300 * time.Millisecond
+	projectPlannerPollPeriod  = 300 * time.Millisecond
+	goalDriftAuditSessionKind = "autonomous_goal_drift_audit"
 )
 
 type MikaProjectPlanExecutor struct {
@@ -106,6 +109,138 @@ func (e *MikaProjectPlanExecutor) ExecuteProjectPlan(
 		Provider: strings.TrimSpace(runtime.Provider),
 		Model:    model,
 	}, nil
+}
+
+func (e *MikaProjectPlanExecutor) ExecuteGoalDriftAudit(
+	ctx context.Context,
+	request projectorchestration.GoalDriftAuditRequest,
+	executionID string,
+	attempt int,
+) (string, error) {
+	if e == nil || e.pool == nil || e.taskSvc == nil || e.taskSvc.Queries == nil {
+		return "", projectorchestration.ErrPlannerUnavailable
+	}
+	workspaceID, err := util.ParseUUID(request.WorkspaceID)
+	if err != nil {
+		return "", fmt.Errorf("parse goal drift workspace id: %w", err)
+	}
+	projectID, err := util.ParseUUID(request.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("parse goal drift project id: %w", err)
+	}
+	carrier, _, err := e.ensureProjectManagerCarrier(ctx, workspaceID, projectID)
+	if err != nil {
+		return "", err
+	}
+	session, err := e.ensureGoalDriftAuditSession(ctx, request, carrier)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(executionID) == "" {
+		executionID = request.AuditID
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+	messagePrefix := "goal-drift-audit:" + executionID + ":"
+	var taskID pgtype.UUID
+	var taskStatus string
+	err = e.pool.QueryRow(ctx, `
+		SELECT t.id, t.status
+		FROM chat_message m
+		JOIN agent_task_queue t ON t.id=m.task_id
+		WHERE m.chat_session_id=$1 AND m.client_message_id=$2
+		LIMIT 1
+	`, session.ID, messagePrefix+strconv.Itoa(attempt)).Scan(&taskID, &taskStatus)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("find current goal drift daemon task: %w", err)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = e.pool.QueryRow(ctx, `
+			SELECT t.id, t.status
+			FROM chat_message m
+			JOIN agent_task_queue t ON t.id=m.task_id
+			WHERE m.chat_session_id=$1 AND m.client_message_id LIKE $2
+			  AND t.status IN ('queued','deferred','dispatched','running')
+			ORDER BY m.created_at DESC
+			LIMIT 1
+		`, session.ID, messagePrefix+"%").Scan(&taskID, &taskStatus)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("find active goal drift daemon task: %w", err)
+		}
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		prompt, err := goalDriftAuditPrompt(request)
+		if err != nil {
+			return "", err
+		}
+		sent, err := e.taskSvc.SendDirectChatMessageWithClientMessageID(
+			ctx, session, carrier, carrier.OwnerID, prompt, nil, "member", carrier.OwnerID,
+			messagePrefix+strconv.Itoa(attempt),
+		)
+		if err != nil {
+			return "", fmt.Errorf("enqueue goal drift audit on project manager runtime: %w", err)
+		}
+		taskID = sent.Task.ID
+	}
+	return e.waitForProjectPlannerTask(ctx, taskID)
+}
+
+func (e *MikaProjectPlanExecutor) ensureGoalDriftAuditSession(
+	ctx context.Context,
+	request projectorchestration.GoalDriftAuditRequest,
+	carrier db.Agent,
+) (db.ChatSession, error) {
+	workspaceID, err := util.ParseUUID(request.WorkspaceID)
+	if err != nil {
+		return db.ChatSession{}, fmt.Errorf("parse goal drift workspace id: %w", err)
+	}
+	projectID, err := util.ParseUUID(request.ProjectID)
+	if err != nil {
+		return db.ChatSession{}, fmt.Errorf("parse goal drift project id: %w", err)
+	}
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		return db.ChatSession{}, fmt.Errorf("begin goal drift audit session: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	lockKey := "autonomous-goal-drift-audit:" + request.WorkspaceID + ":" + request.ProjectID
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lockKey); err != nil {
+		return db.ChatSession{}, fmt.Errorf("lock goal drift audit session: %w", err)
+	}
+	var sessionID, agentID pgtype.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT id, agent_id FROM chat_session
+		WHERE workspace_id=$1 AND project_id=$2
+		  AND session_kind=$3 AND status='active'
+		FOR UPDATE
+	`, workspaceID, projectID, goalDriftAuditSessionKind).Scan(&sessionID, &agentID)
+	if err == nil && agentID != carrier.ID {
+		if _, err := tx.Exec(ctx, `
+			UPDATE chat_session SET agent_id=$2, runtime_id=$3, updated_at=now()
+			WHERE id=$1
+		`, sessionID, carrier.ID, carrier.RuntimeID); err != nil {
+			return db.ChatSession{}, fmt.Errorf("rebind goal drift audit session: %w", err)
+		}
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `
+			INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, runtime_id, is_agent_intro, project_id, id, session_kind)
+			VALUES ($1,$2,$3,'Goal Alignment Review',$4,FALSE,$5,$6,$7)
+			RETURNING id
+		`, workspaceID, carrier.ID, carrier.OwnerID, carrier.RuntimeID, projectID, dbid.NewV7(), goalDriftAuditSessionKind).Scan(&sessionID)
+	}
+	if err != nil {
+		return db.ChatSession{}, fmt.Errorf("ensure goal drift audit session: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.ChatSession{}, err
+	}
+	session, err := e.taskSvc.Queries.GetChatSession(ctx, sessionID)
+	if err != nil {
+		return db.ChatSession{}, fmt.Errorf("load goal drift audit session: %w", err)
+	}
+	return session, nil
 }
 
 func (e *MikaProjectPlanExecutor) ensureProjectManagerCarrier(ctx context.Context, workspaceID, projectID pgtype.UUID) (db.Agent, db.AgentRuntime, error) {

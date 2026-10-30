@@ -43,9 +43,10 @@ type contextPlanState struct {
 	NodeDescription        string
 	NodeAcceptanceCriteria string
 	RequiredRoleFamily     string
+	RequirementIDs         []string
 }
 
-func authoritativeSpecificationItems(goal string, raw []byte, planID string) ([]ContextItem, error) {
+func authoritativeSpecificationItems(goal string, raw []byte, planID string, requirementIDs []string) ([]ContextItem, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, fmt.Errorf("%w: specification section is empty", ErrAuthoritativeContextTruncated)
@@ -78,6 +79,60 @@ func authoritativeSpecificationItems(goal string, raw []byte, planID string) ([]
 		if text, ok := fields["summary"].(string); ok && strings.TrimSpace(text) != "" {
 			summaryParts = append(summaryParts, "Summary: "+strings.TrimSpace(text))
 			delete(fields, "summary")
+		}
+		selectedIDs := make(map[string]struct{}, len(requirementIDs))
+		for _, id := range requirementIDs {
+			if id = strings.TrimSpace(id); id != "" {
+				selectedIDs[id] = struct{}{}
+			}
+		}
+		if len(selectedIDs) > 0 {
+			found := make(map[string]struct{}, len(selectedIDs))
+			for _, field := range []string{"requirements", "requirement_details"} {
+				requirements, ok := fields[field].([]any)
+				if !ok {
+					continue
+				}
+				selected := make([]any, 0, len(selectedIDs))
+				hasIDs := false
+				for _, item := range requirements {
+					requirement, ok := item.(map[string]any)
+					if !ok {
+						continue
+					}
+					id, ok := requirement["id"].(string)
+					if !ok {
+						continue
+					}
+					hasIDs = true
+					id = strings.TrimSpace(id)
+					if _, ok := selectedIDs[id]; ok {
+						selected = append(selected, item)
+						found[id] = struct{}{}
+					}
+				}
+				if hasIDs {
+					fields[field] = selected
+				} else {
+					delete(fields, field)
+				}
+			}
+			for id := range selectedIDs {
+				if _, ok := found[id]; !ok {
+					return nil, fmt.Errorf("%w: selected requirement %q is missing from specification", ErrAuthoritativeContextTruncated, id)
+				}
+			}
+		} else {
+			requirements, requirementsOK := fields["requirements"].([]any)
+			_, detailsOK := fields["requirement_details"].([]any)
+			for _, item := range requirements {
+				if _, ok := item.(map[string]any); !ok && requirementsOK && detailsOK {
+					// shortcut: omit unlinked project discovery catalogs; populate node requirement_ids to add task-specific details.
+					delete(fields, "requirements")
+					delete(fields, "requirement_details")
+					break
+				}
+			}
 		}
 	}
 	if len(summaryParts) == 0 {
@@ -133,7 +188,7 @@ func appendSpecificationDetails(items *[]ContextItem, planID, path string, value
 	case []any:
 		for index, child := range typed {
 			childPath := fmt.Sprintf("%s[%d]", path, index)
-			if path == "requirements" {
+			if path == "requirements" || path == "requirement_details" {
 				if requirement, ok := child.(map[string]any); ok {
 					if id, ok := requirement["id"].(string); ok && strings.TrimSpace(id) != "" {
 						childPath = "requirements[" + strings.TrimSpace(id) + "]"
@@ -240,7 +295,7 @@ func CompileWorkflowContext(
 	if err != nil {
 		return ContextPackage{}, err
 	}
-	specificationItems, err := authoritativeSpecificationItems(plan.Goal, plan.Specification, util.UUIDToString(plan.PlanID))
+	specificationItems, err := authoritativeSpecificationItems(plan.Goal, plan.Specification, util.UUIDToString(plan.PlanID), plan.RequirementIDs)
 	if err != nil {
 		return ContextPackage{}, err
 	}
@@ -387,10 +442,11 @@ func loadContextPlanState(ctx context.Context, tx pgx.Tx, issue db.Issue) (conte
 	var specification, policy []byte
 	var nodeID pgtype.UUID
 	var nodeKey, nodeKind, nodeTitle, nodeDescription, requiredFamily, nodeAcceptanceCriteria pgtype.Text
+	var requirementIDs []byte
 	err := tx.QueryRow(ctx, `
 		SELECT p.id,p.revision,p.goal,p.specification,p.policy,
 		       n.id,n.node_key,n.kind,n.title,n.description,n.required_role_family,
-	       n.acceptance_criteria::text
+	       n.acceptance_criteria::text,COALESCE(n.requirement_ids,'[]'::jsonb)
 		FROM autonomous_project_plan p
 		LEFT JOIN autonomous_project_plan_node n
 		  ON n.plan_id=p.id AND n.materialized_issue_id=$3::uuid
@@ -400,13 +456,16 @@ func loadContextPlanState(ctx context.Context, tx pgx.Tx, issue db.Issue) (conte
 		LIMIT 1
 	`, issue.WorkspaceID, issue.ProjectID, issue.ID).Scan(
 		&out.PlanID, &out.PlanRevision, &out.Goal, &specification, &policy,
-		&nodeID, &nodeKey, &nodeKind, &nodeTitle, &nodeDescription, &requiredFamily, &nodeAcceptanceCriteria,
+		&nodeID, &nodeKey, &nodeKind, &nodeTitle, &nodeDescription, &requiredFamily, &nodeAcceptanceCriteria, &requirementIDs,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return contextPlanState{}, ErrContextPlanNotFound
 	}
 	if err != nil {
 		return contextPlanState{}, err
+	}
+	if err := json.Unmarshal(requirementIDs, &out.RequirementIDs); err != nil {
+		return contextPlanState{}, fmt.Errorf("decode plan node requirement IDs: %w", err)
 	}
 	out.Specification = append([]byte(nil), specification...)
 	out.Policy = append([]byte(nil), policy...)

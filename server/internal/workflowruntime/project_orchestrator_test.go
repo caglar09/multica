@@ -1,12 +1,16 @@
 package workflowruntime
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/teamprovision"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestChangeSetTaskMetadata(t *testing.T) {
@@ -109,6 +113,95 @@ func TestPlanningLeasePreservesExistingPlanStatuses(t *testing.T) {
 	}
 	if !completedAt.Valid || owner.Valid {
 		t.Fatalf("expired planning lease recovery = completed:%v owner:%v, want completed and cleared owner", completedAt.Valid, owner.Valid)
+	}
+}
+
+func TestEnsureMaterializedProjectNodeAssignmentRepairsImportedIssue(t *testing.T) {
+	fixture := newAutonomousDeploymentBridgeFixture(t)
+	ctx := fixture.ctx
+	projectFixture := testutil.New(fixture.pool, fixture.workspaceIDText, fixture.ownerID)
+	runtimeID := projectFixture.Runtime(t, "assignment repair runtime")
+	agentIDText := projectFixture.Agent(t, "Mobile Engineer", runtimeID)
+	agentID := d2ParseUUID(t, agentIDText)
+	issueIDText := projectFixture.Issue(t, "Imported task", testutil.Cols{"project_id": fixture.projectIDText})
+	issueID := d2ParseUUID(t, issueIDText)
+
+	teamID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
+	teamPlan, err := json.Marshal(teamprovision.Plan{Roles: []teamprovision.RoleSpec{{Role: "mobile_engineer", Family: "backend"}}})
+	if err != nil {
+		t.Fatalf("encode project team plan: %v", err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_team (
+			id, workspace_id, project_id, squad_id, intent, plan,
+			created_by_agent_id, owner_user_id
+		) VALUES ($1,$2,$3,$4,'test', $5, $6, $7)
+	`, teamID, fixture.workspaceID, fixture.projectID, pgtype.UUID{Bytes: [16]byte{3}, Valid: true}, teamPlan, agentID, d2ParseUUID(t, fixture.ownerID)); err != nil {
+		t.Fatalf("insert project team: %v", err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		INSERT INTO autonomous_project_team_member (team_id, role, agent_id, role_family)
+		VALUES ($1,'mobile_engineer',$2,'backend')
+	`, teamID, agentID); err != nil {
+		t.Fatalf("insert project team member: %v", err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan_node
+		SET kind='implementation', title='Imported task', status='ready', materialized_issue_id=$2
+		WHERE id=$1
+	`, fixture.nodeID, issueID); err != nil {
+		t.Fatalf("materialize imported project node: %v", err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET plan_digest=autonomous_project_plan_digest(id), approved_at=now(), approved_by='assignment repair test'
+		WHERE id=$1
+	`, fixture.planID); err != nil {
+		t.Fatalf("refresh approved plan digest: %v", err)
+	}
+
+	runtime := &Runtime{
+		pool: fixture.pool, projectStore: projectorchestration.NewStore(fixture.pool),
+		team: &teamprovision.Provisioner{}, taskSvc: &service.TaskService{Queries: db.New(fixture.pool)},
+	}
+	node := projectorchestration.PlannedNode{
+		ReadyNode: projectorchestration.ReadyNode{ID: d2UUIDText(fixture.nodeID), Key: "deploy", Kind: projectorchestration.NodeImplementation},
+		Status:    "ready", MaterializedIssueID: issueIDText,
+	}
+	changed, err := runtime.ensureMaterializedProjectNodeAssignment(ctx, fixture.workspaceID, fixture.projectID, node)
+	if err != nil {
+		t.Fatalf("repair imported task assignment: %v", err)
+	}
+	if !changed {
+		t.Fatal("assignment repair reported no change")
+	}
+	var issueAssignee, planAssignee pgtype.UUID
+	var issueAssigneeType, planRole string
+	if err := fixture.pool.QueryRow(ctx, `
+		SELECT i.assignee_id, i.assignee_type, n.assigned_agent_id, n.assigned_role
+		FROM issue i JOIN autonomous_project_plan_node n ON n.materialized_issue_id=i.id
+		WHERE i.id=$1 AND n.id=$2
+	`, issueID, fixture.nodeID).Scan(&issueAssignee, &issueAssigneeType, &planAssignee, &planRole); err != nil {
+		t.Fatalf("read repaired issue and plan assignment: %v", err)
+	}
+	if issueAssignee != agentID || planAssignee != agentID || issueAssigneeType != "agent" || planRole != "mobile_engineer" {
+		t.Fatalf("issue assignment=(%q,%v), plan assignment=(%q,%q), want the project agent", issueAssigneeType, issueAssignee, planAssignee, planRole)
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		UPDATE issue SET assignee_type='member', assignee_id=$2, revision=revision+1 WHERE id=$1
+	`, issueID, d2ParseUUID(t, fixture.ownerID)); err != nil {
+		t.Fatalf("simulate a later human assignment: %v", err)
+	}
+	if _, err := runtime.ensureMaterializedProjectNodeAssignment(ctx, fixture.workspaceID, fixture.projectID, node); err == nil {
+		t.Fatal("human assignment was silently replaced by the project team")
+	}
+	var preservedAssigneeType string
+	var preservedAssigneeID pgtype.UUID
+	if err := fixture.pool.QueryRow(ctx, `SELECT assignee_type, assignee_id FROM issue WHERE id=$1`, issueID).Scan(&preservedAssigneeType, &preservedAssigneeID); err != nil {
+		t.Fatalf("read preserved human assignment: %v", err)
+	}
+	if preservedAssigneeType != "member" || preservedAssigneeID != d2ParseUUID(t, fixture.ownerID) {
+		t.Fatalf("assignment after repair attempt = (%q,%v), want the human assignment", preservedAssigneeType, preservedAssigneeID)
 	}
 }
 

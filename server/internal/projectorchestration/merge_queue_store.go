@@ -16,6 +16,7 @@ import (
 )
 
 var ErrMergeQueueEmpty = errors.New("project merge queue is empty")
+var errMergeReviewArtifactMissing = errors.New("review artifact ID is missing from merge evidence")
 
 type MergeReviewCandidate struct {
 	ChangeSetID          pgtype.UUID
@@ -72,7 +73,7 @@ func (s *Store) ListMergeReviewCandidates(ctx context.Context, workspaceID, proj
 		 AND n.project_id=c.project_id AND n.kind IN ('implementation','migration','integration')
 		JOIN autonomous_project_plan p
 		  ON p.id=c.plan_id AND p.workspace_id=c.workspace_id AND p.project_id=c.project_id
-		 AND p.status IN ('active','blocked')
+		 AND p.status IN ('active','blocked','completed')
 		JOIN autonomous_project_artifact implementation_artifact
 		  ON implementation_artifact.workspace_id=c.workspace_id
 		 AND implementation_artifact.project_id=c.project_id
@@ -251,7 +252,7 @@ func (s *Store) EnqueueReviewedChangeSet(
 	`, candidate.WorkspaceID, candidate.ProjectID).Scan(&mergeOrder); err != nil {
 		return false, fmt.Errorf("allocate project merge order: %w", err)
 	}
-	integrationBranch := "multica/integration/" + util.UUIDToString(candidate.ProjectID)
+	integrationBranch := "develop"
 	tag, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_change_set c
 		SET merge_status='queued', approved_review_task_id=$3, merge_order=$4,
@@ -273,7 +274,7 @@ func (s *Store) EnqueueReviewedChangeSet(
 			  AND ia.status='active' AND ia.valid=TRUE AND ia.artifact_revision=n.spec_revision
 			WHERE n.id=c.node_id AND n.plan_id=c.plan_id AND n.spec_revision=$12
 			  AND n.kind IN ('implementation','migration','integration')
-			  AND p.workspace_id=c.workspace_id AND p.project_id=c.project_id AND p.status IN ('active','blocked')
+			  AND p.workspace_id=c.workspace_id AND p.project_id=c.project_id AND p.status IN ('active','blocked','completed')
 		  AND EXISTS (
 			SELECT 1 FROM autonomous_project_plan_edge e
 			JOIN autonomous_project_plan_node rn ON rn.plan_id=e.plan_id AND rn.workspace_id=e.workspace_id
@@ -354,23 +355,32 @@ func (s *Store) claimNextMerge(ctx context.Context, conn *pgxpool.Conn, workspac
 	}
 	defer tx.Rollback(ctx)
 
-	claim, err := scanMergeQueueClaim(tx.QueryRow(ctx, mergeClaimSQL(`merging`), workspaceID, projectID))
-	if err == nil {
-		if mergeEvidenceString(normalizeMergeEvidence(claim.MergeEvidence), "phase") != "quality_verified" {
-			evidence := normalizeMergeEvidence(claim.MergeEvidence)
-			evidence["phase"] = "recovering"
-			claim.MergeEvidence, err = json.Marshal(evidence)
-			if err != nil {
-				return MergeQueueClaim{}, false, fmt.Errorf("encode interrupted project merge recovery: %w", err)
+	var claim MergeQueueClaim
+	for {
+		claim, err = scanMergeQueueClaim(tx.QueryRow(ctx, mergeClaimSQL(`merging`), workspaceID, projectID))
+		if err == nil {
+			if mergeEvidenceString(normalizeMergeEvidence(claim.MergeEvidence), "phase") != "quality_verified" {
+				evidence := normalizeMergeEvidence(claim.MergeEvidence)
+				evidence["phase"] = "recovering"
+				claim.MergeEvidence, err = json.Marshal(evidence)
+				if err != nil {
+					return MergeQueueClaim{}, false, fmt.Errorf("encode interrupted project merge recovery: %w", err)
+				}
 			}
+			if err := tx.Commit(ctx); err != nil {
+				return MergeQueueClaim{}, false, fmt.Errorf("commit recovered project merge claim: %w", err)
+			}
+			return claim, true, nil
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return MergeQueueClaim{}, false, fmt.Errorf("commit recovered project merge claim: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			break
 		}
-		return claim, true, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return MergeQueueClaim{}, false, fmt.Errorf("load interrupted project merge: %w", err)
+		if !errors.Is(err, errMergeReviewArtifactMissing) {
+			return MergeQueueClaim{}, false, fmt.Errorf("load interrupted project merge: %w", err)
+		}
+		if err := failMergingClaimMissingReviewArtifact(ctx, tx, claim); err != nil {
+			return MergeQueueClaim{}, false, err
+		}
 	}
 	for {
 		claim, err = scanMergeQueueClaim(tx.QueryRow(ctx, mergeClaimSQL(`queued`), workspaceID, projectID))
@@ -421,6 +431,24 @@ func (s *Store) claimNextMerge(ctx context.Context, conn *pgxpool.Conn, workspac
 	}
 }
 
+func failMergingClaimMissingReviewArtifact(ctx context.Context, tx pgx.Tx, claim MergeQueueClaim) error {
+	const message = "interrupted merge has no review_artifact_id in its evidence; stopped without promoting unverified work"
+	tag, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_change_set
+		SET merge_status='integration_failed', last_error=$3::text,
+		    merge_evidence=merge_evidence || jsonb_build_object('phase','integration_failed','last_error',$3::text),
+		    updated_at=now()
+		WHERE id=$1 AND workspace_id=$2 AND merge_status='merging' AND merge_attempt=$4
+	`, claim.ChangeSetID, claim.WorkspaceID, message, claim.MergeAttempt)
+	if err != nil {
+		return fmt.Errorf("stop interrupted merge with missing review evidence: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("interrupted merge claim changed before missing review evidence was recorded")
+	}
+	return nil
+}
+
 func mergeClaimSQL(status string) string {
 	return `SELECT id, workspace_id, project_id, plan_id, node_id, issue_id, source_task_id, approved_review_task_id,
 	       base_sha, branch_name, COALESCE(worktree_path,''), COALESCE(repo_path,''), commit_sha,
@@ -446,7 +474,7 @@ func scanMergeQueueClaim(row pgx.Row) (MergeQueueClaim, error) {
 	var err error
 	claim.ReviewArtifactID, err = mergeEvidenceReviewArtifactID(claim.MergeEvidence)
 	if err != nil {
-		return MergeQueueClaim{}, err
+		return claim, err
 	}
 	return claim, nil
 }
@@ -455,7 +483,7 @@ func mergeEvidenceReviewArtifactID(raw json.RawMessage) (pgtype.UUID, error) {
 	evidence := normalizeMergeEvidence(raw)
 	id := mergeEvidenceString(evidence, "review_artifact_id")
 	if id == "" {
-		return pgtype.UUID{}, errors.New("review artifact ID is missing from merge evidence")
+		return pgtype.UUID{}, errMergeReviewArtifactMissing
 	}
 	return util.ParseUUID(id)
 }
@@ -479,7 +507,7 @@ func mergeQueueProofCurrent(ctx context.Context, q mergeQueueQueryer, claim Merg
 			JOIN autonomous_project_plan_node n ON n.id=c.node_id AND n.plan_id=c.plan_id
 			  AND n.workspace_id=c.workspace_id AND n.project_id=c.project_id
 			JOIN autonomous_project_plan p ON p.id=c.plan_id AND p.workspace_id=c.workspace_id
-		  AND p.project_id=c.project_id AND p.status IN ('active','blocked')
+		  AND p.project_id=c.project_id AND p.status IN ('active','blocked','completed')
 			JOIN autonomous_project_artifact ia ON ia.workspace_id=c.workspace_id
 			  AND ia.project_id=c.project_id AND ia.plan_id=c.plan_id AND ia.node_id=n.id
 			  AND ia.artifact_type='implementation_handoff'
@@ -641,7 +669,12 @@ func (s *Store) finishMerge(ctx context.Context, claim MergeQueueClaim, status, 
 	if err != nil {
 		return fmt.Errorf("encode project merge result: %w", err)
 	}
-	tag, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin project merge finalization: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_change_set
 		SET merge_status=$4, merged_sha=NULLIF($5,''),
 		    merged_at=CASE WHEN $4='merged' THEN now() ELSE NULL END,
@@ -655,6 +688,42 @@ func (s *Store) finishMerge(ctx context.Context, claim MergeQueueClaim, status, 
 	}
 	if tag.RowsAffected() != 1 {
 		return errors.New("project merge attempt lost its claim before finalization")
+	}
+	if status == "merged" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_plan_node n
+			SET status='completed', completed_at=COALESCE(completed_at,now()), updated_at=now()
+			WHERE n.id=$1 AND n.status='verification'
+			  AND NOT EXISTS (
+				SELECT 1 FROM autonomous_project_change_set c
+				WHERE c.plan_id=n.plan_id AND c.node_id=n.id
+				  AND c.merge_status NOT IN ('merged','cancelled')
+			  )
+		`, claim.NodeID); err != nil {
+			return fmt.Errorf("complete integrated project node: %w", err)
+		}
+		if err := refreshReadyTx(ctx, tx, claim.PlanID); err != nil {
+			return fmt.Errorf("refresh project readiness after develop integration: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE autonomous_project_plan p
+			SET status='completed', updated_at=now()
+			WHERE p.id=(SELECT plan_id FROM autonomous_project_change_set WHERE id=$1)
+			  AND p.status IN ('active','blocked')
+			  AND NOT EXISTS (
+				SELECT 1 FROM autonomous_project_plan_node n
+				WHERE n.plan_id=p.id AND n.status NOT IN ('completed','cancelled')
+			  )
+			  AND NOT EXISTS (
+				SELECT 1 FROM autonomous_project_change_set c
+				WHERE c.plan_id=p.id AND c.merge_status NOT IN ('merged','cancelled')
+			  )
+		`, claim.ChangeSetID); err != nil {
+			return fmt.Errorf("complete project plan after its final change set merged: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit project merge finalization: %w", err)
 	}
 	return nil
 }

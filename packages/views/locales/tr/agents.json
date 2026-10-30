@@ -382,6 +382,38 @@
       "discard_cancel": "Düzenlemeye devam et",
       "banner": "{{count}} bitmemiş taslağınız var",
       "pick_hint": "Devam etmek için birini seçin."
+    },
+    "steps": {
+      "runtime": "Runtime seç",
+      "configure": "Yapılandır",
+      "done": "Tamamlandı",
+      "aria": "Ajan oluşturma adımları"
+    },
+    "close": "Kapat",
+    "configure_title": "Ajanı yapılandır",
+    "ask_ai": "Yapay zekâ yazsın",
+    "runtime_label": "Runtime",
+    "change_runtime": "Değiştir",
+    "create_agent": "Ajan oluştur",
+    "runtime_step": {
+      "title": "Bu ajan nerede çalışsın?",
+      "groups": {
+        "machines": "Makineler",
+        "cloud": "Bulut hizmetleri"
+      },
+      "web_local_title": "Masaüstü uygulamasıyla bu bilgisayardaki araçları kullanın",
+      "download_desktop": "Masaüstü uygulamasını indir",
+      "owner_you": "Siz",
+      "harness_count_one": "{{count}} araç",
+      "harness_count_other": "{{count}} araç",
+      "add_remote": "Makine bağla",
+      "hosted_by": "{{vendor}} tarafından barındırılıyor",
+      "connect": "Bağlan",
+      "coming_soon": "Yakında",
+      "cancel": "İptal",
+      "next": "İleri",
+      "footer_selected": "Seçilen:",
+      "search_placeholder": "Runtime veya makine ara"
     }
   },
   "create_dialog": {
@@ -461,7 +493,11 @@
     "incomplete": "Kaydetmeden önce her öneriyi tamamlayın veya kaldırın.",
     "remove": "Öneri {{number}} kaldır",
     "preview_label": "Yeni bir sohbetin önizlemesi",
-    "preview_defaults": "Bunlar yerleşik varsayılanlardır. Üçünü birden değiştirmek için yukarıya bir öneri ekleyin."
+    "preview_defaults": "Bunlar yerleşik varsayılanlardır. Üçünü birden değiştirmek için yukarıya bir öneri ekleyin.",
+    "create_hint": "İsteğe bağlı. Bu ajanla yeni bir sohbet açıldığında gösterilir.",
+    "defaults_summary_one": "Yerleşik {{count}} öneri kullanılıyor",
+    "defaults_summary_other": "Yerleşik {{count}} öneri kullanılıyor",
+    "customize": "Özelleştir"
   },
   "tab_body": {
     "common": {

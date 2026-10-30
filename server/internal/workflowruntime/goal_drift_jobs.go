@@ -5,12 +5,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/util"
 )
+
+func goalDriftAuditPrompt(request projectorchestration.GoalDriftAuditRequest) (string, error) {
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return "", fmt.Errorf("encode goal drift audit request: %w", err)
+	}
+	if len(encoded) > 1<<20 {
+		return "", errors.New("goal drift audit request exceeds the safe size limit")
+	}
+	return "Review only; do not modify files, issues, plans or the team. Inspect current project evidence as needed. " +
+		"Return exactly one JSON object with keys verdict (approved or changes_requested), summary, " +
+		"goal_alignment_score (0-100), goal_alignment_rationale, requirement_attestations (all canonical IDs), " +
+		"and findings (array of id, severity, category, description, evidence, blocking). Do not wrap JSON in markdown.\n\n" + string(encoded), nil
+}
 
 func (r *Runtime) enqueueGoalDriftAuditCheckpoints(
 	ctx context.Context,
@@ -118,14 +133,6 @@ func (r *Runtime) executeGoalDriftAuditJob(ctx context.Context, job controlPlane
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("check prior goal drift audit artifact: %w", err)
 	}
-	if r.goalDriftAuditor == nil {
-		cause := errors.New("goal drift auditor webhook is not configured")
-		if escalationErr := r.recordGoalDriftAuditEscalation(ctx, job, payload, "quality_policy"); escalationErr != nil {
-			return nil, errors.Join(cause, escalationErr)
-		}
-		return nil, cause
-	}
-
 	var planRevision int64
 	var planDigest, planSpecificationRevisionID string
 	err = r.pool.QueryRow(ctx, `
@@ -180,7 +187,25 @@ func (r *Runtime) executeGoalDriftAuditJob(ctx context.Context, job controlPlane
 		Specification:  specification.Specification,
 		CompletedWork:  evidence,
 	}
-	result, err := r.goalDriftAuditor.Audit(ctx, request)
+	executionID := payload.ExecutionID
+	if strings.TrimSpace(executionID) == "" {
+		executionID = job.ID.String()
+	}
+	var result projectorchestration.GoalDriftAuditResult
+	if r.goalDriftAuditor != nil {
+		result, err = r.goalDriftAuditor.Audit(ctx, request)
+	} else if r.projectLeader != nil && r.projectLeader.base != nil {
+		var output string
+		output, err = r.projectLeader.base.ExecuteGoalDriftAudit(ctx, request, executionID, job.Attempts)
+		if err == nil {
+			err = json.Unmarshal([]byte(output), &result)
+			if err != nil {
+				err = fmt.Errorf("decode Multica agent goal drift audit response: %w", err)
+			}
+		}
+	} else {
+		err = errors.New("Multica project manager runtime is not configured for goal drift review")
+	}
 	if err != nil {
 		if escalationErr := r.recordGoalDriftAuditEscalation(ctx, job, payload, "quality_policy"); escalationErr != nil {
 			return nil, errors.Join(err, escalationErr)

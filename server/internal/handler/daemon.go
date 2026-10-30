@@ -3224,6 +3224,16 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
+		resp.ProjectDevelopmentBranch, err = h.claimProjectDevelopmentBranch(
+			r.Context(), issue.WorkspaceID, issue.ProjectID, issue.ID, task.AgentID,
+		)
+		if err != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+				outcome: "error_project_branch",
+				status:  http.StatusInternalServerError,
+				message: "failed to resolve autonomous project branch",
+			}
+		}
 		// Project workflow (MUL-7420): best-effort, like the status catalog
 		// below — a failure degrades to the workspace-wide status rules.
 		resp.ProjectWorkflow = h.claimProjectWorkflow(r.Context(), issue, task)
@@ -4148,11 +4158,16 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// user asked to isolate. That is the exact outcome worktree mode exists to
 	// prevent, so it fails closed here, against the version of the runtime that
 	// is actually claiming.
-	if reason := worktreeClaimBlockReason(
+	hasWorktreeCapability := requestHasClientCapability(r, protocol.DaemonCapabilityLocalWorktreeV1)
+	reason := worktreeClaimBlockReason(
 		resp.ProjectResources,
 		runtime,
-		requestHasClientCapability(r, protocol.DaemonCapabilityLocalWorktreeV1),
-	); reason != "" {
+		hasWorktreeCapability,
+	)
+	if reason == "" && resp.ProjectDevelopmentBranch == "develop" {
+		reason = projectDevelopmentWorktreeBlockReason(resp.ProjectResources, runtime, hasWorktreeCapability)
+	}
+	if reason != "" {
 		slog.Error("task claim: runtime too old for worktree mode; cancelling rather than running in place",
 			"task_id", uuidToString(task.ID),
 			"runtime_id", runtimeID,
@@ -4273,6 +4288,29 @@ func worktreeClaimBlockReason(resources []ProjectResourceData, runtime db.AgentR
 			ref.LocalPath)
 	}
 	return ""
+}
+
+func projectDevelopmentWorktreeBlockReason(resources []ProjectResourceData, runtime db.AgentRuntime, hasWorktreeCapability bool) string {
+	if !runtime.DaemonID.Valid || runtime.DaemonID.String == "" {
+		return "Autonomous project code tasks require a daemon with a local_directory resource assigned to this machine."
+	}
+	for _, res := range resources {
+		if res.ResourceType != "local_directory" {
+			continue
+		}
+		var ref localDirectoryRef
+		if err := json.Unmarshal(res.ResourceRef, &ref); err != nil || ref.DaemonID != runtime.DaemonID.String || strings.TrimSpace(ref.LocalPath) == "" {
+			continue
+		}
+		if !hasWorktreeCapability {
+			return fmt.Sprintf(
+				"Autonomous project code tasks require worktree support on this machine for %q. Update the Multica app on this machine, then re-run the task.",
+				ref.LocalPath,
+			)
+		}
+		return ""
+	}
+	return "Autonomous project code tasks require a local_directory resource assigned to this machine."
 }
 
 // ClaimTaskByRuntime atomically claims the next queued task for a runtime.

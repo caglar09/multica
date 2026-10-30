@@ -92,27 +92,29 @@ func NewBoundedContext(
 		Sections:           make([]ContextSection, 0, len(order)),
 	}
 	otherSectionBudgets := make(map[string]int, len(order)-1)
-	otherSectionsReserve := 0
-	for _, name := range order[1:] {
-		budget := DefaultContextSectionBudgets[name]
-		reserve := 0
+	sectionTokens := func(name string) int {
+		total := 0
 		for _, item := range items[name] {
-			if EstimateContextTokens(item.Text) > 0 {
-				reserve = budget
-				break
-			}
+			total += EstimateContextTokens(item.Text)
 		}
-		otherSectionBudgets[name] = reserve
-		otherSectionsReserve += reserve
+		return total
 	}
-	specificationBudget := DefaultContextSectionBudgets["specification"]
-	if available := pkg.TotalTokenBudget - otherSectionsReserve; available > specificationBudget {
-		specificationBudget = available
+	policyBudget := min(DefaultContextSectionBudgets["policy"], sectionTokens("policy"))
+	specificationLimit := pkg.TotalTokenBudget - policyBudget
+	specificationBudget := min(specificationLimit, max(DefaultContextSectionBudgets["specification"], sectionTokens("specification")))
+	remaining := pkg.TotalTokenBudget - policyBudget - specificationBudget
+	for _, name := range order[2:] {
+		budget := min(remaining, min(DefaultContextSectionBudgets[name], sectionTokens(name)))
+		otherSectionBudgets[name] = budget
+		remaining -= budget
 	}
+	specificationBudget += remaining
 	for _, name := range order {
 		budget := DefaultContextSectionBudgets[name]
 		if name == "specification" {
 			budget = specificationBudget
+		} else if name == "policy" {
+			budget = policyBudget
 		} else {
 			budget = otherSectionBudgets[name]
 		}

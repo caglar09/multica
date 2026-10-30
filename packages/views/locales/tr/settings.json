@@ -84,7 +84,8 @@
     "default_provider_name": "Sağlayıcı"
   },
   "integrations": {
-    "status_not_connected": "Bağlı değil"
+    "status_not_connected": "Bağlı değil",
+    "status_loading": "Kontrol ediliyor..."
   },
   "layout": {
     "scope": {
@@ -215,7 +216,9 @@
     "prompt_hint": "Yazıldığı gibi gönderilir. Ajan görevi zaten görüyor.",
     "template_not_supported": "Değişkenler henüz desteklenmiyor — {{token}}'ı kaldırın. Ajan bu görevi zaten okuyor.",
     "delete_title": "Bu hızlı eylem silinsin mi?",
-    "delete_description": "Her görev kenar çubuğundan kaybolur. Geçmiş çalıştırmalar yürütme günlüğünde kalır. Geri isteme ihtimalinize karşı bunun yerine arşivleyin."
+    "delete_description": "Her görev kenar çubuğundan kaybolur. Geçmiş çalıştırmalar yürütme günlüğünde kalır. Geri isteme ihtimalinize karşı bunun yerine arşivleyin.",
+    "no_target": "Ajan belirtilmesin",
+    "no_target_hint": "Kimseyi etiketlemeden mesaj gönderir."
   },
   "auto_save": {
     "saving": "Kaydediliyor…",
@@ -1530,6 +1533,8 @@
     "share_links_label": "Paylaşım bağlantıları",
     "search_placeholder": "İsim veya e-posta ara",
     "you": "Siz",
-    "joined": "Katıldı {{date}}"
+    "joined": "Katıldı {{date}}",
+    "email_label": "E-posta",
+    "role_label": "Rol"
   }
 }

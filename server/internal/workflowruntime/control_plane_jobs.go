@@ -85,6 +85,7 @@ type goalDriftAuditJobPayload struct {
 	PlanDigest              string `json:"plan_digest"`
 	SpecificationRevisionID string `json:"specification_revision_id"`
 	CheckpointPercent       int    `json:"checkpoint_percent"`
+	ExecutionID             string `json:"execution_id,omitempty"`
 }
 
 func (r *Runtime) enqueueControlPlaneJob(
@@ -327,6 +328,13 @@ func (r *Runtime) executeControlPlaneJob(parent context.Context, job controlPlan
 	if err == nil {
 		if completeErr := r.completeControlPlaneJob(persistCtx, job, result); completeErr != nil {
 			slog.Error("control-plane job completion persist failed", "job_id", util.UUIDToString(job.ID), "error", completeErr)
+			return
+		}
+		if job.Type == controlPlaneJobGoalDriftAudit {
+			if scheduleErr := r.processProjectSchedulingForProject(persistCtx, job.WorkspaceID, job.ProjectID); scheduleErr != nil {
+				slog.Error("project scheduling resume after goal drift audit failed",
+					"project_id", util.UUIDToString(job.ProjectID), "job_id", util.UUIDToString(job.ID), "error", scheduleErr)
+			}
 		}
 		return
 	}

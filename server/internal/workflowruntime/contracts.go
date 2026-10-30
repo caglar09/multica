@@ -513,6 +513,28 @@ func (r *Runtime) prepareAssignmentHandoff(
 	if instructions == "" {
 		instructions = strings.TrimSpace(pending.Action.Params["handoff"])
 	}
+	if selector != "reviewer" && nodeID != "" {
+		var artifactStatus, validationError string
+		err := r.pool.QueryRow(ctx, `
+			SELECT a.status, COALESCE(a.validation_error, '')
+			FROM autonomous_project_artifact a
+			JOIN autonomous_project_plan_node n ON n.id = a.node_id
+			WHERE a.workspace_id = $1 AND a.project_id = $2 AND a.node_id = $3::uuid
+			  AND a.artifact_type = 'implementation_handoff'
+			  AND a.artifact_revision = n.spec_revision
+			ORDER BY a.created_at DESC, a.id DESC
+			LIMIT 1
+		`, issue.WorkspaceID, issue.ProjectID, nodeID).Scan(&artifactStatus, &validationError)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return durableHandoffEnvelope{}, fmt.Errorf("load previous implementation validation: %w", err)
+		}
+		if err == nil && artifactStatus == "invalid" && validationError != "" {
+			instructions = strings.TrimSpace(instructions + "\n\n" +
+				"The previous implementation was rejected by workflow validation: " + validationError + ". " +
+				"Make and commit the actual changes in this task worktree; the commit must differ from the base and its changed files must match the committed diff. " +
+				"If you cannot produce valid evidence, report blockers instead of claiming completion.")
+		}
+	}
 	envelope := durableHandoffEnvelope{
 		SchemaVersion: handoffSchemaVersion,
 		Kind:          "implementation_assignment",

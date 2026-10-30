@@ -1,11 +1,81 @@
 package workflowruntime
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+func TestGoalDriftAuditPromptUsesProjectRequestAndReadOnlyJSONContract(t *testing.T) {
+	request := projectorchestration.GoalDriftAuditRequest{
+		AuditID: "audit-25", WorkspaceID: "workspace-1", ProjectID: "project-1",
+		PlanID: "plan-1", PlanRevision: 4, PlanDigest: strings.Repeat("a", 64),
+		Checkpoint: 25, CompletedNodes: 2, TotalNodes: 8,
+		Specification: projectorchestration.ProjectSpecification{
+			Goal:         "Ship a reliable device cleaner.",
+			Requirements: []projectorchestration.SpecificationRequirement{{ID: "REQ-1", Text: "Clean safely."}},
+		},
+		CompletedWork: []projectorchestration.GoalDriftWorkEvidence{{NodeKey: "scan", Title: "Scan files"}},
+	}
+
+	prompt, err := goalDriftAuditPrompt(request)
+	if err != nil {
+		t.Fatalf("goalDriftAuditPrompt() error = %v", err)
+	}
+	for _, want := range []string{
+		"Review only", "do not modify files", "verdict", "requirement_attestations",
+		"audit-25", "REQ-1", "Scan files",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("goal drift audit prompt missing %q", want)
+		}
+	}
+	var parsed projectorchestration.GoalDriftAuditRequest
+	if err := json.Unmarshal([]byte(prompt[strings.Index(prompt, "{\"audit_id\""):]), &parsed); err != nil {
+		t.Fatalf("prompt request is not JSON: %v", err)
+	}
+	if parsed.AuditID != request.AuditID || parsed.PlanDigest != request.PlanDigest || parsed.Specification.Goal != request.Specification.Goal {
+		t.Fatalf("prompt request lost its plan binding: %+v", parsed)
+	}
+}
+
+func TestEnsureGoalDriftAuditSessionCreatesAndReusesAllowedSessionKind(t *testing.T) {
+	fixture := newAutonomousDeploymentBridgeFixture(t)
+	projectFixture := testutil.New(fixture.pool, fixture.workspaceIDText, fixture.ownerID)
+	runtimeID := projectFixture.Runtime(t, "goal drift audit runtime")
+	agentID := d2ParseUUID(t, projectFixture.Agent(t, "Project Manager", runtimeID))
+	ownerID := d2ParseUUID(t, fixture.ownerID)
+	executor := NewMikaProjectPlanExecutor(fixture.pool, &service.TaskService{Queries: db.New(fixture.pool)})
+	request := projectorchestration.GoalDriftAuditRequest{
+		WorkspaceID: fixture.workspaceIDText,
+		ProjectID:   fixture.projectIDText,
+	}
+	carrier := db.Agent{ID: agentID, OwnerID: ownerID, RuntimeID: d2ParseUUID(t, runtimeID)}
+
+	first, err := executor.ensureGoalDriftAuditSession(fixture.ctx, request, carrier)
+	if err != nil {
+		t.Fatalf("create goal drift audit session: %v", err)
+	}
+	second, err := executor.ensureGoalDriftAuditSession(fixture.ctx, request, carrier)
+	if err != nil {
+		t.Fatalf("reuse goal drift audit session: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("session IDs differ: first=%v second=%v", first.ID, second.ID)
+	}
+	var sessionKind string
+	if err := fixture.pool.QueryRow(fixture.ctx, `SELECT session_kind FROM chat_session WHERE id=$1`, first.ID).Scan(&sessionKind); err != nil {
+		t.Fatalf("read goal drift audit session kind: %v", err)
+	}
+	if sessionKind != goalDriftAuditSessionKind {
+		t.Fatalf("session kind = %q, want %q", sessionKind, goalDriftAuditSessionKind)
+	}
+}
 
 func TestReviewerPrompt_ContainsCanonicalGoal(t *testing.T) {
 	spec := projectorchestration.ProjectSpecification{

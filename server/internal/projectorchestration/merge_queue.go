@@ -515,7 +515,16 @@ func (q *MergeQueue) promoteVerified(ctx context.Context, claim MergeQueueClaim,
 	if err := q.ensureReleaseArtifact(ctx, claim, repoRoot, evidence); err != nil {
 		return result, fmt.Errorf("prepare immutable release artifact: %w", err)
 	}
-	if err := compareAndSwapRef(ctx, repoRoot, ref, candidateSHA, baseSHA, evidence["integration_ref_missing"] == true); err != nil {
+	worktreePath, err := cleanBranchWorktree(ctx, repoRoot, ref, baseSHA)
+	if err != nil {
+		return result, fmt.Errorf("preflight checked-out integration branch: %w", err)
+	}
+	if worktreePath != "" {
+		_, err = runGit(ctx, worktreePath, "merge", "--ff-only", candidateSHA)
+	} else {
+		err = compareAndSwapRef(ctx, repoRoot, ref, candidateSHA, baseSHA, evidence["integration_ref_missing"] == true)
+	}
+	if err != nil {
 		currentSHA, exists, readErr := readRef(ctx, repoRoot, ref)
 		if readErr != nil {
 			return result, errors.Join(err, readErr)

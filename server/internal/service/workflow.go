@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -42,6 +44,37 @@ func (s *TaskService) SetIssueStatusForWorkflow(ctx context.Context, issueID pgt
 		return db.Issue{}, fmt.Errorf("update workflow issue status: %w", err)
 	}
 	s.broadcastIssueUpdated(ctx, updated, issue.Status)
+	return updated, nil
+}
+
+// AssignIssueToAgentForWorkflow is the autonomous-orchestration write path for
+// assigning an unassigned issue while preserving concurrent user changes.
+func (s *TaskService) AssignIssueToAgentForWorkflow(ctx context.Context, issueID, agentID pgtype.UUID) (db.Issue, error) {
+	if s == nil || s.Queries == nil {
+		return db.Issue{}, fmt.Errorf("task service is not configured")
+	}
+	issue, err := s.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		return db.Issue{}, fmt.Errorf("load workflow issue for assignment: %w", err)
+	}
+	if issue.AssigneeType.Valid || issue.AssigneeID.Valid {
+		return db.Issue{}, fmt.Errorf("workflow issue is already assigned")
+	}
+	updated, err := s.Queries.UpdateIssue(ctx, db.UpdateIssueParams{
+		ID: issue.ID, ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
+		AssigneeType: pgtype.Text{String: "agent", Valid: true}, AssigneeID: agentID,
+		StartDate: issue.StartDate, DueDate: issue.DueDate, ParentIssueID: issue.ParentIssueID,
+		ProjectID: issue.ProjectID, Stage: issue.Stage, DuplicateOfIssueID: issue.DuplicateOfIssueID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Issue{}, ErrIssueRevisionConflict
+	}
+	if err != nil {
+		return db.Issue{}, fmt.Errorf("assign workflow issue to agent: %w", err)
+	}
+	if s.Bus != nil {
+		s.broadcastIssueUpdated(ctx, updated, issue.Status)
+	}
 	return updated, nil
 }
 

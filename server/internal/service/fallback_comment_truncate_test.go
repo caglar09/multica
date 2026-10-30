@@ -82,3 +82,19 @@ func TestTruncateFallbackCommentBody(t *testing.T) {
 		}
 	})
 }
+
+func TestFallbackCommentOutputUsesStructuredSummary(t *testing.T) {
+	t.Parallel()
+
+	diff := strings.Repeat("diff --git a/file b/file\\n", 1000)
+	body := `{"summary":"Implemented the native cleanup flow and verified Android and iOS behavior.","decisions":["Use platform-native cleanup"],"changed_files":["src/cleanup.ts"],"diff":"` + diff + `"}`
+
+	got := truncateFallbackCommentBody(fallbackCommentOutput(body), maxSynthesizedFallbackCommentRunes)
+	want := "Implemented the native cleanup flow and verified Android and iOS behavior."
+	if got != want {
+		t.Fatalf("fallback comment output = %q, want concise summary %q", got, want)
+	}
+	if strings.Contains(got, "diff --git") {
+		t.Fatal("fallback comment output contains the structured diff")
+	}
+}

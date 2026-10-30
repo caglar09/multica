@@ -16,6 +16,29 @@ import (
 
 var ErrBudgetExceeded = errors.New("autonomous project budget exhausted")
 
+const projectUnmergedCodeAncestorSQL = `
+	WITH RECURSIVE ancestors(node_id, node_key) AS (
+		SELECT dep.id, dep.node_key
+		FROM autonomous_project_plan_edge e
+		JOIN autonomous_project_plan_node dep
+		  ON dep.plan_id=e.plan_id AND dep.node_key=e.from_node_key
+		WHERE e.plan_id=n.plan_id AND e.to_node_key=n.node_key
+		UNION
+		SELECT dep.id, dep.node_key
+		FROM ancestors a
+		JOIN autonomous_project_plan_edge e
+		  ON e.plan_id=n.plan_id AND e.to_node_key=a.node_key
+		JOIN autonomous_project_plan_node dep
+		  ON dep.plan_id=e.plan_id AND dep.node_key=e.from_node_key
+	)
+	SELECT 1
+	FROM ancestors a
+	JOIN autonomous_project_plan_node dep ON dep.id=a.node_id
+	JOIN autonomous_project_change_set c ON c.plan_id=n.plan_id AND c.node_id=dep.id
+	WHERE dep.kind IN ('implementation','migration','integration')
+	  AND c.merge_status NOT IN ('merged','cancelled')
+`
+
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -451,6 +474,15 @@ func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
 	if err := reconcileCompletedEpicsTx(ctx, tx, planID); err != nil {
 		return fmt.Errorf("reconcile completed project Epics: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node n
+		SET status='pending', ready_at=NULL, updated_at=now()
+		WHERE n.plan_id=$1 AND n.status='ready'
+		  AND n.kind IN ('implementation','migration','integration')
+		  AND EXISTS (`+projectUnmergedCodeAncestorSQL+`)
+	`, planID); err != nil {
+		return fmt.Errorf("return project code nodes to pending until dependencies merge: %w", err)
+	}
 	_, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node n
 		SET status = 'ready',
@@ -501,6 +533,10 @@ func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
 			          )
 			      )
 			  )
+		  )
+		  AND (
+		      n.kind NOT IN ('implementation','migration','integration')
+		      OR NOT EXISTS (`+projectUnmergedCodeAncestorSQL+`)
 		  )
 	`, planID)
 	if err != nil {
@@ -557,7 +593,7 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 		return nil, err
 	}
 
-	var maxParallel int
+	maxParallel := 4
 	if err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(max_parallel_nodes, 4)
 		FROM autonomous_project_budget
@@ -791,6 +827,20 @@ func (s *Store) ClaimReadyNode(
 		return err
 	}
 	if tag.RowsAffected() == 0 {
+		var exhausted bool
+		if err := tx.QueryRow(ctx, `
+			SELECT n.attempt >= n.max_attempts
+			FROM autonomous_project_plan_node n
+			JOIN autonomous_project_plan p ON p.id=n.plan_id
+			WHERE n.workspace_id=$1 AND n.project_id=$2 AND n.node_key=$3
+			  AND p.status IN ('active','blocked')
+			ORDER BY p.revision DESC LIMIT 1
+		`, workspaceID, projectID, nodeKey).Scan(&exhausted); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if exhausted {
+			return fmt.Errorf("%w: node %q exhausted its attempts", ErrBudgetExceeded, nodeKey)
+		}
 		return fmt.Errorf("project node %q is no longer ready for execution", nodeKey)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -961,6 +1011,7 @@ func (s *Store) ResumeBlockedNode(
 		  AND n.project_id = $2
 		  AND n.node_key = $3
 		  AND n.status = 'blocked'
+		  AND n.attempt < n.max_attempts
 		  AND p.status IN ('active', 'blocked')
 		ORDER BY p.revision DESC
 		LIMIT 1
@@ -1354,13 +1405,29 @@ func (s *Store) ResumePlanAfterNodeRetry(
 func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pgtype.UUID) error {
 	var nodeID, projectID, planID pgtype.UUID
 	err := s.pool.QueryRow(ctx, `
-		UPDATE autonomous_project_plan_node
-		SET status = 'completed',
-		    completed_at = COALESCE(completed_at, now()),
+		UPDATE autonomous_project_plan_node current_node
+		SET status = CASE
+			      WHEN current_node.kind IN ('implementation','migration','integration')
+			       AND EXISTS (
+					SELECT 1 FROM autonomous_project_change_set c
+					WHERE c.plan_id=current_node.plan_id AND c.node_id=current_node.id
+					  AND c.merge_status NOT IN ('merged','cancelled')
+				       ) THEN 'verification'
+			      ELSE 'completed'
+			    END,
+		    completed_at = CASE
+			      WHEN current_node.kind IN ('implementation','migration','integration')
+			       AND EXISTS (
+					SELECT 1 FROM autonomous_project_change_set c
+					WHERE c.plan_id=current_node.plan_id AND c.node_id=current_node.id
+					  AND c.merge_status NOT IN ('merged','cancelled')
+			       ) THEN NULL
+			      ELSE COALESCE(current_node.completed_at, now())
+			    END,
 		    blocked_category = NULL,
 		    blocked_reason = NULL,
 		    updated_at = now()
-		WHERE id = (
+		WHERE current_node.id = (
 			SELECT n.id
 			FROM autonomous_project_plan_node n
 			JOIN autonomous_project_plan p ON p.id = n.plan_id
@@ -1381,7 +1448,7 @@ func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pg
 			ORDER BY p.revision DESC, n.updated_at DESC
 			LIMIT 1
 		)
-		RETURNING id, project_id, plan_id
+		RETURNING current_node.id, current_node.project_id, current_node.plan_id
 	`, workspaceID, issueID).Scan(&nodeID, &projectID, &planID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -1420,6 +1487,10 @@ func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pg
 			SELECT 1 FROM autonomous_project_plan_node n
 			WHERE n.plan_id = p.id
 			  AND n.status NOT IN ('completed', 'cancelled')
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_change_set c
+			WHERE c.plan_id=p.id AND c.merge_status NOT IN ('merged','cancelled')
 		  )
 	`, planID); err != nil {
 		return err
@@ -1708,6 +1779,10 @@ func (s *Store) CompleteExternalNode(
 			FROM autonomous_project_plan_node n
 			WHERE n.plan_id = p.id
 			  AND n.status NOT IN ('completed', 'cancelled')
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM autonomous_project_change_set c
+			WHERE c.plan_id=p.id AND c.merge_status NOT IN ('merged','cancelled')
 		  )
 	`, workspaceID, projectID)
 	return err
