@@ -91,6 +91,7 @@ export function ProjectVirtualOfficeView({
         onPlayRecentFlow={handlePlayRecentFlow}
         onToggleFullscreen={handleToggleFullscreen}
         onSendMessage={onSendChatMessage}
+        onOpenLeaderChat={onOpenLeaderChat}
         className="flex-1"
       />
 

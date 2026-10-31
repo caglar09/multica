@@ -136,6 +136,8 @@ export interface OfficeAgentDesk {
   categoryColor?: string;
   characterType?: AgentCharacterType;
   isLeader?: boolean;
+  isDaemonActive?: boolean;
+  isProcessingInquiry?: boolean;
 
   // Tooling & Living Atmosphere
   activeTool?: ActiveToolCall;

@@ -396,16 +396,6 @@ function determineDeskToolAndSkills(
       expiresAt: Date.now() + 60000,
       kind: "thought",
     };
-  } else if (status === "idle") {
-    activeSpeechBubble = {
-      id: `bubble-idle-${role}-${Date.now()}`,
-      deskId: `desk-${role}`,
-      agentName: profile.title,
-      text: "Boşta • 0-Token Standby",
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 60000,
-      kind: "thought",
-    };
   } else if (isVerifying) {
     activeSpeechBubble = {
       id: `bubble-verif-${role}-${Date.now()}`,
@@ -438,18 +428,20 @@ function determineDeskToolAndSkills(
   const allPlanNodes = snapshot?.plan?.nodes ?? [];
   const allWorkflows = snapshot?.workflows ?? [];
 
+  const isDaemonActive = Boolean(
+    snapshot?.enabled &&
+      (Boolean(snapshot?.runtimes && snapshot.runtimes.length > 0) ||
+        snapshot?.bootstrap?.status === "running" ||
+        snapshot?.health?.status === "running" ||
+        snapshot?.health?.status === "ready"),
+  );
+
   // Leader Desk at PM Station
   if (snapshot?.team?.leader_agent_id || agents.length > 0) {
     const leaderId = snapshot?.team?.leader_agent_id ?? agents[0]?.id;
     const leaderAgent = leaderId ? agentsMap.get(leaderId) : undefined;
     const leaderRole =
       snapshot?.team?.leader_name || leaderAgent?.name || "Project Leader (PM)";
-    const leaderStatus: AgentDeskStatus = planAwaitingApproval
-      ? "verifying"
-      : snapshot?.bootstrap?.status === "running"
-        ? "running"
-        : "idle";
-
     const leaderPlanNodes = allPlanNodes.filter(
       (n) => n.assigned_agent_id === leaderId || n.is_epic,
     );
@@ -460,12 +452,26 @@ function determineDeskToolAndSkills(
       (n) => n.id !== activeLeaderNode?.id && ["pending", "ready", "blocked"].includes(n.status),
     );
 
+    const leaderStatus: AgentDeskStatus = planAwaitingApproval
+      ? "verifying"
+      : activeLeaderNode
+        ? "running"
+        : "idle";
+
     const leaderVisual = resolveAgentCategoryAndCharacter(leaderRole, true);
+
+    const leaderTaskTitle = planAwaitingApproval
+      ? "Waiting for plan approval"
+      : activeLeaderNode?.title
+        ? activeLeaderNode.title
+        : queuedLeaderNodes.length > 0
+          ? "Strategic Roadmap Coordination"
+          : "Ofis Koordinasyonu • Tüm Görevler Tamamlandı";
 
     const leaderMeta = determineDeskToolAndSkills(
       leaderRole,
       leaderStatus,
-      activeLeaderNode?.title || snapshot?.plan?.goal || undefined,
+      activeLeaderNode?.title,
       availableSkills,
       "pm_desk",
       0,
@@ -478,9 +484,7 @@ function determineDeskToolAndSkills(
       role: leaderRole,
       avatarUrl: leaderAgent?.avatar_url,
       status: leaderStatus,
-      currentTaskTitle: planAwaitingApproval
-        ? "Waiting for plan approval"
-        : snapshot?.plan?.goal || "Strategic Roadmap Coordination",
+      currentTaskTitle: leaderTaskTitle,
       activeTask: activeLeaderNode
         ? {
             id: activeLeaderNode.id,
@@ -508,6 +512,7 @@ function determineDeskToolAndSkills(
         y: STATION_COORDINATES.pm_desk.y,
       },
       isLeader: true,
+      isDaemonActive,
       category: leaderVisual.category,
       categoryLabel: leaderVisual.categoryLabel,
       categoryColor: leaderVisual.categoryColor,
@@ -517,8 +522,10 @@ function determineDeskToolAndSkills(
     });
   }
 
-  // Team Members
-  const members = snapshot?.team?.members ?? [];
+  // Team Members (Filter out the leader to avoid duplicate leader desk in the pods)
+  const rawMembers = snapshot?.team?.members ?? [];
+  const currentLeaderId = snapshot?.team?.leader_agent_id ?? agents[0]?.id;
+  const members = currentLeaderId ? rawMembers.filter((m) => m.agent_id !== currentLeaderId) : rawMembers;
   if (members.length > 0) {
     const memberCount = members.length;
     const row1Count = memberCount <= 3 ? memberCount : Math.ceil(memberCount / 2);
@@ -621,7 +628,10 @@ function determineDeskToolAndSkills(
         "Standby for next sprint node";
 
       const stationKey: OfficeZoneKey = isQaRole ? "qa_lab" : "coding_pods";
-      const resolvedStatus = status === "idle" && activeTask ? "running" : status;
+      const resolvedStatus =
+        status === "idle" && (activeTask || (isDaemonActive && queuedTasks.length > 0))
+          ? "running"
+          : status;
       const memberVisual = resolveAgentCategoryAndCharacter(member.role, false);
 
       const deskMeta = determineDeskToolAndSkills(
@@ -649,6 +659,7 @@ function determineDeskToolAndSkills(
         stationKey,
         deskCoord: { x: deskX, y: deskY },
         isLeader: false,
+        isDaemonActive,
         category: memberVisual.category,
         categoryLabel: memberVisual.categoryLabel,
         categoryColor: memberVisual.categoryColor,
@@ -740,7 +751,7 @@ function determineDeskToolAndSkills(
     });
   }
 
-  // 3. Build Flow Edges ("Ne Nereye Gitti" Neon Highway System)
+  // 3. Build Flow Edges (Data model edges)
   const flowEdges: OfficeFlowEdge[] = [
     {
       id: "edge-pm-to-coding",
@@ -754,7 +765,7 @@ function determineDeskToolAndSkills(
         x: STATION_COORDINATES.coding_pods.x,
         y: STATION_COORDINATES.coding_pods.y - 60,
       },
-      color: "#06b6d4", // Cyan
+      color: "#06b6d4",
       label: "Task Dispatch",
       active: runningWorkflows.length > 0 || (snapshot?.plan?.nodes?.some((n) => n.status === "in_progress") ?? false),
       pulseSpeed: "normal",
@@ -771,7 +782,7 @@ function determineDeskToolAndSkills(
         x: STATION_COORDINATES.qa_lab.x - 100,
         y: STATION_COORDINATES.qa_lab.y + 40,
       },
-      color: "#a855f7", // Purple
+      color: "#a855f7",
       label: "Code & PR Handoff",
       active: inReviewWorkflows.length > 0 || (snapshot?.plan?.nodes?.some((n) => n.status === "verification") ?? false),
       pulseSpeed: inReviewWorkflows.length > 1 ? "fast" : "normal",
@@ -788,7 +799,7 @@ function determineDeskToolAndSkills(
         x: STATION_COORDINATES.approval_lounge.x - 40,
         y: STATION_COORDINATES.approval_lounge.y + 60,
       },
-      color: "#10b981", // Emerald
+      color: "#10b981",
       label: "Verification Passed",
       active: completedNodesCount > 0 || Boolean(snapshot?.quality_gates?.some((q) => q.status === "passed")),
       pulseSpeed: "normal",
@@ -805,7 +816,7 @@ function determineDeskToolAndSkills(
         x: STATION_COORDINATES.approval_lounge.x - 90,
         y: STATION_COORDINATES.approval_lounge.y - 10,
       },
-      color: "#f59e0b", // Amber
+      color: "#f59e0b",
       label: "Approval Required",
       active: planAwaitingApproval || pendingChangeRequests.length > 0,
       pulseSpeed: "fast",
@@ -822,7 +833,7 @@ function determineDeskToolAndSkills(
         x: STATION_COORDINATES.pm_desk.x + 100,
         y: STATION_COORDINATES.pm_desk.y + 25,
       },
-      color: "#3b82f6", // Blue
+      color: "#3b82f6",
       label: "Approved Plan & Revision",
       active: (snapshot?.plan?.revision ?? 0) > 1,
       pulseSpeed: "normal",
@@ -897,6 +908,15 @@ function determineDeskToolAndSkills(
     .map((d) => d.activeSpeechBubble)
     .filter((b): b is InOfficeSpeechBubble => Boolean(b));
 
+  const activePlanNodesCount = allPlanNodes.filter(
+    (n) => n.status === "in_progress" || n.status === "running",
+  ).length;
+  const activeIssuesCount = issues.filter((i) => i.status === "in_progress").length;
+  const activeWorkflowsCount = allWorkflows.filter(
+    (w) => w.state === "running" || w.state === "debugging",
+  ).length;
+  const realRunningTasks = Math.max(activePlanNodesCount, activeIssuesCount, activeWorkflowsCount);
+
   return {
     stations,
     desks,
@@ -905,8 +925,8 @@ function determineDeskToolAndSkills(
     speechBubbles,
     chatHistory,
     stats: {
-      activeAgents: desks.filter((d) => d.status !== "idle").length || desks.length,
-      runningTasks: runningWorkflows.length || desks.filter((d) => d.status === "running").length,
+      activeAgents: desks.filter((d) => d.status !== "idle" || d.isDaemonActive).length || desks.length,
+      runningTasks: realRunningTasks,
       completedTasks: completedNodesCount,
       pendingApprovals: pendingApprovalsCount,
     },

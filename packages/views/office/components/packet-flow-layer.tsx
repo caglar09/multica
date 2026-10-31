@@ -54,77 +54,62 @@ export function PacketFlowLayer({
         </filter>
       </defs>
 
-      {/* Render Edges */}
+      {/* Render Edges only when actively replaying a specific event (no intrusive persistent lines between desks) */}
       {edges.map((edge) => {
-        const { fromCoord, toCoord, color, active, id } = edge;
+        const { fromCoord, toCoord, color, id } = edge;
+        const isReplayingThisEdge =
+          activeReplay &&
+          activeReplay.fromStation === edge.fromStation &&
+          activeReplay.toStation === edge.toStation;
+
+        if (!isReplayingThisEdge) return null;
+
         // Compute isometric curved control point
         const midX = (fromCoord.x + toCoord.x) / 2;
         const midY = (fromCoord.y + toCoord.y) / 2 - 25;
         const pathData = `M ${fromCoord.x} ${fromCoord.y} Q ${midX} ${midY} ${toCoord.x} ${toCoord.y}`;
         const pathId = `${layerId}-path-${id}`;
 
-        const isReplayingThisEdge =
-          activeReplay &&
-          activeReplay.fromStation === edge.fromStation &&
-          activeReplay.toStation === edge.toStation;
-
         return (
           <g key={id} className="transition-opacity duration-300">
-            {/* Base Highway Track */}
+            {/* Temporary Replay Track */}
             <path
               d={pathData}
               fill="none"
               stroke={color}
-              strokeWidth={isReplayingThisEdge ? "3" : active ? "1.5" : "0.75"}
-              strokeOpacity={isReplayingThisEdge ? "0.9" : active ? "0.45" : "0.15"}
-              strokeDasharray={active ? "6 4" : "3 3"}
-              className={active ? "animate-[dash_20s_linear_infinite]" : undefined}
+              strokeWidth="2.5"
+              strokeOpacity="0.8"
+              strokeDasharray="6 4"
+              className="animate-[dash_20s_linear_infinite]"
             />
 
             {/* Hidden Track for animateMotion */}
             <path id={pathId} d={pathData} fill="none" stroke="none" />
 
-            {/* Continuous Pulse Packet on Active Tracks */}
-            {active && (
-              <circle r="3.5" fill={color} filter={`url(#${layerId}-glow-${getColorName(color)})`}>
-                <animateMotion
-                  dur={edge.pulseSpeed === "fast" ? "1.8s" : "3.2s"}
-                  repeatCount="indefinite"
-                  rotate="auto"
-                >
-                  <mpath href={`#${pathId}`} />
-                </animateMotion>
-              </circle>
-            )}
-
             {/* Active Replay Highlight Packet */}
-            {isReplayingThisEdge && (
-              <g>
-                <circle
-                  r="6"
-                  fill="#ffffff"
-                  stroke={color}
-                  strokeWidth="2.5"
-                  filter={`url(#${layerId}-glow-amber)`}
-                >
-                  <animateMotion dur="2.2s" repeatCount="indefinite" rotate="auto">
-                    <mpath href={`#${pathId}`} />
-                  </animateMotion>
-                </circle>
+            <circle
+              r="6"
+              fill="#ffffff"
+              stroke={color}
+              strokeWidth="2.5"
+              filter={`url(#${layerId}-glow-amber)`}
+            >
+              <animateMotion dur="2.2s" repeatCount="indefinite" rotate="auto">
+                <mpath href={`#${pathId}`} />
+              </animateMotion>
+            </circle>
 
-                {/* Second lagging trail packet */}
-                <circle r="3.5" fill={color} opacity="0.75">
-                  <animateMotion
-                    dur="2.2s"
-                    begin="0.15s"
-                    repeatCount="indefinite"
-                    rotate="auto"
-                  >
-                    <mpath href={`#${pathId}`} />
-                  </animateMotion>
-                </circle>
-              </g>
-            )}
+            {/* Second lagging trail packet */}
+            <circle r="3.5" fill={color} opacity="0.75">
+              <animateMotion
+                dur="2.2s"
+                begin="0.15s"
+                repeatCount="indefinite"
+                rotate="auto"
+              >
+                <mpath href={`#${pathId}`} />
+              </animateMotion>
+            </circle>
           </g>
         );
       })}
@@ -160,12 +145,4 @@ export function PacketFlowLayer({
       )}
     </svg>
   );
-}
-
-function getColorName(hex: string): string {
-  if (hex.includes("06b6d4")) return "cyan";
-  if (hex.includes("a855f7")) return "purple";
-  if (hex.includes("10b981")) return "emerald";
-  if (hex.includes("f59e0b")) return "amber";
-  return "cyan";
 }

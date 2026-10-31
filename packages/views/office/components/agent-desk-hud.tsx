@@ -147,14 +147,22 @@ export function AgentDeskHud({
             ) : null}
           </div>
 
-          {/* Dual monitor & Standby Token Mode */}
+          {/* Dual monitor & Daemon Live / Token Mode */}
           <div className="flex items-center gap-1 shrink-0">
             {furniture?.dualMonitors && (
               <span className="flex items-center gap-0.5 text-slate-500 text-[9px]" title="Dual Monitors Setup">
                 <Monitor className="size-3 text-slate-400" />
               </span>
             )}
-            {isIdle && (
+            {desk.isDaemonActive ? (
+              <span
+                className="flex items-center gap-1 rounded-md bg-emerald-950/70 border border-emerald-500/40 px-1.5 py-0.5 font-mono text-[8.5px] text-emerald-300 shadow-xs shadow-emerald-500/20"
+                title="Daemon Runtime Aktif & Canlı Dinlemede"
+              >
+                <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Daemon Live</span>
+              </span>
+            ) : isIdle ? (
               <span
                 className="flex items-center gap-0.5 rounded bg-slate-800/80 px-1 py-0.5 font-mono text-[8.5px] text-slate-400"
                 title="Zero-Token Idle Standby"
@@ -162,7 +170,7 @@ export function AgentDeskHud({
                 <Moon className="size-2.5 text-slate-400" />
                 <span>0 Tok</span>
               </span>
-            )}
+            ) : null}
           </div>
         </div>
 

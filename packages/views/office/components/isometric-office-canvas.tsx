@@ -34,6 +34,7 @@ interface IsometricOfficeCanvasProps {
   onPlayRecentFlow?: () => void;
   onToggleFullscreen?: () => void;
   onSendMessage?: (payload: { targetAgentId?: string; targetAgentName?: string; text: string }) => Promise<void> | void;
+  onOpenLeaderChat?: () => void;
   className?: string;
 }
 
@@ -48,6 +49,7 @@ export function IsometricOfficeCanvas({
   onPlayRecentFlow,
   onToggleFullscreen,
   onSendMessage,
+  onOpenLeaderChat,
   className,
 }: IsometricOfficeCanvasProps) {
   const { t } = useT("projects");
@@ -366,7 +368,7 @@ export function IsometricOfficeCanvas({
             />
           </svg>
 
-          {/* Animated Neon Packet Flow Layer */}
+          {/* Replay Layer (Only active during replay events, normal persistent tracks hidden) */}
           <PacketFlowLayer edges={flowEdges} activeReplay={activeReplay} />
 
           {/* Agent Desk HUD Overlays (Rendered at exact SVG coordinate anchors) */}
@@ -408,6 +410,7 @@ export function IsometricOfficeCanvas({
           selectedDesk={selectedDesk}
           onSelectDesk={onSelectDesk}
           onSendMessage={onSendMessage}
+          onOpenChatWindow={onOpenLeaderChat}
         />
       </div>
     </div>

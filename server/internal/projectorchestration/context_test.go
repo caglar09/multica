@@ -358,9 +358,10 @@ func (tx *contextCompilerTestTx) QueryRow(_ context.Context, query string, _ ...
 			*dest[3].(*[]byte) = nil
 			*dest[4].(*[]byte) = []byte(`{"autonomy":"assisted"}`)
 			*dest[5].(*pgtype.UUID) = pgtype.UUID{}
-			for _, value := range dest[6:] {
+			for _, value := range dest[6:12] {
 				*value.(*pgtype.Text) = pgtype.Text{}
 			}
+			*dest[12].(*[]byte) = []byte("[]")
 			return nil
 		}}
 	case strings.Contains(query, "FROM autonomous_project_change_set"):
