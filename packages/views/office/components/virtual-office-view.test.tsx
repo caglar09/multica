@@ -17,6 +17,12 @@ const officeMocks = vi.hoisted(() => ({
   send: vi.fn(async () => true),
   retry: vi.fn(async () => true),
   openInChat: vi.fn(),
+  cancelChatTask: vi.fn(async (
+    _taskId: string,
+    _sessionId: string,
+    _options: { restoreDraftToInput: boolean },
+  ) => ({ task_id: "task-running" })),
+  restoreCancelledMessage: null as ((message: { content: string }) => void) | null,
   createIssue: vi.fn(async () => ({ identifier: "MC-42" })),
   rerunIssue: vi.fn(),
   retryAction: vi.fn(),
@@ -38,6 +44,10 @@ vi.mock("@multica/core/api", () => ({
   api: { getBaseUrl: () => "http://127.0.0.1:8080" },
 }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/auth", () => ({
+  useAuthStore: (select: (state: { user: { id: string } }) => unknown) =>
+    select({ user: { id: "user-1" } }),
+}));
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({ issueDetail: (id: string) => `/ws/issues/${id}` }),
 }));
@@ -48,6 +58,17 @@ vi.mock("@multica/core/projects", () => ({
   projectReportOptions: () => ({ queryKey: ["project-report"], queryFn: async () => undefined }),
   useRerunAutonomousIssue: () => ({ mutate: officeMocks.rerunIssue, isPending: false }),
   useRetryAutonomousAction: () => ({ mutate: officeMocks.retryAction, isPending: false }),
+}));
+vi.mock("../../chat/components/use-chat-task-actions", () => ({
+  useChatTaskActions: (_sessionId: string | null, restore: (message: { content: string }) => void) => {
+    officeMocks.restoreCancelledMessage = restore;
+    return { cancelChatTask: officeMocks.cancelChatTask };
+  },
+}));
+vi.mock("../../chat/components/chat-message-list", () => ({
+  ChatMessageList: ({ messages }: { messages: Array<{ id: string; content: string }> }) => (
+    <div>{messages.map((message) => <p key={message.id}>{message.content}</p>)}</div>
+  ),
 }));
 vi.mock("../../navigation", () => ({
   AppLink: ({ href, children, ...props }: React.ComponentProps<"a">) => (
@@ -199,12 +220,13 @@ describe("ProjectVirtualOfficeView", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    officeMocks.restoreCancelledMessage = null;
     officeMocks.conversationOptions = [];
     officeMocks.liveData = { scene: mockScene, isLoading: false, isPartial: false };
     officeMocks.conversation = {
       agentId: "agent-pm",
       sessionId: "session-1",
-      messages: [{ id: "message-1", role: "assistant", content: "Saved reply", created_at: "2026-10-31T12:00:00Z" }],
+      messages: [{ id: "message-1", role: "assistant", content: "Saved reply", task_id: "task-1", created_at: "2026-10-31T12:00:00Z" }],
       pending: null,
       taskMessages: [],
       availability: "online",
@@ -315,6 +337,29 @@ describe("ProjectVirtualOfficeView", () => {
     expect(officeMocks.send).toHaveBeenCalledWith("Summarize project status");
     expect(composer).toHaveValue("Keep this draft");
     expect(await screen.findByText("Saved reply")).toBeInTheDocument();
+  });
+
+  it("cancels an active conversation task and restores its draft", async () => {
+    const user = userEvent.setup();
+    officeMocks.conversation = {
+      ...officeMocks.conversation as object,
+      pending: { task_id: "task-running", status: "running", queued_tasks: [] },
+    };
+    officeMocks.cancelChatTask.mockImplementation(async (_taskId, _sessionId, options) => {
+      if (options.restoreDraftToInput) {
+        officeMocks.restoreCancelledMessage?.({ content: "Continue this request" });
+      }
+      return { task_id: "task-running" } as never;
+    });
+
+    renderWithI18n(<ProjectVirtualOfficeView projectId="project-1" />);
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+
+    expect(officeMocks.cancelChatTask).toHaveBeenCalledWith("task-running", "session-1", {
+      restoreDraftToInput: true,
+      source: "office-dock-stop",
+    });
+    expect(screen.getByLabelText("Message")).toHaveValue("Continue this request");
   });
 
   it("waits for issue creation and links to the created task", async () => {
