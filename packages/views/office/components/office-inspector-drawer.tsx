@@ -3,6 +3,7 @@ import {
   Activity,
   Check,
   CheckCircle2,
+  MessageSquare,
   Play,
   ShieldAlert,
   Sparkles,
@@ -47,6 +48,7 @@ interface OfficeInspectorDrawerProps {
   onResolveEscalation?: (escalationId: string) => void;
   onBlockerAction?: (blocker: OfficeBlocker) => void;
   onDismissFailedBlockers?: (blockers: readonly OfficeBlocker[]) => void;
+  onOpenChatTab?: () => void;
   className?: string;
 }
 
@@ -67,6 +69,7 @@ export function OfficeInspectorDrawer({
   onResolveEscalation,
   onBlockerAction,
   onDismissFailedBlockers,
+  onOpenChatTab,
   className,
 }: OfficeInspectorDrawerProps) {
   const { t } = useT("projects");
@@ -138,6 +141,16 @@ export function OfficeInspectorDrawer({
             {(scene.pendingApprovalsCount > 0 || Boolean(selectedDesk)) && (
               <span className="size-1.5 rounded-full bg-warning" />
             )}
+          </button>
+
+          <button
+            type="button"
+            aria-label={t(($) => $.office.dock.pm_chat)}
+            onClick={onOpenChatTab}
+            className="flex items-center gap-1.5 rounded px-2.5 py-1 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
+          >
+            <MessageSquare className="size-3.5" />
+            <span>{t(($) => $.office.dock.pm_chat)}</span>
           </button>
         </div>
 

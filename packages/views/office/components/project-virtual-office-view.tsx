@@ -50,6 +50,7 @@ export function ProjectVirtualOfficeView({
   const [selectedDeskId, setSelectedDeskId] = useState<string | null>(null);
   const [activeReplay, setActiveReplay] = useState<OfficeReplayEvent | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(true);
+  const [isChatDocked, setIsChatDocked] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const rerunIssue = useRerunAutonomousIssue();
   const retryAction = useRetryAutonomousAction();
@@ -109,7 +110,7 @@ export function ProjectVirtualOfficeView({
         className,
       )}
     >
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col", isChatDocked && "mr-[380px]")}>
         <IsometricOfficeCanvas
           scene={visibleScene}
           activeReplay={activeReplay}
@@ -144,7 +145,9 @@ export function ProjectVirtualOfficeView({
           selectedDesk={conversationDesk}
           onSelectDesk={(desk) => setSelectedDeskId(desk?.id ?? null)}
           conversation={conversation}
-          className="relative z-40 mb-3 md:z-20"
+          isDocked={isChatDocked}
+          onDock={() => setIsChatDocked(true)}
+          onUndock={() => setIsChatDocked(false)}
         />
       </div>
 
@@ -156,7 +159,7 @@ export function ProjectVirtualOfficeView({
         selectedStationKey={selectedStationKey}
         activeReplay={activeReplay}
         canControl={canControl && !isHandlingBlocker}
-        isOpen={isDrawerOpen}
+        isOpen={isDrawerOpen && !isChatDocked}
         onClose={() => setIsDrawerOpen(false)}
         onReplayEvent={handleReplayEvent}
         onApprovePlan={onApprovePlan}
@@ -165,6 +168,7 @@ export function ProjectVirtualOfficeView({
         onResolveEscalation={onResolveEscalation}
         onBlockerAction={handleBlockerAction}
         onDismissFailedBlockers={dismissBlockers}
+        onOpenChatTab={() => setIsChatDocked(true)}
       />
     </div>
   );

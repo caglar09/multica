@@ -316,9 +316,11 @@ export function IsometricOfficeCanvas({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
-        className={cn(
-          "relative flex-1 cursor-grab overflow-hidden bg-gradient-to-b from-muted/30 to-background active:cursor-grabbing",
-        )}
+        className="relative flex-1 cursor-grab overflow-hidden bg-[#0A0C10] active:cursor-grabbing"
+        style={{
+          backgroundImage: "radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px)",
+          backgroundSize: "22px 22px",
+        }}
       >
         {/* World Transform Container */}
         <div

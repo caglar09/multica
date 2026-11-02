@@ -1,16 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useCreateIssue } from "@multica/core/issues/mutations";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import {
   Bot,
   Check,
+  ChevronDown,
   CornerDownLeft,
   ExternalLink,
   Loader2,
+  Minimize2,
   MessageSquare,
+  PanelRight,
   RotateCcw,
   Send,
   Square,
@@ -44,6 +47,9 @@ interface OfficeCommanderDockProps {
   selectedDesk: OfficeAgentDesk | null;
   onSelectDesk: (desk: OfficeAgentDesk | null) => void;
   conversation: Conversation;
+  isDocked?: boolean;
+  onDock?: () => void;
+  onUndock?: () => void;
   className?: string;
 }
 
@@ -80,6 +86,9 @@ export function OfficeCommanderDock({
   selectedDesk,
   onSelectDesk,
   conversation,
+  isDocked = false,
+  onDock,
+  onUndock,
   className,
 }: OfficeCommanderDockProps) {
   const { t } = useT("projects");
@@ -88,6 +97,7 @@ export function OfficeCommanderDock({
   const createIssue = useCreateIssue();
   const [mode, setMode] = useState<DockMode>("ask");
   const [input, setInput] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [assignmentError, setAssignmentError] = useState(false);
   const [createdIssue, setCreatedIssue] = useState<{ identifier: string } | null>(null);
@@ -103,8 +113,26 @@ export function OfficeCommanderDock({
   const { cancelChatTask } = useChatTaskActions(conversation.sessionId, restoreCancelledMessage);
 
   useEffect(() => {
-    if (conversation.sessionId) setIsPanelOpen(true);
-  }, [conversation.sessionId]);
+    if (isDocked) {
+      setMode("ask");
+      setIsPanelOpen(true);
+    }
+  }, [isDocked]);
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setIsPanelOpen(true);
+        inputRef.current?.focus();
+      } else if (event.key === "Escape" && isPanelOpen) {
+        setIsPanelOpen(false);
+        if (isDocked) onUndock?.();
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [isDocked, isPanelOpen, onUndock]);
 
   const handleSend = async (message = input, clearInput = true) => {
     const content = message.trim();
@@ -160,10 +188,16 @@ export function OfficeCommanderDock({
   return (
     <section
       aria-label={t(($) => $.office.dock.title)}
-      className={cn("pointer-events-auto mx-auto flex w-full max-w-4xl flex-col gap-2 px-3", className)}
+      className={cn(
+        "pointer-events-auto flex w-full flex-col gap-2",
+        isDocked
+          ? "absolute inset-y-3 -right-[380px] z-50 w-[380px] max-w-[calc(100vw-1.5rem)]"
+          : cn("absolute bottom-3 left-1/2 z-40 w-full max-w-[680px] -translate-x-1/2 px-3", isPanelOpen && "max-h-[420px]"),
+        className,
+      )}
     >
       {isPanelOpen && mode === "ask" ? (
-        <div className="overflow-hidden rounded-xl border border-border bg-card/95 shadow-xl backdrop-blur-xl">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#121620]/90 shadow-[0_20px_40px_rgba(0,0,0,0.6)] backdrop-blur-2xl animate-in fade-in slide-in-from-bottom-2 duration-200 motion-reduce:animate-none">
           <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
             <div className="flex min-w-0 items-center gap-2">
               <Bot aria-hidden="true" className="size-4 shrink-0 text-primary" />
@@ -205,19 +239,40 @@ export function OfficeCommanderDock({
                   <ExternalLink aria-hidden="true" className="size-3.5" />
                 </Button>
               ) : null}
+              {conversation.canSend ? <span className="hidden items-center gap-1 text-caption text-emerald-400 sm:inline-flex">
+                <span className="size-1.5 rounded-full bg-emerald-400" />
+                {t(($) => $.office.dock.environment_active)}
+              </span> : null}
+              {isDocked ? (
+                <Button type="button" size="icon-sm" variant="ghost" aria-label={t(($) => $.office.dock.float_chat)} onClick={onUndock}>
+                  <ChevronDown aria-hidden="true" className="size-4" />
+                </Button>
+              ) : (
+                <>
+                  <Button type="button" size="icon-sm" variant="ghost" aria-label={t(($) => $.office.dock.minimize)} onClick={() => setIsPanelOpen(false)}>
+                    <Minimize2 aria-hidden="true" className="size-4" />
+                  </Button>
+                  <Button type="button" size="icon-sm" variant="ghost" aria-label={t(($) => $.office.dock.dock_chat)} onClick={onDock}>
+                    <PanelRight aria-hidden="true" className="size-4" />
+                  </Button>
+                </>
+              )}
               <Button
                 type="button"
                 size="icon-sm"
                 variant="ghost"
                 aria-label={t(($) => $.office.dock.close)}
-                onClick={() => setIsPanelOpen(false)}
+                onClick={() => {
+                  setIsPanelOpen(false);
+                  if (isDocked) onUndock?.();
+                }}
               >
                 <span aria-hidden="true">×</span>
               </Button>
             </div>
           </div>
 
-          <div className="flex h-64 min-h-0 flex-col p-2">
+          <div className="flex min-h-0 flex-1 flex-col p-2">
             {conversation.messages.length > 0 || conversation.pending?.task_id ? (
               <ChatMessageList
                 active={isPanelOpen && mode === "ask"}
@@ -245,8 +300,11 @@ export function OfficeCommanderDock({
         </div>
       ) : null}
 
-      <div className="rounded-xl border border-border bg-card/95 p-2 shadow-xl backdrop-blur-xl">
-        <div className="mb-2 flex items-center gap-2">
+      <div className={cn(
+        "shrink-0 rounded-2xl border border-white/10 bg-[#121620]/90 shadow-[0_20px_40px_rgba(0,0,0,0.6)] backdrop-blur-2xl",
+        isPanelOpen ? "p-2" : "flex h-12 items-center gap-2 px-2",
+      )}>
+        {isPanelOpen ? <div className="mb-2 flex items-center gap-2">
           <Button
             type="button"
             size="sm"
@@ -290,7 +348,7 @@ export function OfficeCommanderDock({
               </option>
             ))}
           </select>
-        </div>
+        </div> : null}
 
         <form
           onSubmit={(event) => {
@@ -299,6 +357,12 @@ export function OfficeCommanderDock({
           }}
           className="flex items-center gap-2"
         >
+          {!isPanelOpen ? <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2 py-1 text-caption font-medium text-foreground">
+            <span className="relative"><Bot aria-hidden="true" className="size-4 text-primary" />{conversation.canSend ? <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-emerald-400" /> : null}</span>
+            <span className="font-mono text-micro">
+              {targetDesk?.agentId?.slice(0, 8) ?? t(($) => $.office.dock.pm_badge)} · {t(($) => isLeader ? $.office.dock.pm_badge : $.office.dock.agent_badge)}
+            </span>
+          </span> : null}
           <label htmlFor="office-message" className="sr-only">
             {mode === "ask"
               ? t(($) => $.office.dock.message_label)
@@ -306,6 +370,7 @@ export function OfficeCommanderDock({
           </label>
           <input
             id="office-message"
+            ref={inputRef}
             type="text"
             value={input}
             onChange={(event) => {
@@ -321,15 +386,15 @@ export function OfficeCommanderDock({
                 handleSubmit();
               }
             }}
-            placeholder={t(($) => mode === "ask"
-              ? $.office.dock.message_placeholder
-              : $.office.dock.task_title_placeholder)}
+            placeholder={t(($) => !isPanelOpen && mode === "ask"
+              ? isLeader ? $.office.dock.floating_placeholder : $.office.dock.floating_agent_placeholder
+              : mode === "ask" ? $.office.dock.message_placeholder : $.office.dock.task_title_placeholder)}
             disabled={mode === "ask"
               ? !conversation.canSend
               : !projectId || !targetDesk?.agentId || createIssue.isPending}
             className="min-w-0 flex-1 bg-transparent px-2 py-2 text-body text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
           />
-          <Button
+          {isPanelOpen ? <Button
             type="submit"
             size="sm"
             disabled={mode === "ask"
@@ -348,7 +413,16 @@ export function OfficeCommanderDock({
             )}
             <span>{mode === "ask" ? t(($) => $.office.dock.send) : t(($) => $.office.dock.assign_mode)}</span>
             {mode === "ask" ? <CornerDownLeft aria-hidden="true" className="size-3.5" /> : null}
-          </Button>
+          </Button> : null}
+          {!isPanelOpen ? QUICK_PROMPTS.slice(0, 2).map((kind) => (
+            <Button key={kind} type="button" size="sm" variant="outline" className="hidden h-7 rounded-full px-2.5 text-caption md:inline-flex" disabled={!projectId || !conversation.canSend} onClick={() => void handleSend(t(($) => $.office.dock[`prompt_${kind}`]), false)}>
+              {t(($) => kind === "status" ? $.office.dock.prompt_status_short : $.office.dock[`prompt_${kind}`])}
+            </Button>
+          )) : null}
+          {!isPanelOpen ? <Button type="submit" size="icon-sm" disabled={mode === "ask" ? !input.trim() || !conversation.canSend : !input.trim() || !projectId || !targetDesk?.agentId || createIssue.isPending} aria-label={t(($) => $.office.dock.send)}>
+            {(conversation.isSending || createIssue.isPending) ? <Loader2 aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" /> : <Send aria-hidden="true" className="size-4" />}
+          </Button> : null}
+          {!isPanelOpen ? <Button type="button" size="icon-sm" variant="ghost" aria-label={t(($) => $.office.dock.expand)} onClick={() => setIsPanelOpen(true)}><MessageSquare aria-hidden="true" className="size-4" /></Button> : null}
         </form>
 
         {mode === "ask" && displayedStatusKey ? (
@@ -382,7 +456,7 @@ export function OfficeCommanderDock({
         ) : null}
       </div>
 
-      {mode === "ask" ? (
+      {mode === "ask" && isPanelOpen ? (
         <div className="flex flex-wrap items-center justify-center gap-1.5">
           {QUICK_PROMPTS.map((kind) => (
             <Button
