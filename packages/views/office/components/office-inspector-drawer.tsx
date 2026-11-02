@@ -46,6 +46,7 @@ interface OfficeInspectorDrawerProps {
   onRejectChange?: (changeRequestId: string) => void;
   onResolveEscalation?: (escalationId: string) => void;
   onBlockerAction?: (blocker: OfficeBlocker) => void;
+  onDismissFailedBlockers?: (blockers: readonly OfficeBlocker[]) => void;
   className?: string;
 }
 
@@ -65,6 +66,7 @@ export function OfficeInspectorDrawer({
   onRejectChange,
   onResolveEscalation,
   onBlockerAction,
+  onDismissFailedBlockers,
   className,
 }: OfficeInspectorDrawerProps) {
   const { t } = useT("projects");
@@ -89,6 +91,7 @@ export function OfficeInspectorDrawer({
 
   const pendingChanges = (changeRequests ?? []).filter((cr) => cr.state === "pending");
   const pendingEscalations = (snapshot?.escalations ?? []).filter((e) => e.status === "pending");
+  const failedRunBlockers = scene.blockers.filter((blocker) => blocker.kind === "failed_run");
   const planAwaiting = snapshot?.plan?.status === "awaiting_approval";
 
   return (
@@ -325,7 +328,20 @@ export function OfficeInspectorDrawer({
                 <h2 id="office-blockers-heading" className="text-caption font-semibold text-foreground">
                   {t(($) => $.office.blockers.title)}
                 </h2>
-                <Badge variant="outline" className="text-micro">{scene.blockers.length}</Badge>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge variant="outline" className="text-micro">{scene.blockers.length}</Badge>
+                  {failedRunBlockers.length > 0 && onDismissFailedBlockers ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-micro"
+                      onClick={() => onDismissFailedBlockers(failedRunBlockers)}
+                    >
+                      {t(($) => $.office.blockers.actions.dismiss_failed, { count: failedRunBlockers.length })}
+                    </Button>
+                  ) : null}
+                </div>
               </div>
               <div className="space-y-2">
                 {scene.blockers.map((blocker) => {

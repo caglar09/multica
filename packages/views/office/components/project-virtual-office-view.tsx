@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useAuthStore } from "@multica/core/auth";
 import { useRerunAutonomousIssue, useRetryAutonomousAction } from "@multica/core/projects";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
@@ -9,6 +10,7 @@ import { IsometricOfficeCanvas } from "./isometric-office-canvas";
 import { OfficeInspectorDrawer } from "./office-inspector-drawer";
 import { useOfficeConversation } from "../use-office-conversation";
 import { useOfficeLiveData } from "../use-office-live-data";
+import { useOfficeBlockerDismissals } from "../use-office-blocker-dismissals";
 import type {
   VirtualOfficeViewProps,
   OfficeZoneKey,
@@ -32,6 +34,18 @@ export function ProjectVirtualOfficeView({
 }: VirtualOfficeViewProps) {
   const { t } = useT("projects");
   const { scene, isLoading, isPartial } = useOfficeLiveData(projectId ?? undefined);
+  const userId = useAuthStore((state) => state.user?.id ?? null);
+  const [dismissedBlockerIds, dismissBlockers] = useOfficeBlockerDismissals(userId, projectId);
+  const visibleScene = useMemo(() => {
+    const dismissedFailures = scene.blockers.filter(
+      (blocker) => blocker.kind === "failed_run" && dismissedBlockerIds.has(blocker.id),
+    ).length;
+    return {
+      ...scene,
+      blockers: scene.blockers.filter((blocker) => !dismissedBlockerIds.has(blocker.id)),
+      stats: { ...scene.stats, failed: Math.max(0, scene.stats.failed - dismissedFailures) },
+    };
+  }, [dismissedBlockerIds, scene]);
   const [selectedStationKey, setSelectedStationKey] = useState<OfficeZoneKey | null>(null);
   const [selectedDeskId, setSelectedDeskId] = useState<string | null>(null);
   const [activeReplay, setActiveReplay] = useState<OfficeReplayEvent | null>(null);
@@ -95,45 +109,47 @@ export function ProjectVirtualOfficeView({
         className,
       )}
     >
-      <IsometricOfficeCanvas
-        scene={scene}
-        activeReplay={activeReplay}
-        selectedDesk={selectedDesk}
-        isFullscreen={isFullscreen}
-        onSelectStation={(key) => {
-          setSelectedStationKey(key);
-          setIsDrawerOpen(true);
-        }}
-        onSelectDesk={(desk: OfficeAgentDesk | null) => {
-          setSelectedDeskId(desk?.id ?? null);
-          if (desk) setSelectedStationKey(desk.stationKey);
-          setIsDrawerOpen(true);
-        }}
-        onPlayRecentFlow={handlePlayRecentFlow}
-        onToggleFullscreen={() => setIsFullscreen((fullscreen) => !fullscreen)}
-        className="min-w-0 flex-1"
-      />
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <IsometricOfficeCanvas
+          scene={visibleScene}
+          activeReplay={activeReplay}
+          selectedDesk={selectedDesk}
+          isFullscreen={isFullscreen}
+          onSelectStation={(key) => {
+            setSelectedStationKey(key);
+            setIsDrawerOpen(true);
+          }}
+          onSelectDesk={(desk: OfficeAgentDesk | null) => {
+            setSelectedDeskId(desk?.id ?? null);
+            if (desk) setSelectedStationKey(desk.stationKey);
+            setIsDrawerOpen(true);
+          }}
+          onPlayRecentFlow={handlePlayRecentFlow}
+          onToggleFullscreen={() => setIsFullscreen((fullscreen) => !fullscreen)}
+          className="min-h-0 min-w-0 flex-1"
+        />
 
-      {isPartial && !isLoading ? (
-        <p
-          role="status"
-          className="absolute left-3 top-3 z-20 max-w-[calc(100%-1.5rem)] rounded-md border border-warning/30 bg-background/95 px-3 py-2 text-caption text-muted-foreground shadow-sm md:left-4"
-        >
-          {t(($) => $.office.partial_data)}
-        </p>
-      ) : null}
+        {isPartial && !isLoading ? (
+          <p
+            role="status"
+            className="absolute left-3 top-3 z-20 max-w-[calc(100%-1.5rem)] rounded-md border border-warning/30 bg-background/95 px-3 py-2 text-caption text-muted-foreground shadow-sm md:left-4"
+          >
+            {t(($) => $.office.partial_data)}
+          </p>
+        ) : null}
 
-      <OfficeCommanderDock
-        projectId={projectId}
-        desks={scene.desks}
-        selectedDesk={conversationDesk}
-        onSelectDesk={(desk) => setSelectedDeskId(desk?.id ?? null)}
-        conversation={conversation}
-        className="absolute inset-x-0 bottom-3 z-40 md:z-20"
-      />
+        <OfficeCommanderDock
+          projectId={projectId}
+          desks={scene.desks}
+          selectedDesk={conversationDesk}
+          onSelectDesk={(desk) => setSelectedDeskId(desk?.id ?? null)}
+          conversation={conversation}
+          className="relative z-40 mb-3 md:z-20"
+        />
+      </div>
 
       <OfficeInspectorDrawer
-        scene={scene}
+        scene={visibleScene}
         snapshot={snapshot}
         changeRequests={changeRequests}
         selectedDesk={selectedDesk}
@@ -148,6 +164,7 @@ export function ProjectVirtualOfficeView({
         onRejectChange={onRejectChange}
         onResolveEscalation={onResolveEscalation}
         onBlockerAction={handleBlockerAction}
+        onDismissFailedBlockers={dismissBlockers}
       />
     </div>
   );

@@ -17,7 +17,6 @@ import {
   chatMessagesOptions,
   chatSessionsOptions,
   pendingChatTaskOptions,
-  useTaskMessages,
 } from "@multica/core/chat/queries";
 import { enqueuePendingChatTask, hideQueuedChatMessages } from "@multica/core/chat/pending";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
@@ -119,6 +118,7 @@ export function useOfficeConversation({
   const memberQuery = useQuery(memberListOptions(wsId));
   const sessionsQuery = useQuery({
     ...chatSessionsOptions(wsId),
+    refetchOnMount: "always",
   });
 
   const agent: Agent | undefined =
@@ -157,10 +157,12 @@ export function useOfficeConversation({
   const messagesQuery = useQuery({
     ...chatMessagesOptions(sessionId ?? ""),
     enabled: !!sessionId,
+    refetchOnMount: "always",
   });
   const pendingQuery = useQuery({
     ...pendingChatTaskOptions(sessionId ?? ""),
     enabled: !!sessionId,
+    refetchOnMount: "always",
   });
   const pending: ChatPendingTask | null = pendingQuery.data ?? null;
   const messages = useMemo(
@@ -175,8 +177,6 @@ export function useOfficeConversation({
       pending?.status !== "failed" &&
       pending?.status !== "cancelled",
   );
-  const taskMessagesQuery = useTaskMessages(taskId, taskIsLive, !!sessionId && !!taskId);
-
   const [sendError, setSendError] = useState<OfficeConversationError | null>(null);
   const [isSending, setIsSending] = useState(false);
   const isSendingRef = useRef(false);
@@ -358,7 +358,6 @@ export function useOfficeConversation({
     sessionId,
     messages,
     pending,
-    taskMessages: taskMessagesQuery.data ?? [],
     availability,
     status,
     isLoading: queryIsLoading || (!!sessionId && (messagesQuery.isPending || pendingQuery.isPending)),

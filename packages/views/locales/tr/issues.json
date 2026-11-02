@@ -484,6 +484,12 @@
     "show_more_activities_other": "{{count}} aktivite daha göster"
   },
   "comment": {
+    "add_reaction": "Tepki ekle",
+    "collapse_thread": "Yorum dizisini daralt",
+    "deleted_placeholder": "Bu yorum silindi",
+    "copy_link_action": "Bağlantıyı kopyala",
+    "link_copied": "Bağlantı kopyalandı",
+    "link_copy_failed": "Bağlantı kopyalanamadı",
     "delete_title": "Yorumu sil",
     "delete_desc": "Bu yorum kalıcı olarak silinecek. Bu işlem geri alınamaz.",
     "delete_desc_with_replies": "Bu yorum ve tüm yanıtları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
@@ -642,7 +648,28 @@
       "source_backfill": "Geriye dönük atıf",
       "source_unattributed": "Sorumlu üye çözülemedi"
     },
-    "usage_total_tooltip": "Bu görev için token kullanımı — çalışma başına döküm için tıklayın"
+    "usage_total_tooltip": "Bu görev için token kullanımı — çalışma başına döküm için tıklayın",
+    "summary_runs_one": "{{count}} çalışma",
+    "summary_runs_other": "{{count}} çalışma",
+    "latest": "En son",
+    "open_timeline": "Zaman çizelgesini aç",
+    "strip_aria": "Çalışma başına maliyet — çalışma zaman çizelgesini aç",
+    "sparkline_now": "Şimdi",
+    "jump_to_run": "Çalışmaya git"
+  },
+  "inline_run": {
+    "full_log": "Tam günlüğü aç"
+  },
+  "deliverables": {
+    "section_title": "Teslimatlar",
+    "view_all_one": "{{count}} teslimatın tümünü gör",
+    "view_all_other": "{{count}} teslimatın tümünü gör"
+  },
+  "runs_timeline": {
+    "stat_spent": "Harcanan",
+    "stat_tokens": "Token",
+    "stat_agent_time": "Ajan süresi",
+    "tokens_count": "{{tokens}} token"
   },
   "usage_detail": {
     "title": "Kullanım dökümü",

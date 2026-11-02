@@ -765,6 +765,7 @@
       "actions": {
         "open_issue": "查看事项",
         "retry": "重试",
+        "dismiss_failed": "关闭 {{count}} 条失败警告",
         "resolve_escalation": "解决升级事项",
         "approve_plan": "批准计划"
       },

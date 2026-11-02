@@ -765,6 +765,7 @@
       "actions": {
         "open_issue": "이슈 보기",
         "retry": "재시도",
+        "dismiss_failed": "실패 알림 {{count}}개 닫기",
         "resolve_escalation": "에스컬레이션 해결",
         "approve_plan": "계획 승인"
       },

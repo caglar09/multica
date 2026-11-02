@@ -754,6 +754,7 @@
       "actions": {
         "open_issue": "İşi görüntüle",
         "retry": "Yeniden dene",
+        "dismiss_failed": "{{count}} başarısız uyarıyı kapat",
         "resolve_escalation": "Eskalasyonu çöz",
         "approve_plan": "Planı onayla"
       },

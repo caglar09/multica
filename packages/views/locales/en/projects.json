@@ -872,6 +872,7 @@
       "actions": {
         "open_issue": "View issue",
         "retry": "Retry",
+        "dismiss_failed": "Dismiss {{count}} failed alerts",
         "resolve_escalation": "Resolve escalation",
         "approve_plan": "Approve plan"
       },

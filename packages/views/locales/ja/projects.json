@@ -765,6 +765,7 @@
       "actions": {
         "open_issue": "課題を表示",
         "retry": "再試行",
+        "dismiss_failed": "失敗した警告 {{count}} 件を閉じる",
         "resolve_escalation": "エスカレーションを解決",
         "approve_plan": "プランを承認"
       },

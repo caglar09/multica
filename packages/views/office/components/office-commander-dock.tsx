@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useCreateIssue } from "@multica/core/issues/mutations";
-import type { ChatMessage } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import {
@@ -14,11 +13,14 @@ import {
   MessageSquare,
   RotateCcw,
   Send,
-  UserRound,
+  Square,
 } from "lucide-react";
-import { useLocale, useT } from "../../i18n";
+import { toast } from "sonner";
+import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { ChatMessageList } from "../../chat/components/chat-message-list";
+import { useChatTaskActions } from "../../chat/components/use-chat-task-actions";
 import type { OfficeAgentDesk } from "../types";
 import type { useOfficeConversation } from "../use-office-conversation";
 
@@ -72,17 +74,6 @@ function statusKey(status: Conversation["status"], isLeader: boolean): DockStatu
   }
 }
 
-function messageDate(value: string, locale: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? ""
-    : new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(date);
-}
-
-function messageContent(message: ChatMessage, failedMessage: string): string {
-  return message.failure_reason ? failedMessage : message.content;
-}
-
 export function OfficeCommanderDock({
   projectId,
   desks,
@@ -92,7 +83,7 @@ export function OfficeCommanderDock({
   className,
 }: OfficeCommanderDockProps) {
   const { t } = useT("projects");
-  const locale = useLocale();
+  const { t: tChat } = useT("chat");
   const paths = useWorkspacePaths();
   const createIssue = useCreateIssue();
   const [mode, setMode] = useState<DockMode>("ask");
@@ -100,25 +91,20 @@ export function OfficeCommanderDock({
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [assignmentError, setAssignmentError] = useState(false);
   const [createdIssue, setCreatedIssue] = useState<{ identifier: string } | null>(null);
-  const transcriptRef = useRef<HTMLDivElement>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const targetDesk = selectedDesk ?? desks.find((desk) => desk.isLeader) ?? desks[0] ?? null;
   const isLeader = targetDesk?.isLeader === true;
   const displayedStatusKey = statusKey(conversation.status, isLeader);
-  const activeTaskMessages = useMemo(() => {
-    const pendingStatus = conversation.pending?.status;
-    if (!conversation.pending?.task_id || ["queued", "completed", "failed", "cancelled"].includes(pendingStatus ?? "")) {
-      return [];
-    }
-    return conversation.taskMessages.filter(
-      (message) => message.type === "text" || message.type === "thinking",
-    );
-  }, [conversation.pending, conversation.taskMessages]);
+  const restoreCancelledMessage = useCallback(
+    (message: { content: string }) => setInput(message.content),
+    [],
+  );
+  const { cancelChatTask } = useChatTaskActions(conversation.sessionId, restoreCancelledMessage);
 
   useEffect(() => {
-    const element = transcriptRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [conversation.messages, activeTaskMessages, conversation.pending, isPanelOpen]);
+    if (conversation.sessionId) setIsPanelOpen(true);
+  }, [conversation.sessionId]);
 
   const handleSend = async (message = input, clearInput = true) => {
     const content = message.trim();
@@ -129,6 +115,22 @@ export function OfficeCommanderDock({
 
   const handleRetry = async () => {
     if (await conversation.retry()) setInput("");
+  };
+
+  const handleStop = async () => {
+    const pending = conversation.pending;
+    const sessionId = conversation.sessionId;
+    if (!pending?.task_id || !sessionId || isCancelling) return;
+    setIsCancelling(true);
+    try {
+      const result = await cancelChatTask(pending.task_id, sessionId, {
+        restoreDraftToInput: true,
+        source: "office-dock-stop",
+      });
+      if (!result) toast.error(tChat(($) => $.queue.action_failed_toast));
+    } finally {
+      setIsCancelling(false);
+    }
   };
 
   const handleAssign = async () => {
@@ -173,6 +175,23 @@ export function OfficeCommanderDock({
               ) : null}
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              {conversation.pending?.task_id && conversation.sessionId ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={isCancelling}
+                  onClick={() => void handleStop()}
+                  aria-label={tChat(($) => $.input.stop_tooltip)}
+                >
+                  {isCancelling ? (
+                    <Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />
+                  ) : (
+                    <Square aria-hidden="true" className="size-3" />
+                  )}
+                  <span>{tChat(($) => $.input.stop_tooltip)}</span>
+                </Button>
+              ) : null}
               {conversation.sessionId ? (
                 <Button
                   type="button"
@@ -198,68 +217,19 @@ export function OfficeCommanderDock({
             </div>
           </div>
 
-          <div
-            ref={transcriptRef}
-            role="log"
-            aria-live="polite"
-            aria-relevant="additions text"
-            className="max-h-72 space-y-3 overflow-y-auto p-4"
-          >
-            {conversation.messages.map((message) => (
-              <article
-                key={message.id}
-                className={cn(
-                  "max-w-[88%] rounded-xl border p-3 text-body",
-                  message.role === "user"
-                    ? "ml-auto border-primary/30 bg-primary/10 text-foreground"
-                    : "mr-auto border-border bg-muted/40 text-foreground",
-                )}
-              >
-                <div className="mb-1 flex items-center justify-between gap-3 text-caption text-muted-foreground">
-                  <span className="flex items-center gap-1.5 font-medium">
-                    {message.role === "user" ? (
-                      <UserRound aria-hidden="true" className="size-3.5" />
-                    ) : (
-                      <Bot aria-hidden="true" className="size-3.5" />
-                    )}
-                    {message.role === "user"
-                      ? t(($) => $.office.dock.you)
-                      : targetDesk?.agentName ?? t(($) => $.office.dock.title)}
-                  </span>
-                  <time dateTime={message.created_at}>{messageDate(message.created_at, locale)}</time>
-                </div>
-                <p className="whitespace-pre-wrap break-words">
-                  {messageContent(message, t(($) => $.office.dock.error))}
-                </p>
-              </article>
-            ))}
-
-            {conversation.pending ? (
-              <p className="text-caption text-muted-foreground" role="status">
-                {displayedStatusKey
-                  ? t(($) => $.office.dock[displayedStatusKey])
-                  : conversation.pending.status === "queued"
-                    ? t(($) => $.office.dock.queued)
-                    : t(($) => $.office.dock.loading)}
+          <div className="flex h-64 min-h-0 flex-col p-2">
+            {conversation.messages.length > 0 || conversation.pending?.task_id ? (
+              <ChatMessageList
+                active={isPanelOpen && mode === "ask"}
+                messages={conversation.messages}
+                pendingTask={conversation.pending}
+                availability={conversation.availability}
+              />
+            ) : (
+              <p className="py-4 text-center text-body text-muted-foreground">
+                {t(($) => $.office.dock.empty)}
               </p>
-            ) : null}
-
-            {activeTaskMessages.map((message) => (
-              <p
-                key={`${message.task_id}:${message.seq}`}
-                className="mr-auto max-w-[88%] rounded-xl border border-border bg-muted/40 p-3 text-body text-foreground"
-              >
-                {message.content}
-              </p>
-            ))}
-
-            {conversation.isSending ? (
-              <p className="flex items-center gap-2 text-caption text-muted-foreground" role="status">
-                <Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />
-                {t(($) => $.office.dock.loading)}
-              </p>
-            ) : null}
-
+            )}
             {conversation.sendError ? (
               <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-body text-destructive">
                 <p>{t(($) => $.office.dock.error)}</p>
@@ -270,12 +240,6 @@ export function OfficeCommanderDock({
                   </Button>
                 ) : null}
               </div>
-            ) : null}
-
-            {conversation.messages.length === 0 && !conversation.pending && !conversation.sendError ? (
-              <p className="py-4 text-center text-body text-muted-foreground">
-                {t(($) => $.office.dock.empty)}
-              </p>
             ) : null}
           </div>
         </div>
@@ -347,6 +311,9 @@ export function OfficeCommanderDock({
             onChange={(event) => {
               setInput(event.target.value);
               setAssignmentError(false);
+            }}
+            onFocus={() => {
+              if (mode === "ask") setIsPanelOpen(true);
             }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
