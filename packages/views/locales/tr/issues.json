@@ -663,7 +663,18 @@
   "deliverables": {
     "section_title": "Teslimatlar",
     "view_all_one": "{{count}} teslimatın tümünü gör",
-    "view_all_other": "{{count}} teslimatın tümünü gör"
+    "view_all_other": "{{count}} teslimatın tümünü gör",
+    "locate_comment": "Yorumlarda göster",
+    "filter_all": "Tümü",
+    "filter_image": "Görseller",
+    "filter_document": "Belgeler",
+    "filter_video": "Videolar",
+    "filter_misc": "Diğer",
+    "overview_title": "{{identifier}} teslimatları",
+    "overview_summary_with_size_one": "{{count}} teslimat · {{size}}",
+    "overview_summary_with_size_other": "{{count}} teslimat · toplam {{size}}",
+    "overview_close": "Kapat",
+    "group_comment_by": "{{name}} adlı kişinin yorumu"
   },
   "runs_timeline": {
     "stat_spent": "Harcanan",
