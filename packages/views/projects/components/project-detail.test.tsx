@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   approveAutonomousPlan: vi.fn(),
   retryAutonomousAction: vi.fn(),
   rerunAutonomousIssue: vi.fn(),
+	officeViewProps: null as unknown,
 	startProjectPlanning: vi.fn(),
   importProject: vi.fn(),
   syncProject: vi.fn(),
@@ -426,6 +427,13 @@ vi.mock("./cockpit", () => ({
   ProjectCockpitView: () => <div data-testid="project-cockpit-view" />,
 }));
 
+vi.mock("../../office", () => ({
+  ProjectVirtualOfficeView: (props: unknown) => {
+    mocks.officeViewProps = props;
+    return <div data-testid="project-virtual-office-view" />;
+  },
+}));
+
 vi.mock("../../layout/breadcrumb-header", () => ({
   BreadcrumbHeader: ({ actions }: { actions: React.ReactNode }) => (
     <header>{actions}</header>
@@ -511,6 +519,7 @@ beforeEach(() => {
   mocks.restartAutonomousWorkflow.mockReset();
   mocks.retryAutonomousAction.mockReset();
   mocks.rerunAutonomousIssue.mockReset();
+	mocks.officeViewProps = null;
 });
 
 describe("ProjectDetail content tabs", () => {
@@ -756,12 +765,15 @@ describe("ProjectDetail deployment tab", () => {
 });
 
 describe("ProjectDetail office tab", () => {
-  it("stores office in the URL and switches to virtual office view", async () => {
-    const user = userEvent.setup();
-    renderProjectDetail();
+  it("passes the project leader session without the legacy send callback", () => {
+    renderProjectDetail("tab=office");
 
-    await user.click(screen.getByRole("button", { name: "Office" }));
-
-    expect(mocks.replace).toHaveBeenCalledWith("/test-workspace/projects/project-1?tab=office");
+    expect(screen.getByTestId("project-virtual-office-view")).toBeInTheDocument();
+    expect(mocks.officeViewProps).toMatchObject({
+      projectId: "project-1",
+      leaderSessionId: "pm-session-1",
+      leaderAgentId: "pm-agent-1",
+    });
+    expect(mocks.officeViewProps).not.toHaveProperty("onSendChatMessage");
   });
 });

@@ -637,6 +637,7 @@
   },
   "office": {
     "title": "가상 오피스",
+    "partial_data": "일부 오피스 데이터를 불러오고 있거나 사용할 수 없습니다.",
     "subtitle": "2.5D 실시간 멀티 에이전트 협업 및 관전 뷰",
     "zones": {
       "pm_desk": "기획 & PM 데스크",
@@ -647,8 +648,13 @@
     "stats": {
       "active_agents": "활성 에이전트",
       "running_tasks": "진행 중인 태스크",
-      "completed_tasks": "승인된 태스크",
-      "pending_approvals": "대기 중인 승인"
+      "completed_tasks": "완료된 작업",
+      "pending_approvals": "대기 중인 승인",
+      "health_summary": "프로젝트 활동 요약",
+      "blocked": "차단됨",
+      "failed": "실패",
+      "waiting": "대기 중",
+      "resumable": "재개 가능"
     },
     "spectator_feed": "관전자 활동 피드",
     "play_flow": "최근 흐름 재생",
@@ -689,7 +695,123 @@
       "escalation_with_category": "에스컬레이션: {{category}}",
       "resolve_escalation": "에스컬레이션 해결",
       "all_clear": "모두 승인됨",
-      "no_pending": "검토 대기 중인 결정 또는 에스컬레이션이 없습니다."
+      "no_pending": "검토 대기 중인 결정 또는 에스컬레이션이 없습니다.",
+      "escalation_pending": "대기 중인 에스컬레이션"
+    },
+    "desk_status": {
+      "coding": "코딩 중",
+      "debugging": "디버깅 중",
+      "testing": "테스트 중",
+      "blocked": "차단됨",
+      "failed": "실패",
+      "approved": "승인됨",
+      "standby": "대기",
+      "standby_tasks": "작업 대기 중"
+    },
+    "categories": {
+      "management": "관리",
+      "architecture": "아키텍처",
+      "frontend": "프런트엔드",
+      "mobile": "모바일",
+      "backend": "백엔드",
+      "qa": "품질 보증",
+      "security": "보안",
+      "general": "일반"
+    },
+    "active_tasks_count": "진행 중인 작업 {{count}}개",
+    "select_desk": "{{name}}의 책상 선택",
+    "leader_pm": "리드 · PM",
+    "runtime_live": "런타임 사용 가능",
+    "runtime_unavailable": "런타임을 사용할 수 없음",
+    "active_skill": "활성 스킬",
+    "active_tool_call": "실시간 도구 호출",
+    "allowed_skills_count": "허용된 스킬 ({{count}})",
+    "close_inspector": "인스펙터 닫기",
+    "metrics": {
+      "leader": "프로젝트 리드",
+      "plan_revision": "계획 리비전",
+      "nodes": "계획 항목",
+      "members": "팀 구성원",
+      "running": "실행 중",
+      "gates": "품질 게이트",
+      "reviews": "검토 중",
+      "pending": "대기 중",
+      "completed": "완료"
+    },
+    "activities": {
+      "task_dispatched": "작업 할당됨",
+      "task_completed": "작업 완료됨",
+      "task_failed": "작업 실패함",
+      "review_requested": "검토 요청됨",
+      "reviewed": "검토 완료됨",
+      "plan_approved": "계획 승인됨",
+      "escalation_created": "에스컬레이션 생성됨"
+    },
+    "flow_kinds": {
+      "task_dispatch": "작업 할당",
+      "review_handoff": "검토로 인계",
+      "plan_dependency": "계획 종속성",
+      "issue_dependency": "이슈 종속성",
+      "escalation": "에스컬레이션"
+    },
+    "blockers": {
+      "title": "작업 차단 항목",
+      "more_count": "외 {{count}}개",
+      "severity": {
+        "waiting": "대기 중",
+        "warning": "경고",
+        "error": "오류"
+      },
+      "actions": {
+        "open_issue": "이슈 보기",
+        "retry": "재시도",
+        "resolve_escalation": "에스컬레이션 해결",
+        "approve_plan": "계획 승인"
+      },
+      "reasons": {
+        "issue_dependency": "선행 이슈 {{dependencyCount}}개를 기다리고 있습니다.",
+        "plan_dependency": "선행 계획 항목을 기다리고 있습니다.",
+        "failed_run": "에이전트 실행에 실패했습니다.",
+        "failed_gate": "품질 게이트에 실패했습니다.",
+        "blocked_agent": "에이전트가 차단되었습니다.",
+        "runtime_unavailable": "에이전트 런타임을 사용할 수 없습니다.",
+        "approval_required": "계속하려면 승인이 필요합니다."
+      }
+    },
+    "dock": {
+      "title": "프로젝트 도우미",
+      "ask_mode": "질문",
+      "assign_mode": "작업 할당",
+      "message_label": "메시지",
+      "message_placeholder": "메시지를 입력하세요…",
+      "send": "보내기",
+      "retry": "다시 시도",
+      "loading": "메시지 불러오는 중…",
+      "empty": "아직 메시지가 없습니다.",
+      "error": "메시지를 보내지 못했습니다.",
+      "queued": "메시지가 대기열에 추가됨",
+      "offline": "에이전트가 오프라인입니다",
+      "forbidden": "이 에이전트에게 메시지를 보낼 권한이 없습니다",
+      "runtime_unavailable": "에이전트 런타임을 사용할 수 없습니다",
+      "leader_unavailable": "프로젝트 리드 채팅을 사용할 수 없습니다",
+      "archived": "이 채팅은 보관되었습니다",
+      "busy": "에이전트가 작업 중입니다",
+      "unavailable": "채팅을 사용할 수 없습니다",
+      "project_required": "계속하려면 프로젝트를 선택하세요",
+      "target_required": "에이전트를 선택하세요",
+      "task_title_label": "작업 제목",
+      "assign_title": "작업 할당",
+      "agent_label": "에이전트",
+      "issue_created": "{{identifier}} 작업이 생성되었습니다",
+      "open_issue": "작업 열기",
+      "task_title_placeholder": "작업 설명…",
+      "close": "닫기",
+      "you": "나",
+      "open_chat": "채팅에서 열기",
+      "prompt_status": "프로젝트 상태를 요약해 주세요",
+      "prompt_completed": "완료된 작업은 무엇인가요?",
+      "prompt_blockers": "무엇이 막혀 있나요?",
+      "prompt_gates": "게이트 상태를 요약해 주세요"
     }
   }
 }

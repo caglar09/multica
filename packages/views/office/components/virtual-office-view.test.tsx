@@ -1,18 +1,58 @@
-import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithI18n } from "../../test/i18n";
 import { ProjectVirtualOfficeView } from "./project-virtual-office-view";
+import { buildVirtualOfficeScene } from "../spatial-mapper";
 import type {
   AutonomousProjectSnapshot,
   ProjectLeaderChangeRequest,
   Agent,
 } from "@multica/core/types";
 
-vi.mock("@multica/core/api", () => ({
-  api: {
-    getBaseUrl: () => "http://127.0.0.1:8080",
+const officeMocks = vi.hoisted(() => ({
+  liveData: null as unknown,
+  conversation: null as unknown,
+  conversationOptions: [] as unknown[],
+  send: vi.fn(async () => true),
+  retry: vi.fn(async () => true),
+  openInChat: vi.fn(),
+  createIssue: vi.fn(async () => ({ identifier: "MC-42" })),
+  rerunIssue: vi.fn(),
+  retryAction: vi.fn(),
+}));
+
+vi.mock("../use-office-live-data", () => ({
+  useOfficeLiveData: () => officeMocks.liveData,
+}));
+vi.mock("../use-office-conversation", () => ({
+  useOfficeConversation: (options: unknown) => {
+    officeMocks.conversationOptions.push(options);
+    return officeMocks.conversation;
   },
+}));
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({ data: undefined, isPending: false }),
+}));
+vi.mock("@multica/core/api", () => ({
+  api: { getBaseUrl: () => "http://127.0.0.1:8080" },
+}));
+vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/paths", () => ({
+  useWorkspacePaths: () => ({ issueDetail: (id: string) => `/ws/issues/${id}` }),
+}));
+vi.mock("@multica/core/issues/mutations", () => ({
+  useCreateIssue: () => ({ mutateAsync: officeMocks.createIssue, isPending: false }),
+}));
+vi.mock("@multica/core/projects", () => ({
+  projectReportOptions: () => ({ queryKey: ["project-report"], queryFn: async () => undefined }),
+  useRerunAutonomousIssue: () => ({ mutate: officeMocks.rerunIssue, isPending: false }),
+  useRetryAutonomousAction: () => ({ mutate: officeMocks.retryAction, isPending: false }),
+}));
+vi.mock("../../navigation", () => ({
+  AppLink: ({ href, children, ...props }: React.ComponentProps<"a">) => (
+    <a href={href} {...props}>{children}</a>
+  ),
 }));
 
 describe("ProjectVirtualOfficeView", () => {
@@ -106,6 +146,8 @@ describe("ProjectVirtualOfficeView", () => {
       {
         id: "evt-1",
         type: "task.dispatched",
+        agent_id: "agent-dev",
+        issue_id: "iss-1",
         title: "Dispatched canvas task to Devon",
         created_at: "2026-10-29T12:00:00Z",
       },
@@ -149,91 +191,151 @@ describe("ProjectVirtualOfficeView", () => {
     },
   ] as Agent[];
 
-  it("renders leader and engineer agent workstations, commander dock and activity items", () => {
+  const mockScene = buildVirtualOfficeScene({
+    snapshot: mockSnapshot,
+    changeRequests: mockChangeRequests,
+    agents: mockAgents,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    officeMocks.conversationOptions = [];
+    officeMocks.liveData = { scene: mockScene, isLoading: false, isPartial: false };
+    officeMocks.conversation = {
+      agentId: "agent-pm",
+      sessionId: "session-1",
+      messages: [{ id: "message-1", role: "assistant", content: "Saved reply", created_at: "2026-10-31T12:00:00Z" }],
+      pending: null,
+      taskMessages: [],
+      availability: "online",
+      status: "ready",
+      isLoading: false,
+      isSending: false,
+      canSend: true,
+      sendError: null,
+      send: officeMocks.send,
+      retry: officeMocks.retry,
+      openInChat: officeMocks.openInChat,
+    };
+    officeMocks.send.mockReset().mockResolvedValue(true);
+    officeMocks.createIssue.mockReset().mockResolvedValue({ identifier: "MC-42" });
+  });
+
+  it("renders real desks and routes the conversation to the selected agent", async () => {
+    const user = userEvent.setup();
     renderWithI18n(
       <ProjectVirtualOfficeView
+        projectId="project-1"
         snapshot={mockSnapshot}
         changeRequests={mockChangeRequests}
-        agents={mockAgents}
+        leaderSessionId="leader-session"
+        leaderAgentId="agent-pm"
         canControl
       />,
     );
 
-    // Verify agent desks and roles
     expect(screen.getAllByText("Ada").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Devon").length).toBeGreaterThanOrEqual(1);
+    expect(officeMocks.conversationOptions.at(-1)).toMatchObject({
+      projectId: "project-1",
+      leaderSessionId: "leader-session",
+      leaderAgentId: "agent-pm",
+      desk: { agentId: "agent-pm", isLeader: true },
+    });
 
-    // Verify Commander Dock is rendered with Project Manager by default
-    expect(screen.getByText("Project Manager")).toBeInTheDocument();
-
-    // Verify activity feed item
-    expect(screen.getByText("Dispatched canvas task to Devon")).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "desk-agent-dev");
+    await waitFor(() => expect(officeMocks.conversationOptions.at(-1)).toMatchObject({
+      projectId: "project-1",
+      desk: { agentId: "agent-dev" },
+    }));
   });
 
   it("triggers onApprovePlan when clicking approve plan in inspector", async () => {
     const user = userEvent.setup();
     const onApprovePlan = vi.fn();
-
     renderWithI18n(
       <ProjectVirtualOfficeView
+        projectId="project-1"
         snapshot={mockSnapshot}
         changeRequests={mockChangeRequests}
-        agents={mockAgents}
+        leaderSessionId="leader-session"
+        leaderAgentId="agent-pm"
         canControl
         onApprovePlan={onApprovePlan}
       />,
     );
-
-    // Switch to Inspector tab
-    const inspectorTabButton = screen.getByRole("button", { name: /inspector/i });
-    await user.click(inspectorTabButton);
-
-    const approveButton = screen.getByRole("button", { name: "Approve Autonomous Plan" });
-    await user.click(approveButton);
-
+    await user.click(screen.getByRole("button", { name: "Inspector" }));
+    await user.click(screen.getByRole("button", { name: "Approve Autonomous Plan" }));
     expect(onApprovePlan).toHaveBeenCalledTimes(1);
   });
 
   it("triggers onApproveChange when approving a leader change request", async () => {
     const user = userEvent.setup();
     const onApproveChange = vi.fn();
-
     renderWithI18n(
       <ProjectVirtualOfficeView
+        projectId="project-1"
         snapshot={mockSnapshot}
         changeRequests={mockChangeRequests}
-        agents={mockAgents}
+        leaderSessionId="leader-session"
+        leaderAgentId="agent-pm"
         canControl
         onApproveChange={onApproveChange}
       />,
     );
-
-    // Switch to Inspector tab
-    const inspectorTabButton = screen.getByRole("button", { name: /inspector/i });
-    await user.click(inspectorTabButton);
-
+    await user.click(screen.getByRole("button", { name: "Inspector" }));
     expect(screen.getByText("Requesting additional reviewer agent")).toBeInTheDocument();
-    const quickApproveBtn = screen.getByRole("button", { name: "Quick Approve" });
-    await user.click(quickApproveBtn);
-
+    await user.click(screen.getByRole("button", { name: "Quick Approve" }));
     expect(onApproveChange).toHaveBeenCalledWith("cr-101");
   });
 
-  it("triggers activity replay on map when replay button is clicked", async () => {
+  it("replays only routed activity and sends messages through the conversation", async () => {
     const user = userEvent.setup();
+    renderWithI18n(<ProjectVirtualOfficeView projectId="project-1" />);
 
-    renderWithI18n(
-      <ProjectVirtualOfficeView
-        snapshot={mockSnapshot}
-        changeRequests={mockChangeRequests}
-        agents={mockAgents}
-      />,
+    await user.click(screen.getByRole("button", { name: "Spectator Activity Feed" }));
+    expect(screen.getByText("Task assigned")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Replay on Map" }));
+    expect(screen.getAllByText("Task assigned").length).toBeGreaterThanOrEqual(2);
+
+    await user.type(screen.getByLabelText("Message"), "Check the current status");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(officeMocks.send).toHaveBeenCalledWith("Check the current status");
+    expect(await screen.findByText("Saved reply")).toBeInTheDocument();
+  });
+
+  it("sends quick prompts to the selected agent and preserves the draft", async () => {
+    const user = userEvent.setup();
+    renderWithI18n(<ProjectVirtualOfficeView projectId="project-1" />);
+
+    const composer = screen.getByLabelText("Message");
+    await user.type(composer, "Keep this draft");
+    await user.click(screen.getByRole("button", { name: "Summarize project status" }));
+
+    expect(officeMocks.send).toHaveBeenCalledWith("Summarize project status");
+    expect(composer).toHaveValue("Keep this draft");
+    expect(await screen.findByText("Saved reply")).toBeInTheDocument();
+  });
+
+  it("waits for issue creation and links to the created task", async () => {
+    const user = userEvent.setup();
+    let resolveIssue: ((issue: { identifier: string }) => void) | undefined;
+    officeMocks.createIssue.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveIssue = resolve; }),
     );
-
-    const replayBtn = screen.getByRole("button", { name: "Replay on Map" });
-    await user.click(replayBtn);
-
-    // Replay floating banner should appear above the canvas in addition to the feed item
-    expect(screen.getAllByText("Dispatched canvas task to Devon").length).toBe(2);
+    renderWithI18n(<ProjectVirtualOfficeView projectId="project-1" />);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "desk-agent-dev");
+    await user.click(screen.getByRole("button", { name: "Assign task" }));
+    await user.type(screen.getByLabelText("Task title"), "Review the implementation");
+    await user.click(screen.getAllByRole("button", { name: "Assign task" }).at(-1)!);
+    await waitFor(() => expect(officeMocks.createIssue).toHaveBeenCalledWith({
+      title: "Review the implementation",
+      assignee_type: "agent",
+      assignee_id: "agent-dev",
+      project_id: "project-1",
+    }));
+    expect(screen.queryByRole("link", { name: "Open task" })).not.toBeInTheDocument();
+    await act(async () => resolveIssue?.({ identifier: "MC-42" }));
+    expect(await screen.findByRole("link", { name: "Open task" })).toHaveAttribute("href", "/ws/issues/MC-42");
   });
 });

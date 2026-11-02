@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
@@ -16,35 +17,40 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useT } from "../../i18n";
-import type { OfficeAgentDesk, AgentDeskStatus, AgentCharacterType } from "../types";
+import type { OfficeAgentDesk, OfficeBlocker, AgentDeskStatus, AgentCharacterType } from "../types";
 
 interface AgentDeskHudProps {
   desk: OfficeAgentDesk;
+  blockers?: OfficeBlocker[];
   isSelected?: boolean;
   onSelect?: (desk: OfficeAgentDesk) => void;
   className?: string;
 }
 
-export function AgentDeskHud({
+export const AgentDeskHud = memo(function AgentDeskHud({
   desk,
+  blockers = [],
   isSelected,
   onSelect,
   className,
 }: AgentDeskHudProps) {
   const { t } = useT("projects");
   const statusCfg = getStatusConfig(desk.status);
-  const statusLabel =
-    desk.status === "running"
-      ? t(($) => $.office.desk_status.coding)
-      : desk.status === "debugging"
-        ? t(($) => $.office.desk_status.debugging)
-        : desk.status === "verifying"
-          ? t(($) => $.office.desk_status.testing)
-          : desk.status === "blocked"
-            ? t(($) => $.office.desk_status.blocked)
-            : desk.status === "approved"
-              ? t(($) => $.office.desk_status.approved)
-              : t(($) => $.office.desk_status.standby);
+  const statusLabel = (() => {
+    switch (desk.status) {
+      case "idle": return t(($) => $.office.desk_status.standby);
+      case "running": return t(($) => $.office.desk_status.coding);
+      case "debugging": return t(($) => $.office.desk_status.debugging);
+      case "verifying": return t(($) => $.office.desk_status.testing);
+      case "blocked": return t(($) => $.office.desk_status.blocked);
+      case "failed": return t(($) => $.office.desk_status.failed);
+      case "approved": return t(($) => $.office.desk_status.approved);
+      default: {
+        const neverStatus: never = desk.status;
+        return neverStatus;
+      }
+    }
+  })();
 
   const activeTask = desk.activeTask;
   const queuedTasks = desk.queuedTasks ?? [];
@@ -55,12 +61,12 @@ export function AgentDeskHud({
     (hasActive ? 1 : 0) + queuedTasks.length + completedCount;
 
   const isWorking = desk.status === "running" || desk.status === "debugging";
-  const isIdle = desk.status === "idle";
   const activeTool = desk.activeTool;
   const activeSkill = desk.activeSkill;
   const bubble = desk.activeSpeechBubble;
   const furniture = desk.furniture;
   const isLeader = desk.isLeader;
+  const category = desk.category;
   const characterType = desk.characterType || (isLeader ? "lion_lead" : "robot_general");
 
   return (
@@ -68,36 +74,28 @@ export function AgentDeskHud({
       {/* 2.5D Isometric Pedestal Base (Beneath the Desk) */}
       <div
         className={cn(
-          "absolute -bottom-6 size-28 rounded-full blur-md opacity-40 transition-all pointer-events-none",
-          isLeader
-            ? "bg-amber-500/40 opacity-60 scale-125"
-            : desk.categoryColor
-              ? "opacity-35"
-              : "bg-cyan-500/30",
+          "absolute -bottom-6 size-28 rounded-full bg-primary/20 blur-md opacity-40 transition-all pointer-events-none motion-reduce:transition-none",
+          isLeader && "opacity-60 scale-125",
         )}
-        style={{
-          backgroundColor: !isLeader && desk.categoryColor ? `${desk.categoryColor}40` : undefined,
-          transform: "rotateX(60deg) scale(1.6)",
-        }}
+        style={{ transform: "rotateX(60deg) scale(1.6)" }}
       />
 
       {/* Speech Bubble Floating Above the Desk */}
       {bubble && (
         <div
           className={cn(
-            "pointer-events-none absolute -top-11 z-30 flex max-w-[260px] items-center gap-1.5 rounded-xl border border-sky-400/40 bg-slate-950/90 px-2.5 py-1 text-[11px] font-medium text-sky-200 shadow-xl backdrop-blur-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-2",
-            isIdle && "border-slate-600/40 text-slate-300",
-            bubble.kind === "qa" && "border-purple-400/40 text-purple-200",
-            isLeader && "border-amber-400/50 text-amber-200",
+            "pointer-events-none absolute -top-11 z-30 flex max-w-[260px] items-center gap-1.5 rounded-xl border border-info/40 bg-popover px-2.5 py-1 text-micro font-medium text-popover-foreground shadow-xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 motion-reduce:animate-none motion-reduce:transition-none",
+            bubble.kind === "qa" && "border-primary/40",
+            isLeader && "border-warning/50",
           )}
         >
           {isLeader ? (
-            <Crown className="size-3 shrink-0 text-amber-400" />
+            <Crown className="size-3 shrink-0 text-warning" />
           ) : (
-            <MessageSquare className="size-3 shrink-0 text-sky-400" />
+            <MessageSquare className="size-3 shrink-0 text-info" />
           )}
           <span className="truncate">{bubble.text}</span>
-          <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 size-0 border-x-4 border-x-transparent border-t-6 border-t-slate-950/90" />
+          <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 size-0 border-x-4 border-x-transparent border-t-6 border-t-popover" />
         </div>
       )}
 
@@ -105,6 +103,8 @@ export function AgentDeskHud({
       <div
         role="button"
         tabIndex={0}
+        aria-label={t(($) => $.office.select_desk, { name: desk.agentName })}
+        aria-pressed={Boolean(isSelected)}
         onClick={() => onSelect?.(desk)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -113,36 +113,32 @@ export function AgentDeskHud({
           }
         }}
         className={cn(
-          "group relative flex w-64 cursor-pointer flex-col gap-2 rounded-2xl border bg-slate-900/95 p-3 shadow-2xl backdrop-blur-md transition-all duration-200 select-none",
+          "group relative flex w-64 cursor-pointer flex-col gap-2 rounded-2xl border border-border bg-card p-3 text-card-foreground shadow-2xl transition-all duration-200 select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none",
           isLeader
-            ? "border-amber-500/80 ring-2 ring-amber-500/40 shadow-amber-500/10 hover:border-amber-400 hover:ring-amber-400/60"
-            : "border-slate-700/80 hover:border-cyan-400/70 hover:shadow-cyan-500/10",
-          "hover:scale-[1.04]",
-          isSelected && "ring-2 ring-primary ring-offset-2 ring-offset-slate-950 border-primary",
+            ? "border-warning/70 ring-2 ring-warning/30 hover:border-warning"
+            : "hover:border-primary/60",
+          "hover:scale-[1.02] motion-reduce:hover:scale-100",
+          isSelected && "ring-2 ring-primary ring-offset-2 ring-offset-background border-primary",
           className,
         )}
       >
         {/* Category Header Badge & Leader Crown */}
-        <div className="flex items-center justify-between gap-1 border-b border-slate-800/80 pb-1.5">
+        <div className="flex items-center justify-between gap-1 border-b border-border pb-1.5">
           <div className="flex items-center gap-1.5 min-w-0">
             {isLeader ? (
               <Badge
                 variant="outline"
-                className="h-4.5 gap-1 border-amber-500/50 bg-amber-500/15 text-[9.5px] font-bold text-amber-300 px-1.5"
+                className="h-5 gap-1 border-warning/50 bg-warning/10 px-1.5 text-micro font-bold text-warning"
               >
-                <Crown className="size-2.5 text-amber-400 fill-amber-400" />
-                <span>LİDER • PM</span>
+                <Crown className="size-2.5 fill-warning text-warning" />
+                <span>{t(($) => $.office.leader_pm)}</span>
               </Badge>
-            ) : desk.categoryLabel ? (
+            ) : category ? (
               <Badge
                 variant="outline"
-                className="h-4.5 text-[9.5px] font-semibold border-0 px-1.5 truncate max-w-[170px]"
-                style={{
-                  backgroundColor: `${desk.categoryColor || "#6366f1"}20`,
-                  color: desk.categoryColor || "#818cf8",
-                }}
+                className="max-w-[170px] truncate border-0 bg-muted px-1.5 text-micro font-semibold text-muted-foreground"
               >
-                {desk.categoryLabel}
+                {t(($) => $.office.categories[category])}
               </Badge>
             ) : null}
           </div>
@@ -150,25 +146,24 @@ export function AgentDeskHud({
           {/* Dual monitor & Daemon Live / Token Mode */}
           <div className="flex items-center gap-1 shrink-0">
             {furniture?.dualMonitors && (
-              <span className="flex items-center gap-0.5 text-slate-500 text-[9px]" title="Dual Monitors Setup">
-                <Monitor className="size-3 text-slate-400" />
+              <span className="flex items-center gap-0.5 text-faint-foreground" aria-hidden="true">
+                <Monitor className="size-3" />
               </span>
             )}
             {desk.isDaemonActive ? (
               <span
-                className="flex items-center gap-1 rounded-md bg-emerald-950/70 border border-emerald-500/40 px-1.5 py-0.5 font-mono text-[8.5px] text-emerald-300 shadow-xs shadow-emerald-500/20"
-                title="Daemon Runtime Aktif & Canlı Dinlemede"
+                className="flex items-center gap-1 rounded-md border border-success/40 bg-success/10 px-1.5 py-0.5 font-mono text-micro text-success"
+                aria-label={t(($) => $.office.runtime_live)}
               >
-                <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Daemon Live</span>
+                <span className="size-1.5 rounded-full bg-success motion-safe:animate-pulse motion-reduce:animate-none" />
+                <span>{t(($) => $.office.runtime_live)}</span>
               </span>
-            ) : isIdle ? (
+            ) : desk.isDaemonActive === false ? (
               <span
-                className="flex items-center gap-0.5 rounded bg-slate-800/80 px-1 py-0.5 font-mono text-[8.5px] text-slate-400"
-                title="Zero-Token Idle Standby"
+                className="flex items-center gap-1 rounded-md border border-warning/40 bg-warning/10 px-1.5 py-0.5 font-mono text-micro text-warning"
               >
-                <Moon className="size-2.5 text-slate-400" />
-                <span>0 Tok</span>
+                <Moon className="size-2.5" aria-hidden="true" />
+                <span>{t(($) => $.office.runtime_unavailable)}</span>
               </span>
             ) : null}
           </div>
@@ -182,31 +177,30 @@ export function AgentDeskHud({
               type={characterType}
               isLeader={isLeader}
               isWorking={isWorking}
-              color={desk.categoryColor}
             />
             <span
               className={cn(
-                "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-slate-900",
+                "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-card",
                 statusCfg.dotColor,
-                desk.status === "running" && "animate-pulse",
+                desk.status === "running" && "motion-safe:animate-pulse motion-reduce:animate-none",
               )}
             />
           </div>
 
           <div className="min-w-0 flex-1">
             <div
-              className="truncate text-xs font-bold leading-tight text-slate-100 group-hover:text-cyan-300 transition-colors flex items-center gap-1"
+              className="flex items-center gap-1 truncate text-label font-bold leading-tight text-card-foreground transition-colors group-hover:text-primary"
               title={desk.agentName}
             >
               <span className="truncate">{desk.agentName}</span>
               {furniture?.coffeeMug && (
-                <span title="Kahve Kupası Masada">
-                  <Coffee className="size-2.5 text-amber-500/80 shrink-0" />
+                <span aria-hidden="true">
+                  <Coffee className="size-2.5 shrink-0 text-warning" />
                 </span>
               )}
             </div>
             <div
-              className="truncate text-[10.5px] font-mono text-slate-400 leading-tight mt-0.5"
+              className="mt-0.5 truncate font-mono text-micro leading-tight text-muted-foreground"
               title={desk.role}
             >
               {desk.role}
@@ -215,12 +209,12 @@ export function AgentDeskHud({
         </div>
 
         {/* Active Task Card */}
-        <div className="flex flex-col gap-1 rounded-lg bg-slate-800/80 p-2 text-xs border border-slate-700/40">
+        <div className="flex flex-col gap-1 rounded-lg border border-border bg-muted/50 p-2 text-caption">
           <div className="flex items-center justify-between gap-1.5">
             <Badge
               variant="outline"
               className={cn(
-                "h-4 px-1.5 text-[9.5px] font-medium border-0 gap-1",
+                "h-5 gap-1 border-0 px-1.5 text-micro font-medium",
                 statusCfg.badgeClass,
               )}
             >
@@ -228,17 +222,12 @@ export function AgentDeskHud({
               {statusLabel}
             </Badge>
 
-            {desk.currentIssueId && (
-              <span className="font-mono text-[9px] text-slate-400">
-                {desk.currentIssueId.slice(0, 8)}
-              </span>
-            )}
           </div>
 
           {/* Current Task Title */}
           <div className="min-h-[26px] flex items-center">
             <p
-              className="line-clamp-2 text-[11px] font-medium text-slate-200 transition-colors group-hover:text-white"
+              className="line-clamp-2 text-micro font-medium text-foreground transition-colors group-hover:text-primary"
               title={activeTask?.title || desk.currentTaskTitle}
             >
               {activeTask?.title || desk.currentTaskTitle || t(($) => $.office.desk_status.standby_tasks)}
@@ -246,12 +235,35 @@ export function AgentDeskHud({
           </div>
         </div>
 
+        {blockers[0] && (
+          <div className={cn(
+            "flex min-w-0 items-start gap-1.5 rounded-md border px-2 py-1.5 text-micro",
+            blockers[0].severity === "error"
+              ? "border-destructive/30 bg-destructive/10 text-destructive"
+              : blockers[0].severity === "warning"
+                ? "border-warning/30 bg-warning/10 text-warning"
+                : "border-info/30 bg-info/10 text-info",
+          )}>
+            <span className="mt-1 size-1.5 shrink-0 rounded-full bg-current" aria-hidden="true" />
+            <span className="line-clamp-2">
+              {t(($) => $.office.blockers.reasons[blockers[0]!.kind], {
+                dependencyCount: blockers[0]!.params?.dependencyCount ?? 1,
+              })}
+            </span>
+            {blockers.length > 1 && (
+              <span className="shrink-0 font-medium">
+                {t(($) => $.office.blockers.more_count, { count: blockers.length - 1 })}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Live Tool Invocation Stream */}
         {activeTool && isWorking && (
-          <div className="flex items-center gap-1.5 rounded-md bg-slate-950/80 px-2 py-1 border border-cyan-500/30 text-[10px] font-mono text-cyan-300">
-            <Terminal className="size-3 text-cyan-400 shrink-0 animate-pulse" />
-            <span className="font-semibold text-cyan-200">{activeTool.name}</span>
-            <span className="truncate text-slate-400" title={activeTool.target}>
+          <div className="flex items-center gap-1.5 rounded-md border border-info/30 bg-muted px-2 py-1 font-mono text-micro text-foreground">
+            <Terminal className="size-3 shrink-0 text-info motion-safe:animate-pulse motion-reduce:animate-none" />
+            <span className="font-semibold text-info">{activeTool.name}</span>
+            <span className="truncate text-muted-foreground" title={activeTool.target}>
               {activeTool.target}
             </span>
           </div>
@@ -259,27 +271,27 @@ export function AgentDeskHud({
 
         {/* Active Role Skill Badge */}
         {activeSkill && (
-          <div className="flex items-center gap-1 text-[9.5px] font-mono text-slate-400 px-0.5">
-            <Zap className="size-2.5 text-amber-400 shrink-0" />
-            <span className="text-slate-500">skill:</span>
-            <span className="text-amber-300 truncate" title={activeSkill.name}>
+          <div className="flex items-center gap-1 px-0.5 font-mono text-micro text-muted-foreground">
+            <Zap className="size-2.5 shrink-0 text-warning" />
+            <span>{t(($) => $.office.active_skill)}:</span>
+            <span className="truncate text-warning" title={activeSkill.name}>
               {activeSkill.name}
             </span>
           </div>
         )}
 
-        {/* Task Distribution / Workload Queue ("1 ini yapıyor, 3'ü beklemede") */}
+        {/* Task Distribution / Workload Queue */}
         {totalTasks > 0 && (
-          <div className="flex flex-col gap-1 pt-1 border-t border-slate-800">
-            <div className="flex items-center justify-between text-[10px]">
-              <div className="flex items-center gap-1 font-medium text-slate-300">
-                <span className="text-cyan-400">
-                  {hasActive ? "1" : "0"} {t(($) => $.office.active_task)}
+          <div className="flex flex-col gap-1 border-t border-border pt-1">
+            <div className="flex items-center justify-between text-micro">
+              <div className="flex items-center gap-1 font-medium text-foreground">
+                <span className="text-info">
+                  {t(($) => $.office.active_tasks_count, { count: hasActive ? 1 : 0 })}
                 </span>
                 {queuedTasks.length > 0 && (
                   <>
-                    <span className="text-slate-600">•</span>
-                    <span className="text-amber-400 font-semibold">
+                    <span className="text-muted-foreground">•</span>
+                    <span className="font-semibold text-warning">
                       {t(($) => $.office.queued_tasks, { count: queuedTasks.length })}
                     </span>
                   </>
@@ -287,7 +299,7 @@ export function AgentDeskHud({
               </div>
 
               {completedCount > 0 && (
-                <span className="flex items-center gap-0.5 text-emerald-400 text-[9.5px]">
+                <span className="flex items-center gap-0.5 text-micro text-success">
                   <CheckCircle2 className="size-2.5" />
                   <span>{completedCount}</span>
                 </span>
@@ -299,28 +311,28 @@ export function AgentDeskHud({
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <div className="flex items-center gap-1 rounded bg-slate-800/40 px-1.5 py-0.5 text-[9.5px] text-slate-400 hover:text-slate-200 transition-colors">
-                      <Clock className="size-2.5 text-amber-400 shrink-0" />
+                    <div className="flex items-center gap-1 rounded bg-muted/50 px-1.5 py-0.5 text-micro text-muted-foreground transition-colors hover:text-foreground">
+                      <Clock className="size-2.5 shrink-0 text-warning" />
                       <span className="truncate flex-1 text-left">
                         {t(($) => $.office.next_in_queue, { title: queuedTasks[0]?.title ?? "" })}
                       </span>
                       {queuedTasks.length > 1 && (
-                        <span className="shrink-0 font-mono text-[9px] text-amber-400/90 font-medium">
+                        <span className="shrink-0 font-mono text-micro font-medium text-warning">
                           {t(($) => $.office.more_queued, { count: queuedTasks.length - 1 })}
                         </span>
                       )}
                     </div>
                   }
                 />
-                <TooltipContent side="bottom" align="start" className="max-w-xs space-y-1.5 p-2 bg-slate-900 border-slate-700">
-                  <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-200 border-b border-slate-800 pb-1">
-                    <ListOrdered className="size-3 text-amber-400" />
+                <TooltipContent side="bottom" align="start" className="max-w-xs space-y-1.5 p-2">
+                  <div className="flex items-center gap-1 border-b border-border pb-1 text-micro font-semibold text-popover-foreground">
+                    <ListOrdered className="size-3 text-warning" />
                     <span>{t(($) => $.office.queued_header)} ({queuedTasks.length})</span>
                   </div>
-                  <ul className="space-y-1 text-[10px] text-slate-300">
+                  <ul className="space-y-1 text-micro text-popover-foreground">
                     {queuedTasks.map((t, idx) => (
                       <li key={t.id} className="flex items-start gap-1.5">
-                        <span className="font-mono text-amber-400 shrink-0">{idx + 1}.</span>
+                        <span className="shrink-0 font-mono text-warning">{idx + 1}.</span>
                         <span className="line-clamp-2">{t.title}</span>
                       </li>
                     ))}
@@ -330,11 +342,11 @@ export function AgentDeskHud({
             )}
 
             {/* Mini Workload Progress Bar */}
-            <div className="flex h-1 w-full gap-0.5 overflow-hidden rounded-full bg-slate-800">
+            <div className="flex h-1 w-full gap-0.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
               {hasActive && (
                 <div
                   style={{ width: `${Math.max((1 / totalTasks) * 100, 20)}%` }}
-                  className="bg-cyan-500 animate-pulse"
+                  className="bg-info motion-safe:animate-pulse motion-reduce:animate-none"
                   title={t(($) => $.office.active_task)}
                 />
               )}
@@ -342,14 +354,14 @@ export function AgentDeskHud({
                 <div
                   key={i}
                   style={{ width: `${Math.max((1 / totalTasks) * 100, 15)}%` }}
-                  className="bg-amber-500/60"
+                  className="bg-warning/60"
                   title={t(($) => $.office.queued_tasks, { count: i + 1 })}
                 />
               ))}
               {completedCount > 0 && (
                 <div
                   style={{ width: `${Math.max((completedCount / totalTasks) * 100, 15)}%` }}
-                  className="bg-emerald-500/80"
+                  className="bg-success/80"
                   title={t(($) => $.office.stats.completed_tasks)}
                 />
               )}
@@ -359,7 +371,7 @@ export function AgentDeskHud({
       </div>
     </div>
   );
-}
+});
 
 /**
  * 2.5D Living Stylized Character Avatars (Lion, Owl, Cat, Raccoon, Panda, Fox, Robot)
@@ -368,23 +380,19 @@ function AgentCharacterGraphic({
   type,
   isLeader,
   isWorking,
-  color,
 }: {
   type: AgentCharacterType;
   isLeader?: boolean;
   isWorking?: boolean;
-  color?: string;
 }) {
   return (
     <div
       className={cn(
-        "relative flex size-10 items-center justify-center rounded-xl border border-slate-700 bg-slate-800 shadow-md transition-transform",
-        isWorking && "scale-105",
-        isLeader && "border-amber-400/80 bg-amber-950/40 shadow-amber-500/30",
+        "relative flex size-10 items-center justify-center rounded-xl border border-border bg-muted shadow-md transition-transform motion-reduce:transition-none",
+        isWorking && "scale-105 motion-reduce:scale-100",
+        isLeader && "border-warning/60 bg-warning/10",
       )}
-      style={{
-        borderColor: !isLeader && color ? `${color}80` : undefined,
-      }}
+      aria-hidden="true"
     >
       {type === "lion_lead" ? (
         <svg viewBox="0 0 36 36" className="size-8">
@@ -505,7 +513,7 @@ function AgentCharacterGraphic({
 
       {/* Floating Sparkle for Active or Leader */}
       {isLeader && (
-        <Sparkles className="absolute -top-1 -right-1 size-3 text-amber-400 fill-amber-400 animate-pulse" />
+        <Sparkles className="absolute -top-1 -right-1 size-3 fill-warning text-warning motion-safe:animate-pulse motion-reduce:animate-none" />
       )}
     </div>
   );
@@ -514,40 +522,21 @@ function AgentCharacterGraphic({
 function getStatusConfig(status: AgentDeskStatus) {
   switch (status) {
     case "running":
-      return {
-        label: "coding",
-        dotColor: "bg-cyan-400 shadow-xs shadow-cyan-400/50",
-        badgeClass: "bg-cyan-500/15 text-cyan-400 border-cyan-500/30",
-      };
+      return { dotColor: "bg-info", badgeClass: "bg-info/10 text-info" };
     case "debugging":
-      return {
-        label: "debugging",
-        dotColor: "bg-amber-400 shadow-xs shadow-amber-400/50",
-        badgeClass: "bg-amber-500/15 text-amber-400 border-amber-500/30",
-      };
+      return { dotColor: "bg-warning", badgeClass: "bg-warning/10 text-warning" };
     case "verifying":
-      return {
-        label: "testing",
-        dotColor: "bg-purple-400 shadow-xs shadow-purple-400/50",
-        badgeClass: "bg-purple-500/15 text-purple-400 border-purple-500/30",
-      };
+      return { dotColor: "bg-primary", badgeClass: "bg-primary/10 text-primary" };
     case "blocked":
-      return {
-        label: "blocked",
-        dotColor: "bg-rose-400 shadow-xs shadow-rose-400/50",
-        badgeClass: "bg-rose-500/15 text-rose-400 border-rose-500/30",
-      };
+    case "failed":
+      return { dotColor: "bg-destructive", badgeClass: "bg-destructive/10 text-destructive" };
     case "approved":
-      return {
-        label: "approved",
-        dotColor: "bg-emerald-400 shadow-xs shadow-emerald-400/50",
-        badgeClass: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
-      };
-    default:
-      return {
-        label: "standby",
-        dotColor: "bg-slate-500",
-        badgeClass: "bg-slate-800 text-slate-400 border-slate-700",
-      };
+      return { dotColor: "bg-success", badgeClass: "bg-success/10 text-success" };
+    case "idle":
+      return { dotColor: "bg-muted-foreground", badgeClass: "bg-muted text-muted-foreground" };
+    default: {
+      const neverStatus: never = status;
+      return neverStatus;
+    }
   }
 }

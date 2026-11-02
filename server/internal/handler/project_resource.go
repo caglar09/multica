@@ -943,9 +943,29 @@ Every proposal that adds, updates, or cancels planned work changes project scope
 If no change is ready, return {"message":"..."} without a proposal. The backend validates and owns every mutation.`
 
 const projectManagerChatContract = `You are the Project Manager for this project in a direct chat.
+Answer questions about the current project and its work directly from the supplied project context and recent issue snapshot. The snapshot contains at most 30 recently updated issues; inspect live project data for questions that need a complete list or counts, and never guess current status.
 This is a planning and coordination turn. You may inspect the project and use the supported Multica project-management commands to create or update issues, priorities, dependencies, assignees, statuses, and comments so the project can move forward.
 Do not edit production files, implement code, run tests or builds to make a requested change, or create commits or pull requests yourself. When the user requests implementation, create one tracked issue in the current project with a clear title, scope, and acceptance criteria, assign it to the appropriate implementation agent, and report the issue identifier. Do not implement the requested change yourself. If the request is incomplete, ask focused clarification questions before creating the issue.
 The server enforces the production-file write restriction; project-management mutations are allowed because they are the PM's responsibility.`
+
+func (h *Handler) buildProjectIssueSnapshot(ctx context.Context, workspaceID, projectID pgtype.UUID) (json.RawMessage, error) {
+	issues, err := h.projectLeaderRows(ctx, workspaceID, projectID, `
+		SELECT i.id::text,i.title,issue_effective_status(i.workspace_id,i.status) AS status,i.priority,
+		       COALESCE(i.assignee_type,''),COALESCE(i.assignee_id::text,''),i.updated_at
+		FROM issue i
+		WHERE i.workspace_id=$1 AND i.project_id=$2
+		ORDER BY i.updated_at DESC,i.id
+		LIMIT 30
+	`)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.MarshalIndent(issues, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode project issue snapshot: %w", err)
+	}
+	return json.RawMessage(raw), nil
+}
 
 // buildProjectLeaderContext keeps the coordinator's input bounded while still
 // giving it the durable project state it is allowed to reason about. Delivery
@@ -959,6 +979,11 @@ func (h *Handler) buildProjectLeaderContext(ctx context.Context, workspaceID, pr
 		},
 		"resources": identity.Resources,
 	}
+	recentIssues, err := h.buildProjectIssueSnapshot(ctx, workspaceID, projectID)
+	if err != nil {
+		return "", fmt.Errorf("load project leader issue snapshot: %w", err)
+	}
+	contextData["recent_issues"] = recentIssues
 
 	var specRevision int64
 	var specification []byte

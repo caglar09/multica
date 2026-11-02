@@ -3,7 +3,6 @@ import type {
   AutonomousTeamMember,
   ProjectLeaderChangeRequest,
   Agent,
-  Issue,
 } from "@multica/core/types";
 
 export type OfficeZoneKey =
@@ -38,6 +37,7 @@ export type AgentDeskStatus =
   | "debugging"
   | "verifying"
   | "blocked"
+  | "failed"
   | "approved";
 
 export interface AgentTaskItem {
@@ -57,9 +57,6 @@ export interface ActiveToolCall {
 
 export interface ActiveSkillInfo {
   name: string;
-  title?: string;
-  category?: string;
-  description?: string;
 }
 
 export interface DeskFurniture {
@@ -81,32 +78,18 @@ export interface InOfficeSpeechBubble {
   kind?: "thought" | "announcement" | "qa";
 }
 
-export interface OfficeChatMessage {
-  id: string;
-  sender: "user" | "pm" | "ceo" | "agent";
-  senderName: string;
-  targetAgentId?: string;
-  targetAgentName?: string;
-  text: string;
-  timestamp: string;
-  relatedTaskId?: string;
-}
-
 export interface OfficeStationMetric {
-  label: string;
+  labelKey: string;
   value: string | number;
 }
 
 export interface OfficeStation {
   key: OfficeZoneKey;
   titleKey: string;
-  defaultTitle: string;
-  description: string;
   x: number;
   y: number;
   width: number;
   height: number;
-  statusColor: string;
   iconName: "FolderKanban" | "Code" | "CheckCircle2" | "ShieldAlert";
   metrics: OfficeStationMetric[];
   roomTheme?: "engineering" | "architecture" | "qa" | "executive";
@@ -132,12 +115,10 @@ export interface OfficeAgentDesk {
 
   // Living Office & Specialized Visuals
   category?: AgentCategory;
-  categoryLabel?: string;
   categoryColor?: string;
   characterType?: AgentCharacterType;
   isLeader?: boolean;
   isDaemonActive?: boolean;
-  isProcessingInquiry?: boolean;
 
   // Tooling & Living Atmosphere
   activeTool?: ActiveToolCall;
@@ -146,61 +127,107 @@ export interface OfficeAgentDesk {
   activeSkill?: ActiveSkillInfo;
   activeSpeechBubble?: InOfficeSpeechBubble;
   furniture?: DeskFurniture;
-  tokenUsageMode?: "zero_token_idle" | "active_running" | "verifying";
 }
+
+export type OfficeFlowEdgeKind =
+  | "task_dispatch"
+  | "review_handoff"
+  | "plan_dependency"
+  | "issue_dependency"
+  | "escalation";
 
 export interface OfficeFlowEdge {
   id: string;
+  kind: OfficeFlowEdgeKind;
   fromStation: OfficeZoneKey;
   toStation: OfficeZoneKey;
   fromCoord: { x: number; y: number };
   toCoord: { x: number; y: number };
-  color: string;
-  label?: string;
   issueId?: string;
+  relatedCount?: number;
   active: boolean;
-  pulseSpeed?: "normal" | "fast";
 }
+
+export type OfficeBlockerKind =
+  | "issue_dependency"
+  | "plan_dependency"
+  | "failed_run"
+  | "failed_gate"
+  | "blocked_agent"
+  | "runtime_unavailable"
+  | "approval_required";
+
+export type OfficeBlockerAction =
+  | { kind: "open_issue"; targetId: string }
+  | { kind: "retry_run"; targetId: string }
+  | { kind: "retry_action"; targetId: string }
+  | { kind: "resolve_escalation"; targetId: string }
+  | { kind: "approve_plan"; targetId: string }
+  | { kind: "none" };
+
+export interface OfficeBlocker {
+  id: string;
+  kind: OfficeBlockerKind;
+  severity: "waiting" | "warning" | "error";
+  agentId?: string;
+  issueId?: string;
+  runId?: string;
+  dependencyIssueIds?: string[];
+  reasonKey?: string;
+  params?: Record<string, string | number>;
+  action: OfficeBlockerAction;
+}
+
+export type OfficeActivityKind =
+  | "task.dispatched"
+  | "task.completed"
+  | "task.failed"
+  | "workflow.review_requested"
+  | "workflow.reviewed"
+  | "plan.approved"
+  | "escalation.created";
 
 export interface OfficeReplayEvent {
   id: string;
-  title: string;
   timestamp: string;
-  type: string;
-  fromStation: OfficeZoneKey;
-  toStation: OfficeZoneKey;
+  type: OfficeActivityKind;
+  fromStation?: OfficeZoneKey;
+  toStation?: OfficeZoneKey;
+  agentId?: string;
   issueId?: string;
-  agentName?: string;
-  payloadSummary?: string;
+  params?: Record<string, string | number>;
 }
 
 export interface VirtualOfficeSceneData {
   stations: Record<OfficeZoneKey, OfficeStation>;
   desks: OfficeAgentDesk[];
   flowEdges: OfficeFlowEdge[];
+  blockers: OfficeBlocker[];
   recentEvents: OfficeReplayEvent[];
   speechBubbles: InOfficeSpeechBubble[];
-  chatHistory: OfficeChatMessage[];
   stats: {
     activeAgents: number;
     runningTasks: number;
     completedTasks: number;
     pendingApprovals: number;
+    blocked: number;
+    failed: number;
+    waiting: number;
+    resumable: number;
   };
   pendingApprovalsCount: number;
 }
 
 export interface VirtualOfficeViewProps {
+  projectId: string | null;
   snapshot?: AutonomousProjectSnapshot | null;
   changeRequests?: ProjectLeaderChangeRequest[] | null;
-  agents?: Agent[];
-  issues?: Issue[];
+  leaderSessionId?: string | null;
+  leaderAgentId?: string | null;
   canControl?: boolean;
   onApprovePlan?: () => void;
   onApproveChange?: (changeRequestId: string) => void;
   onRejectChange?: (changeRequestId: string) => void;
   onResolveEscalation?: (escalationId: string) => void;
-  onOpenLeaderChat?: () => void;
-  onSendChatMessage?: (message: { targetAgentId?: string; text: string }) => Promise<void> | void;
   className?: string;
 }

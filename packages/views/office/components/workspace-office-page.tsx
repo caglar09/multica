@@ -7,14 +7,14 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import {
   projectListOptions,
   autonomousProjectOptions,
+  projectLeaderChatOptions,
   projectLeaderChangesOptions,
   useApproveAutonomousProjectPlan,
   useApproveProjectLeaderChange,
   useRejectProjectLeaderChange,
   useResolveAutonomousEscalation,
 } from "@multica/core/projects";
-import { agentListOptions } from "@multica/core/workspace/queries";
-import { issueListOptions } from "@multica/core/issues/queries";
+import { memberListOptions } from "@multica/core/workspace/queries";
 import { useAuthStore } from "@multica/core/auth";
 import {
   DropdownMenu,
@@ -36,8 +36,7 @@ export function WorkspaceOfficePage() {
 
   // Queries
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
-  const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: issues = [] } = useQuery(issueListOptions(wsId));
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
 
   // Floor Selection: "all" or specific projectId
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -52,6 +51,10 @@ export function WorkspaceOfficePage() {
     ...projectLeaderChangesOptions(wsId, selectedProjectId ?? ""),
     enabled: Boolean(selectedProjectId),
   });
+  const { data: leaderChat } = useQuery({
+    ...projectLeaderChatOptions(wsId, selectedProjectId ?? ""),
+    enabled: Boolean(selectedProjectId && snapshot?.enabled),
+  });
 
   // Mutations
   const approvePlan = useApproveAutonomousProjectPlan();
@@ -60,6 +63,9 @@ export function WorkspaceOfficePage() {
   const resolveEscalation = useResolveAutonomousEscalation();
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
+  const isWorkspaceAdmin = members.some(
+    (member) => member.user_id === userId && (member.role === "owner" || member.role === "admin"),
+  );
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-background">
@@ -134,11 +140,12 @@ export function WorkspaceOfficePage() {
       {/* Main Office View Area */}
       <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
         <ProjectVirtualOfficeView
+          projectId={selectedProjectId}
           snapshot={snapshot}
           changeRequests={leaderChanges?.items}
-          agents={agents}
-          issues={issues}
-          canControl={Boolean(userId)}
+          leaderSessionId={leaderChat?.session?.id}
+          leaderAgentId={leaderChat?.leader?.id}
+          canControl={isWorkspaceAdmin && !snapshot?.control.cancelled_at}
           onApprovePlan={
             selectedProjectId && snapshot?.plan?.plan_digest
               ? () =>

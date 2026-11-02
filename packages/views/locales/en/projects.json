@@ -744,6 +744,7 @@
   },
   "office": {
     "title": "Virtual Office",
+    "partial_data": "Some office data is still loading or unavailable.",
     "subtitle": "2.5D Real-time Multi-Agent Operations & Spectator View",
     "zones": {
       "pm_desk": "Planning & PM Desk",
@@ -754,8 +755,13 @@
     "stats": {
       "active_agents": "Active Agents",
       "running_tasks": "Running Tasks",
-      "completed_tasks": "Approved Tasks",
-      "pending_approvals": "Pending Approvals"
+      "completed_tasks": "Completed tasks",
+      "pending_approvals": "Pending Approvals",
+      "health_summary": "Project activity summary",
+      "blocked": "Blocked",
+      "failed": "Failed",
+      "waiting": "Waiting",
+      "resumable": "Can resume"
     },
     "spectator_feed": "Spectator Activity Feed",
     "play_flow": "Play Recent Flow",
@@ -796,16 +802,123 @@
       "escalation_with_category": "Escalation: {{category}}",
       "resolve_escalation": "Resolve Escalation",
       "all_clear": "All Clear & Approved",
-      "no_pending": "No decisions or escalations waiting for review."
+      "no_pending": "No decisions or escalations waiting for review.",
+      "escalation_pending": "Pending escalation"
     },
     "desk_status": {
       "coding": "Coding",
       "debugging": "Debugging",
       "testing": "Testing",
       "blocked": "Blocked",
+      "failed": "Failed",
       "approved": "Approved",
       "standby": "Standby",
       "standby_tasks": "Standby for tasks"
+    },
+    "categories": {
+      "management": "Management",
+      "architecture": "Architecture",
+      "frontend": "Frontend",
+      "mobile": "Mobile",
+      "backend": "Backend",
+      "qa": "Quality assurance",
+      "security": "Security",
+      "general": "General"
+    },
+    "active_tasks_count": "{{count}} active tasks",
+    "select_desk": "Select desk for {{name}}",
+    "leader_pm": "Lead · PM",
+    "runtime_live": "Runtime live",
+    "runtime_unavailable": "Runtime unavailable",
+    "active_skill": "Active skill",
+    "active_tool_call": "Live tool call",
+    "allowed_skills_count": "Allowed skills ({{count}})",
+    "close_inspector": "Close inspector",
+    "metrics": {
+      "leader": "Project lead",
+      "plan_revision": "Plan revision",
+      "nodes": "Plan items",
+      "members": "Team members",
+      "running": "Running",
+      "gates": "Quality gates",
+      "reviews": "In review",
+      "pending": "Pending",
+      "completed": "Completed"
+    },
+    "activities": {
+      "task_dispatched": "Task assigned",
+      "task_completed": "Task completed",
+      "task_failed": "Task failed",
+      "review_requested": "Review requested",
+      "reviewed": "Review completed",
+      "plan_approved": "Plan approved",
+      "escalation_created": "Escalation raised"
+    },
+    "flow_kinds": {
+      "task_dispatch": "Task assignment",
+      "review_handoff": "Review handoff",
+      "plan_dependency": "Plan dependency",
+      "issue_dependency": "Issue dependency",
+      "escalation": "Escalation"
+    },
+    "blockers": {
+      "title": "Work blockers",
+      "more_count": "+{{count}} more",
+      "severity": {
+        "waiting": "Waiting",
+        "warning": "Warning",
+        "error": "Error"
+      },
+      "actions": {
+        "open_issue": "View issue",
+        "retry": "Retry",
+        "resolve_escalation": "Resolve escalation",
+        "approve_plan": "Approve plan"
+      },
+      "reasons": {
+        "issue_dependency": "Waiting for {{dependencyCount}} prerequisite issue(s).",
+        "plan_dependency": "Waiting for a prerequisite plan item.",
+        "failed_run": "An agent run failed.",
+        "failed_gate": "A quality gate failed.",
+        "blocked_agent": "The agent is blocked.",
+        "runtime_unavailable": "The agent runtime is unavailable.",
+        "approval_required": "Approval is required to continue."
+      }
+    },
+    "dock": {
+      "title": "Project assistant",
+      "ask_mode": "Ask",
+      "assign_mode": "Assign task",
+      "message_label": "Message",
+      "message_placeholder": "Write a message…",
+      "send": "Send",
+      "retry": "Retry",
+      "loading": "Loading messages…",
+      "empty": "No messages yet.",
+      "error": "Message could not be sent.",
+      "queued": "Message queued",
+      "offline": "Agent is offline",
+      "forbidden": "You do not have permission to message this agent",
+      "runtime_unavailable": "Agent runtime is unavailable",
+      "leader_unavailable": "Project lead chat is unavailable",
+      "archived": "This chat is archived",
+      "busy": "Agent is busy",
+      "unavailable": "Chat is unavailable",
+      "project_required": "Select a project to continue",
+      "target_required": "Select an agent",
+      "task_title_label": "Task title",
+      "assign_title": "Assign a task",
+      "agent_label": "Agent",
+      "issue_created": "Task {{identifier}} created",
+      "open_issue": "Open task",
+      "task_title_placeholder": "Describe the task…",
+      "close": "Close",
+      "you": "You",
+      "open_chat": "Open in chat",
+      "prompt_status": "Summarize project status",
+      "prompt_completed": "What has been completed?",
+      "prompt_blockers": "What is blocked?",
+      "prompt_gates": "Summarize gate status"
     }
   }
 }

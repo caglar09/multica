@@ -301,16 +301,22 @@ func TestRecordTaskCommitPersistsObservedRevisionPendingQuality(t *testing.T) {
 	if err := RecordTaskCommit(context.Background(), tx, commit); err != nil {
 		t.Fatalf("RecordTaskCommit() error = %v", err)
 	}
-	if len(tx.execStatements) != 1 || !strings.Contains(tx.execStatements[0], "INSERT INTO autonomous_project_change_set") ||
-		!strings.Contains(tx.execStatements[0], "'changes_requested',NULL") ||
-		!strings.Contains(tx.execStatements[0], "ON CONFLICT (source_task_id) DO NOTHING") {
+	insertIndex := -1
+	for i, statement := range tx.execStatements {
+		if strings.Contains(statement, "INSERT INTO autonomous_project_change_set") {
+			insertIndex = i
+			break
+		}
+	}
+	if insertIndex < 0 || !strings.Contains(tx.execStatements[insertIndex], "'changes_requested',NULL") ||
+		!strings.Contains(tx.execStatements[insertIndex], "ON CONFLICT (source_task_id) DO NOTHING") {
 		t.Fatalf("change-set insert = %q, want idempotent changes_requested insert", tx.execStatements)
 	}
-	if got := tx.execArgs[0][12]; got != "commit-sha" {
+	if got := tx.execArgs[insertIndex][12]; got != "commit-sha" {
 		t.Fatalf("persisted commit SHA argument = %#v, want commit-sha", got)
 	}
-	if got, ok := tx.execArgs[0][11].([]byte); !ok || string(got) != `["server/main.go"]` {
-		t.Fatalf("persisted changed-file argument = %#v, want encoded server/main.go", tx.execArgs[0][11])
+	if got, ok := tx.execArgs[insertIndex][11].([]byte); !ok || string(got) != `["server/main.go"]` {
+		t.Fatalf("persisted changed-file argument = %#v, want encoded server/main.go", tx.execArgs[insertIndex][11])
 	}
 }
 
@@ -365,6 +371,12 @@ func (tx *contextCompilerTestTx) QueryRow(_ context.Context, query string, _ ...
 			return nil
 		}}
 	case strings.Contains(query, "FROM autonomous_project_change_set"):
+		if strings.Contains(query, "SELECT EXISTS") {
+			return contextCompilerTestRow{scan: func(dest ...any) error {
+				*dest[0].(*bool) = false
+				return nil
+			}}
+		}
 		return contextCompilerTestRow{scan: func(dest ...any) error {
 			*dest[0].(*string) = tx.repositoryRevision
 			return nil

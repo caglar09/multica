@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useRef, useCallback, useEffect, useId } from "react";
 import {
   ShieldAlert,
   Play,
@@ -21,68 +21,78 @@ import type {
 } from "../types";
 import { PacketFlowLayer } from "./packet-flow-layer";
 import { AgentDeskHud } from "./agent-desk-hud";
-import { OfficeCommanderDock } from "./office-commander-dock";
 
 interface IsometricOfficeCanvasProps {
   scene: VirtualOfficeSceneData;
   activeReplay?: OfficeReplayEvent | null;
-  selectedStationKey?: OfficeZoneKey | null;
   selectedDesk?: OfficeAgentDesk | null;
   isFullscreen?: boolean;
   onSelectStation?: (key: OfficeZoneKey) => void;
   onSelectDesk?: (desk: OfficeAgentDesk | null) => void;
   onPlayRecentFlow?: () => void;
   onToggleFullscreen?: () => void;
-  onSendMessage?: (payload: { targetAgentId?: string; targetAgentName?: string; text: string }) => Promise<void> | void;
-  onOpenLeaderChat?: () => void;
   className?: string;
 }
 
 export function IsometricOfficeCanvas({
   scene,
   activeReplay,
-  selectedStationKey: _selectedStationKey,
   selectedDesk,
   isFullscreen,
   onSelectStation,
   onSelectDesk,
   onPlayRecentFlow,
   onToggleFullscreen,
-  onSendMessage,
-  onOpenLeaderChat,
   className,
 }: IsometricOfficeCanvasProps) {
   const { t } = useT("projects");
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = useState(false);
+  const canvasId = useId().replaceAll(":", "");
+  const viewRef = useRef({ zoom: 1, x: 0, y: 0 });
+  const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const canvasRef = useRef<HTMLDivElement>(null);
+  const worldRef = useRef<HTMLDivElement>(null);
+
+  const updateTransform = useCallback(() => {
+    const { zoom, x, y } = viewRef.current;
+    if (worldRef.current) {
+      worldRef.current.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
+    }
+  }, []);
+
+  const changeZoom = useCallback((delta: number) => {
+    viewRef.current.zoom = Math.min(Math.max(viewRef.current.zoom + delta, 0.4), 2.5);
+    updateTransform();
+  }, [updateTransform]);
 
   // Mouse drag to pan
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     // Only drag with primary mouse button
-    if (e.button !== 0) return;
-    setIsDragging(true);
-    dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
-  }, [pan]);
+    if (e.button !== 0 || (e.target instanceof Element && e.target.closest("button, [role='button']"))) return;
+    isDraggingRef.current = true;
+    worldRef.current?.classList.add("transition-none");
+    dragStartRef.current = {
+      x: e.clientX - viewRef.current.x,
+      y: e.clientY - viewRef.current.y,
+    };
+  }, []);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!isDragging) return;
-    setPan({
-      x: e.clientX - dragStartRef.current.x,
-      y: e.clientY - dragStartRef.current.y,
-    });
-  }, [isDragging]);
+    if (!isDraggingRef.current) return;
+    viewRef.current.x = e.clientX - dragStartRef.current.x;
+    viewRef.current.y = e.clientY - dragStartRef.current.y;
+    updateTransform();
+  }, [updateTransform]);
 
   const handleMouseUp = useCallback(() => {
-    setIsDragging(false);
+    isDraggingRef.current = false;
+    worldRef.current?.classList.remove("transition-none");
   }, []);
 
   const handleResetView = useCallback(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  }, []);
+    viewRef.current = { zoom: 1, x: 0, y: 0 };
+    updateTransform();
+  }, [updateTransform]);
 
   // Trackpad 2-finger gesture & mouse wheel handler
   // Supports pinch-to-zoom (ctrlKey) and smooth wheel zoom, plus trackpad pan
@@ -98,24 +108,17 @@ export function IsometricOfficeCanvas({
         // Trackpad pinch-to-zoom
         const factor = 0.015;
         const delta = -e.deltaY * factor;
-        setZoom((prev) => {
-          const next = Math.min(Math.max(prev + delta, 0.4), 2.5);
-          return Number(next.toFixed(3));
-        });
+        changeZoom(delta);
       } else if (e.shiftKey || Math.abs(e.deltaX) > 0) {
         // Trackpad 2-finger horizontal / vertical pan
-        setPan((prev) => ({
-          x: prev.x - e.deltaX,
-          y: prev.y - e.deltaY,
-        }));
+        viewRef.current.x -= e.deltaX;
+        viewRef.current.y -= e.deltaY;
+        updateTransform();
       } else {
         // Standard mouse wheel: smooth zoom in / out
         const factor = 0.0018;
         const delta = -e.deltaY * factor;
-        setZoom((prev) => {
-          const next = Math.min(Math.max(prev + delta, 0.4), 2.5);
-          return Number(next.toFixed(3));
-        });
+        changeZoom(delta);
       }
     };
 
@@ -123,53 +126,76 @@ export function IsometricOfficeCanvas({
     return () => {
       el.removeEventListener("wheel", onWheel);
     };
-  }, []);
+  }, [changeZoom, updateTransform]);
 
-  const { stations: _stations, desks, flowEdges, stats } = scene;
+  const { desks, flowEdges, stats } = scene;
 
   return (
     <div
+      role="region"
+      aria-label={t(($) => $.office.title)}
       className={cn(
-        "relative flex size-full flex-col overflow-hidden bg-slate-950 font-sans text-slate-100 select-none",
+        "relative flex size-full min-w-0 flex-col overflow-hidden bg-background font-sans text-foreground",
         isFullscreen && "fixed inset-0 z-50",
         className,
       )}
     >
       {/* Top HUD Control Bar */}
-      <div className="z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 bg-slate-900/85 px-4 py-2.5 backdrop-blur-md">
+      <div className="z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-background/95 px-4 py-2.5 backdrop-blur-md">
         {/* Left: Quick Stats Summary */}
-        <div className="flex items-center gap-2 overflow-x-auto text-xs">
+        <div role="group" aria-label={t(($) => $.office.stats.health_summary)} className="flex min-w-0 max-w-full flex-1 items-center gap-2 overflow-x-auto text-caption">
           <Badge
             variant="outline"
-            className="gap-1.5 border-slate-700 bg-slate-800/80 text-cyan-400 py-1"
+            className="gap-1.5 border-info/30 bg-info/10 py-1 text-info"
           >
-            <span className="size-1.5 rounded-full bg-cyan-400 animate-pulse" />
+            <span className="size-1.5 rounded-full bg-info motion-safe:animate-pulse motion-reduce:animate-none" />
             <span>{t(($) => $.office.stats.active_agents)}:</span>
             <span className="font-bold">{stats.activeAgents}</span>
           </Badge>
 
           <Badge
             variant="outline"
-            className="gap-1.5 border-slate-700 bg-slate-800/80 text-indigo-400 py-1"
+            className="gap-1.5 border-primary/30 bg-primary/10 py-1 text-primary"
           >
-            <span className="size-1.5 rounded-full bg-indigo-400" />
+            <span className="size-1.5 rounded-full bg-primary" />
             <span>{t(($) => $.office.stats.running_tasks)}:</span>
             <span className="font-bold">{stats.runningTasks}</span>
           </Badge>
 
           <Badge
             variant="outline"
-            className="gap-1.5 border-slate-700 bg-slate-800/80 text-emerald-400 py-1"
+            className="gap-1.5 border-success/30 bg-success/10 py-1 text-success"
           >
-            <span className="size-1.5 rounded-full bg-emerald-400" />
+            <span className="size-1.5 rounded-full bg-success" />
             <span>{t(($) => $.office.stats.completed_tasks)}:</span>
             <span className="font-bold">{stats.completedTasks}</span>
           </Badge>
 
-          {stats.pendingApprovals > 0 && (
+          <Badge variant="outline" className="gap-1.5 border-destructive/30 bg-destructive/10 py-1 text-destructive">
+            <ShieldAlert className="size-3" />
+            <span>{t(($) => $.office.stats.blocked)}:</span>
+            <span className="font-bold">{stats.blocked}</span>
+          </Badge>
+
+          <Badge variant="outline" className="gap-1.5 border-destructive/30 bg-destructive/10 py-1 text-destructive">
+            <span>{t(($) => $.office.stats.failed)}:</span>
+            <span className="font-bold">{stats.failed}</span>
+          </Badge>
+
+          <Badge variant="outline" className="gap-1.5 border-warning/30 bg-warning/10 py-1 text-warning">
+            <span>{t(($) => $.office.stats.waiting)}:</span>
+            <span className="font-bold">{stats.waiting}</span>
+          </Badge>
+
+          <Badge variant="outline" className="gap-1.5 border-info/30 bg-info/10 py-1 text-info">
+            <span>{t(($) => $.office.stats.resumable)}:</span>
+            <span className="font-bold">{stats.resumable}</span>
+          </Badge>
+
+          {scene.pendingApprovalsCount > 0 && (
             <Badge
               variant="outline"
-              className="gap-1.5 border-amber-500/40 bg-amber-500/10 text-amber-400 py-1 animate-pulse"
+              className="gap-1.5 border-warning/30 bg-warning/10 py-1 text-warning motion-safe:animate-pulse motion-reduce:animate-none"
             >
               <ShieldAlert className="size-3" />
               <span>{t(($) => $.office.stats.pending_approvals)}:</span>
@@ -186,15 +212,15 @@ export function IsometricOfficeCanvas({
               size="sm"
               variant="secondary"
               onClick={onPlayRecentFlow}
-              className="h-7 gap-1.5 bg-slate-800 text-xs font-medium text-slate-200 hover:bg-slate-700"
+              className="h-8 gap-1.5 text-caption font-medium"
             >
-              <Play className="size-3 text-amber-400 fill-amber-400" />
+              <Play className="size-3 fill-warning text-warning" />
               <span>{t(($) => $.office.play_flow)}</span>
             </Button>
           )}
 
           {/* Zoom controls */}
-          <div className="flex items-center rounded-md border border-slate-800 bg-slate-900/60 p-0.5">
+          <div className="flex items-center rounded-md border border-border bg-muted p-0.5">
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -202,8 +228,9 @@ export function IsometricOfficeCanvas({
                     type="button"
                     size="icon-xs"
                     variant="ghost"
-                    onClick={() => setZoom((z) => Math.min(z + 0.15, 1.8))}
-                    className="size-6 text-slate-400 hover:text-slate-100"
+                    aria-label={t(($) => $.office.controls.zoom_in)}
+                    onClick={() => changeZoom(0.15)}
+                    className="size-8 text-muted-foreground hover:text-foreground"
                   >
                     <ZoomIn className="size-3.5" />
                   </Button>
@@ -219,8 +246,9 @@ export function IsometricOfficeCanvas({
                     type="button"
                     size="icon-xs"
                     variant="ghost"
-                    onClick={() => setZoom((z) => Math.max(z - 0.15, 0.65))}
-                    className="size-6 text-slate-400 hover:text-slate-100"
+                    aria-label={t(($) => $.office.controls.zoom_out)}
+                    onClick={() => changeZoom(-0.15)}
+                    className="size-8 text-muted-foreground hover:text-foreground"
                   >
                     <ZoomOut className="size-3.5" />
                   </Button>
@@ -237,7 +265,8 @@ export function IsometricOfficeCanvas({
                     size="icon-xs"
                     variant="ghost"
                     onClick={handleResetView}
-                    className="size-6 text-slate-400 hover:text-slate-100"
+                    aria-label={t(($) => $.office.controls.reset_view)}
+                    className="size-8 text-muted-foreground hover:text-foreground"
                   >
                     <RotateCcw className="size-3" />
                   </Button>
@@ -257,7 +286,10 @@ export function IsometricOfficeCanvas({
                     size="icon-xs"
                     variant="ghost"
                     onClick={onToggleFullscreen}
-                    className="size-7 text-slate-300 hover:bg-slate-800 hover:text-white"
+                    aria-label={isFullscreen
+                      ? t(($) => $.office.exit_fullscreen)
+                      : t(($) => $.office.fullscreen)}
+                    className="size-8 text-muted-foreground hover:text-foreground"
                   >
                     {isFullscreen ? (
                       <Minimize2 className="size-3.5" />
@@ -285,18 +317,17 @@ export function IsometricOfficeCanvas({
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         className={cn(
-          "relative flex-1 cursor-grab overflow-hidden active:cursor-grabbing",
-          "bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(30,41,59,0.5),rgba(2,6,23,0.95))]",
+          "relative flex-1 cursor-grab overflow-hidden bg-gradient-to-b from-muted/30 to-background active:cursor-grabbing",
         )}
       >
         {/* World Transform Container */}
         <div
+          ref={worldRef}
           style={{
-            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transform: "translate(0px, 0px) scale(1)",
             transformOrigin: "center center",
-            transition: isDragging ? "none" : "transform 0.1s ease-out",
           }}
-          className="absolute inset-0 size-full min-h-[750px] min-w-[1200px]"
+          className="absolute inset-0 size-full transition-transform duration-100 motion-reduce:transition-none"
         >
           {/* Isometric Architectural Floor SVG */}
           <svg
@@ -307,7 +338,7 @@ export function IsometricOfficeCanvas({
             <defs>
               {/* Floor Isometric Grid Pattern */}
               <pattern
-                id="office-isometric-grid"
+                id={`${canvasId}-grid`}
                 width="60"
                 height="34.64"
                 patternUnits="userSpaceOnUse"
@@ -315,36 +346,22 @@ export function IsometricOfficeCanvas({
                 <path
                   d="M 30 0 L 60 17.32 L 30 34.64 L 0 17.32 Z"
                   fill="none"
-                  stroke="#334155"
+                  stroke="var(--border)"
                   strokeWidth="0.5"
                   strokeOpacity="0.25"
                 />
               </pattern>
 
               {/* Station Gradients */}
-              <linearGradient id="grad-pm" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#0284c7" stopOpacity="0.3" />
-                <stop offset="100%" stopColor="#082f49" stopOpacity="0.6" />
+              <linearGradient id={`${canvasId}-grad-pm`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="var(--info)" stopOpacity="0.16" />
+                <stop offset="100%" stopColor="var(--info)" stopOpacity="0.05" />
               </linearGradient>
 
-              <linearGradient id="grad-coding" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.3" />
-                <stop offset="100%" stopColor="#1e1b4b" stopOpacity="0.6" />
-              </linearGradient>
-
-              <linearGradient id="grad-qa" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#9333ea" stopOpacity="0.3" />
-                <stop offset="100%" stopColor="#3b0764" stopOpacity="0.6" />
-              </linearGradient>
-
-              <linearGradient id="grad-approval" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#059669" stopOpacity="0.3" />
-                <stop offset="100%" stopColor="#022c22" stopOpacity="0.6" />
-              </linearGradient>
             </defs>
 
             {/* Base Grid Background */}
-            <rect width="1200" height="750" fill="url(#office-isometric-grid)" />
+            <rect width="1200" height="750" fill={`url(#${canvasId}-grid)`} />
 
             {/* Central Leader Sanctuary Aura (Under Project Manager) */}
             <ellipse
@@ -352,7 +369,7 @@ export function IsometricOfficeCanvas({
               cy="140"
               rx="180"
               ry="75"
-              fill="url(#grad-pm)"
+              fill={`url(#${canvasId}-grad-pm)`}
               opacity="0.4"
             />
             <ellipse
@@ -361,7 +378,7 @@ export function IsometricOfficeCanvas({
               rx="130"
               ry="55"
               fill="none"
-              stroke="#f59e0b"
+              stroke="var(--warning)"
               strokeWidth="1"
               strokeDasharray="4 4"
               opacity="0.6"
@@ -390,6 +407,10 @@ export function IsometricOfficeCanvas({
                 >
                   <AgentDeskHud
                     desk={desk}
+                    blockers={scene.blockers.filter((blocker) =>
+                      (blocker.agentId && blocker.agentId === desk.agentId) ||
+                      (blocker.issueId && blocker.issueId === (desk.activeTask?.issueId ?? desk.currentIssueId)),
+                    )}
                     isSelected={selectedDesk?.id === desk.id}
                     onSelect={(d) => {
                       onSelectDesk?.(d);
@@ -403,16 +424,6 @@ export function IsometricOfficeCanvas({
         </div>
       </div>
 
-      {/* Interactive Commander Dock for Asking CEO & Direct Agents */}
-      <div className="pointer-events-none absolute bottom-4 inset-x-0 z-20 flex justify-center">
-        <OfficeCommanderDock
-          desks={desks}
-          selectedDesk={selectedDesk}
-          onSelectDesk={onSelectDesk}
-          onSendMessage={onSendMessage}
-          onOpenChatWindow={onOpenLeaderChat}
-        />
-      </div>
     </div>
   );
 }

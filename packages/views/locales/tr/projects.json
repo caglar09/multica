@@ -626,6 +626,7 @@
   },
   "office": {
     "title": "Sanal Ofis",
+    "partial_data": "Ofis verilerinin bir kısmı yükleniyor veya kullanılamıyor.",
     "subtitle": "2.5D Gerçek Zamanlı Çoklu Ajan Operasyonları ve İzleyici Görünümü",
     "zones": {
       "pm_desk": "Planlama & PM Masası",
@@ -636,8 +637,13 @@
     "stats": {
       "active_agents": "Aktif Ajanlar",
       "running_tasks": "Devam Eden Görevler",
-      "completed_tasks": "Onaylanan Görevler",
-      "pending_approvals": "Bekleyen Onaylar"
+      "completed_tasks": "Tamamlanan görevler",
+      "pending_approvals": "Bekleyen Onaylar",
+      "health_summary": "Proje etkinlik özeti",
+      "blocked": "Engelli",
+      "failed": "Başarısız",
+      "waiting": "Bekliyor",
+      "resumable": "Yeniden başlatılabilir"
     },
     "spectator_feed": "İzleyici Canlı Akışı",
     "play_flow": "Son Akışı Oynat",
@@ -678,16 +684,123 @@
       "escalation_with_category": "Eskalasyon: {{category}}",
       "resolve_escalation": "Eskalasyonu Çöz",
       "all_clear": "Tümü Temiz ve Onaylandı",
-      "no_pending": "İnceleme bekleyen karar veya eskalasyon bulunmuyor."
+      "no_pending": "İnceleme bekleyen karar veya eskalasyon bulunmuyor.",
+      "escalation_pending": "Bekleyen eskalasyon"
     },
     "desk_status": {
       "coding": "Kodluyor",
       "debugging": "Hata ayıklıyor",
       "testing": "Test ediyor",
       "blocked": "Engellendi",
+      "failed": "Başarısız",
       "approved": "Onaylandı",
       "standby": "Beklemede",
       "standby_tasks": "Görev bekliyor"
+    },
+    "categories": {
+      "management": "Yönetim",
+      "architecture": "Mimari",
+      "frontend": "Ön yüz",
+      "mobile": "Mobil",
+      "backend": "Arka yüz",
+      "qa": "Kalite güvencesi",
+      "security": "Güvenlik",
+      "general": "Genel"
+    },
+    "active_tasks_count": "{{count}} aktif görev",
+    "select_desk": "{{name}} için masayı seç",
+    "leader_pm": "Lider · PM",
+    "runtime_live": "Çalışma ortamı etkin",
+    "runtime_unavailable": "Çalışma ortamı kullanılamıyor",
+    "active_skill": "Aktif yetenek",
+    "active_tool_call": "Canlı araç çağrısı",
+    "allowed_skills_count": "İzin verilen yetenekler ({{count}})",
+    "close_inspector": "Denetçiyi kapat",
+    "metrics": {
+      "leader": "Proje lideri",
+      "plan_revision": "Plan revizyonu",
+      "nodes": "Plan adımları",
+      "members": "Ekip üyeleri",
+      "running": "Devam ediyor",
+      "gates": "Kalite kapıları",
+      "reviews": "İncelemede",
+      "pending": "Bekliyor",
+      "completed": "Tamamlandı"
+    },
+    "activities": {
+      "task_dispatched": "Görev atandı",
+      "task_completed": "Görev tamamlandı",
+      "task_failed": "Görev başarısız oldu",
+      "review_requested": "İnceleme istendi",
+      "reviewed": "İnceleme tamamlandı",
+      "plan_approved": "Plan onaylandı",
+      "escalation_created": "Eskalasyon oluşturuldu"
+    },
+    "flow_kinds": {
+      "task_dispatch": "Görev ataması",
+      "review_handoff": "İncelemeye devretme",
+      "plan_dependency": "Plan bağımlılığı",
+      "issue_dependency": "İş bağımlılığı",
+      "escalation": "Eskalasyon"
+    },
+    "blockers": {
+      "title": "İlerlemeyi engelleyenler",
+      "more_count": "+{{count}} tane daha",
+      "severity": {
+        "waiting": "Bekliyor",
+        "warning": "Uyarı",
+        "error": "Hata"
+      },
+      "actions": {
+        "open_issue": "İşi görüntüle",
+        "retry": "Yeniden dene",
+        "resolve_escalation": "Eskalasyonu çöz",
+        "approve_plan": "Planı onayla"
+      },
+      "reasons": {
+        "issue_dependency": "{{dependencyCount}} ön koşul iş bekleniyor.",
+        "plan_dependency": "Ön koşul plan adımı bekleniyor.",
+        "failed_run": "Ajan çalıştırması başarısız oldu.",
+        "failed_gate": "Kalite kapısı başarısız oldu.",
+        "blocked_agent": "Ajan engellendi.",
+        "runtime_unavailable": "Ajanın çalışma ortamı kullanılamıyor.",
+        "approval_required": "Devam etmek için onay gerekiyor."
+      }
+    },
+    "dock": {
+      "title": "Proje asistanı",
+      "ask_mode": "Sor",
+      "assign_mode": "Görev ata",
+      "message_label": "Mesaj",
+      "message_placeholder": "Mesaj yazın…",
+      "send": "Gönder",
+      "retry": "Yeniden dene",
+      "loading": "Mesajlar yükleniyor…",
+      "empty": "Henüz mesaj yok.",
+      "error": "Mesaj gönderilemedi.",
+      "queued": "Mesaj sıraya alındı",
+      "offline": "Ajan çevrimdışı",
+      "forbidden": "Bu ajana mesaj gönderme izniniz yok",
+      "runtime_unavailable": "Ajanın çalışma ortamı kullanılamıyor",
+      "leader_unavailable": "Proje lideri sohbeti kullanılamıyor",
+      "archived": "Bu sohbet arşivlendi",
+      "busy": "Ajan meşgul",
+      "unavailable": "Sohbet kullanılamıyor",
+      "project_required": "Devam etmek için bir proje seçin",
+      "target_required": "Bir ajan seçin",
+      "task_title_label": "Görev başlığı",
+      "assign_title": "Görev ata",
+      "agent_label": "Ajan",
+      "issue_created": "{{identifier}} numaralı görev oluşturuldu",
+      "open_issue": "Görevi aç",
+      "task_title_placeholder": "Görevi açıklayın…",
+      "close": "Kapat",
+      "you": "Siz",
+      "open_chat": "Sohbette aç",
+      "prompt_status": "Proje durumunu özetle",
+      "prompt_completed": "Neler tamamlandı?",
+      "prompt_blockers": "Neler engelleniyor?",
+      "prompt_gates": "Kapıların durumunu özetle"
     }
   },
   "project_report": {

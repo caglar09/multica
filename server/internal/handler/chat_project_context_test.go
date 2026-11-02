@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func createChatProjectTestProject(t *testing.T, workspaceID, title, description string) string {
@@ -304,6 +306,12 @@ func TestClaimTaskByRuntime_ChatProjectContext(t *testing.T) {
 	}
 
 	agentID := createHandlerTestAgent(t, "ChatProjectClaimAgent", []byte("[]"))
+	testIssueID := dbfx.Issue(t, "Office status issue", testutil.Cols{
+		"project_id":    projectID,
+		"status":        "in_progress",
+		"assignee_type": "agent",
+		"assignee_id":   agentID,
+	})
 	runtimeID := handlerTestRuntimeID(t)
 	sessionID := createChatSessionWithProjectForTest(t, agentID, projectID)
 	if _, err := testPool.Exec(ctx, `
@@ -346,6 +354,9 @@ func TestClaimTaskByRuntime_ChatProjectContext(t *testing.T) {
 			ProjectDescription string                `json:"project_description"`
 			ProjectResources   []ProjectResourceData `json:"project_resources"`
 			Repos              []RepoData            `json:"repos"`
+			Agent              *struct {
+				Instructions string `json:"instructions"`
+			} `json:"agent"`
 		} `json:"task"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
@@ -368,5 +379,8 @@ func TestClaimTaskByRuntime_ChatProjectContext(t *testing.T) {
 	}
 	if len(response.Task.Repos) != 1 || response.Task.Repos[0].URL != projectRepoURL || response.Task.Repos[0].Ref != projectRepoRef {
 		t.Fatalf("repos = %+v, want project repo only", response.Task.Repos)
+	}
+	if response.Task.Agent == nil || !strings.Contains(response.Task.Agent.Instructions, "Office status issue") || !strings.Contains(response.Task.Agent.Instructions, testIssueID) || !strings.Contains(response.Task.Agent.Instructions, "in_progress") {
+		t.Fatalf("agent instructions do not include the current project issue snapshot: %+v", response.Task.Agent)
 	}
 }

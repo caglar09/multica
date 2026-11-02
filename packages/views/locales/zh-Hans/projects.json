@@ -637,6 +637,7 @@
   },
   "office": {
     "title": "虚拟办公室",
+    "partial_data": "部分办公室数据仍在加载或暂不可用。",
     "subtitle": "2.5D 实时多智能体协作与观摩视图",
     "zones": {
       "pm_desk": "规划与项目主管席",
@@ -647,8 +648,13 @@
     "stats": {
       "active_agents": "活跃智能体",
       "running_tasks": "进行中任务",
-      "completed_tasks": "已批准任务",
-      "pending_approvals": "待审批事项"
+      "completed_tasks": "已完成任务",
+      "pending_approvals": "待审批事项",
+      "health_summary": "项目活动摘要",
+      "blocked": "受阻",
+      "failed": "失败",
+      "waiting": "等待中",
+      "resumable": "可恢复"
     },
     "spectator_feed": "观摩活动流",
     "play_flow": "回放最近流转",
@@ -689,7 +695,123 @@
       "escalation_with_category": "升级事项：{{category}}",
       "resolve_escalation": "解决升级事项",
       "all_clear": "全部已批准",
-      "no_pending": "暂无待审批或升级事项。"
+      "no_pending": "暂无待审批或升级事项。",
+      "escalation_pending": "待处理升级事项"
+    },
+    "desk_status": {
+      "coding": "编码中",
+      "debugging": "调试中",
+      "testing": "测试中",
+      "blocked": "受阻",
+      "failed": "失败",
+      "approved": "已批准",
+      "standby": "待命",
+      "standby_tasks": "等待任务"
+    },
+    "categories": {
+      "management": "管理",
+      "architecture": "架构",
+      "frontend": "前端",
+      "mobile": "移动端",
+      "backend": "后端",
+      "qa": "质量保障",
+      "security": "安全",
+      "general": "通用"
+    },
+    "active_tasks_count": "{{count}} 项进行中的任务",
+    "select_desk": "选择 {{name}} 的工位",
+    "leader_pm": "负责人 · PM",
+    "runtime_live": "运行环境在线",
+    "runtime_unavailable": "运行环境不可用",
+    "active_skill": "当前技能",
+    "active_tool_call": "实时工具调用",
+    "allowed_skills_count": "获准使用的技能（{{count}}）",
+    "close_inspector": "关闭检查器",
+    "metrics": {
+      "leader": "项目负责人",
+      "plan_revision": "计划版本",
+      "nodes": "计划事项",
+      "members": "团队成员",
+      "running": "运行中",
+      "gates": "质量门",
+      "reviews": "审查中",
+      "pending": "待处理",
+      "completed": "已完成"
+    },
+    "activities": {
+      "task_dispatched": "任务已分配",
+      "task_completed": "任务已完成",
+      "task_failed": "任务失败",
+      "review_requested": "已请求审查",
+      "reviewed": "审查已完成",
+      "plan_approved": "计划已批准",
+      "escalation_created": "已发起升级"
+    },
+    "flow_kinds": {
+      "task_dispatch": "任务分配",
+      "review_handoff": "转交审查",
+      "plan_dependency": "计划依赖",
+      "issue_dependency": "事项依赖",
+      "escalation": "升级事项"
+    },
+    "blockers": {
+      "title": "阻塞项",
+      "more_count": "另有 {{count}} 项",
+      "severity": {
+        "waiting": "等待中",
+        "warning": "警告",
+        "error": "错误"
+      },
+      "actions": {
+        "open_issue": "查看事项",
+        "retry": "重试",
+        "resolve_escalation": "解决升级事项",
+        "approve_plan": "批准计划"
+      },
+      "reasons": {
+        "issue_dependency": "正在等待 {{dependencyCount}} 个前置事项。",
+        "plan_dependency": "正在等待前置计划事项。",
+        "failed_run": "智能体运行失败。",
+        "failed_gate": "质量门未通过。",
+        "blocked_agent": "智能体受阻。",
+        "runtime_unavailable": "智能体运行环境不可用。",
+        "approval_required": "需要批准后才能继续。"
+      }
+    },
+    "dock": {
+      "title": "项目助手",
+      "ask_mode": "提问",
+      "assign_mode": "分配任务",
+      "message_label": "消息",
+      "message_placeholder": "输入消息…",
+      "send": "发送",
+      "retry": "重试",
+      "loading": "正在加载消息…",
+      "empty": "暂无消息。",
+      "error": "消息发送失败。",
+      "queued": "消息已排队",
+      "offline": "智能体离线",
+      "forbidden": "你没有向此智能体发送消息的权限",
+      "runtime_unavailable": "智能体运行环境不可用",
+      "leader_unavailable": "项目负责人聊天不可用",
+      "archived": "此聊天已归档",
+      "busy": "智能体正忙",
+      "unavailable": "聊天不可用",
+      "project_required": "请选择一个项目以继续",
+      "target_required": "请选择一个智能体",
+      "task_title_label": "任务标题",
+      "assign_title": "分配任务",
+      "agent_label": "智能体",
+      "issue_created": "任务 {{identifier}} 已创建",
+      "open_issue": "打开任务",
+      "task_title_placeholder": "描述任务…",
+      "close": "关闭",
+      "you": "你",
+      "open_chat": "在聊天中打开",
+      "prompt_status": "总结项目状态",
+      "prompt_completed": "已完成哪些工作？",
+      "prompt_blockers": "目前有哪些阻塞？",
+      "prompt_gates": "总结关卡状态"
     }
   }
 }

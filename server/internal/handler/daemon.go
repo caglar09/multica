@@ -3671,6 +3671,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				resp.RemoteMCPConnections = nil
 				if projectManagerChat {
 					resp.Agent.Instructions += "\n\n## Project Manager Chat Contract\n" + projectManagerChatContract
+					projectContext, contextErr := h.buildProjectLeaderContext(r.Context(), cs.WorkspaceID, cs.ProjectID, projectCtx)
+					if contextErr != nil {
+						slog.Warn("project manager chat context unavailable; delivery continues without current project context", "task_id", uuidToString(task.ID), "project_id", uuidToString(cs.ProjectID), "error", contextErr)
+						resp.Agent.Instructions += "\n\n## Current Project Context\nContext could not be loaded. Do not claim current project or issue status; explain that live project context is temporarily unavailable."
+					} else {
+						resp.Agent.Instructions += "\n\n## Current Project Context\n" + projectContext
+					}
 				} else if cs.ProjectID.Valid {
 					leaderContext, contextErr := h.buildProjectLeaderContext(r.Context(), cs.WorkspaceID, cs.ProjectID, projectCtx)
 					if contextErr != nil {
@@ -3679,6 +3686,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					} else {
 						resp.Agent.Instructions += "\n\n## Project Leader Contract\n" + projectLeaderChatContract + "\n\n## Project Leader Context\n" + leaderContext
 					}
+				}
+			}
+			if cs.ProjectID.Valid && !reasoningOnlySession && !projectManagerChat {
+				issueSnapshot, contextErr := h.buildProjectIssueSnapshot(r.Context(), cs.WorkspaceID, cs.ProjectID)
+				if contextErr != nil {
+					slog.Warn("project chat issue snapshot unavailable; delivery continues without current issue context", "task_id", uuidToString(task.ID), "project_id", uuidToString(cs.ProjectID), "error", contextErr)
+					resp.Agent.Instructions += "\n\n## Current Project Issues\nThe current issue snapshot is unavailable. Inspect live project issues before answering status questions; do not guess."
+				} else {
+					resp.Agent.Instructions += "\n\n## Current Project Issues\nUse this snapshot for current task and status questions. It lists up to 30 recently updated issues, so inspect live project data for a complete inventory or counts.\n" + string(issueSnapshot)
 				}
 			}
 		}

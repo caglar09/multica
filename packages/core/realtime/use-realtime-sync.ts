@@ -12,6 +12,7 @@ import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
 import { projectKeys } from "../projects/queries";
+import { autonomousProjectKeys } from "../projects/autonomous";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -958,6 +959,7 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (!wsId) return;
         qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.list(wsId) });
+        qc.invalidateQueries({ queryKey: autonomousProjectKeys.all(wsId) });
         // Working-agent projections have their own bounded refresh below.
         // 30d activity series shares the same lifecycle signal — any task
         // completion / failure shifts the histogram. (Dispatch alone
@@ -1105,6 +1107,7 @@ export function useRealtimeSync(
         if (issue.status) {
           onInboxIssueStatusChanged(qc, wsId, issue.id, issue.status);
         }
+        qc.invalidateQueries({ queryKey: autonomousProjectKeys.all(wsId) });
       }
     });
 
@@ -1112,7 +1115,10 @@ export function useRealtimeSync(
       const { issue } = p as IssueCreatedPayload;
       if (!issue) return;
       const wsId = getCurrentWsId();
-      if (wsId) onIssueCreated(qc, wsId, issue);
+      if (wsId) {
+        onIssueCreated(qc, wsId, issue);
+        qc.invalidateQueries({ queryKey: autonomousProjectKeys.all(wsId) });
+      }
     });
 
     const unsubIssueDeleted = ws.on("issue:deleted", (p) => {
@@ -1122,6 +1128,7 @@ export function useRealtimeSync(
       if (wsId) {
         onIssueDeleted(qc, wsId, issue_id);
         void onInboxIssueDeleted(qc, wsId, issue_id);
+        qc.invalidateQueries({ queryKey: autonomousProjectKeys.all(wsId) });
       }
     });
 
@@ -1501,6 +1508,17 @@ export function useRealtimeSync(
       // Cheap Map lookup, and it runs before anything allocates — this is the
       // hot path for every run in the workspace, not just the visible ones.
       if (!isTaskMessageTimelineHeld(qc, payload.task_id)) return;
+
+      // Office scenes subscribe to this timeline for live tool and speech
+      // signals. Mark autonomous snapshots stale without fetching one for each
+      // streamed token; their existing polling interval does the refresh.
+      const wsId = getCurrentWsId();
+      if (wsId) {
+        qc.invalidateQueries({
+          queryKey: autonomousProjectKeys.all(wsId),
+          refetchType: "none",
+        });
+      }
 
       // Leading edge: render the first frame after an idle window now. The
       // timer is still armed so the remainder of a burst is coalesced and a

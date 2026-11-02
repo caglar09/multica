@@ -637,6 +637,7 @@
   },
   "office": {
     "title": "バーチャルオフィス",
+    "partial_data": "一部のオフィスデータを読み込み中、または利用できません。",
     "subtitle": "2.5D リアルタイムマルチエージェント協調・観戦ビュー",
     "zones": {
       "pm_desk": "企画・PMデスク",
@@ -647,8 +648,13 @@
     "stats": {
       "active_agents": "稼働中エージェント",
       "running_tasks": "進行中のタスク",
-      "completed_tasks": "承認済みタスク",
-      "pending_approvals": "承認待ち"
+      "completed_tasks": "完了したタスク",
+      "pending_approvals": "承認待ち",
+      "health_summary": "プロジェクトの活動概要",
+      "blocked": "ブロック中",
+      "failed": "失敗",
+      "waiting": "待機中",
+      "resumable": "再開可能"
     },
     "spectator_feed": "アクティビティフィード",
     "play_flow": "直近のフローを再生",
@@ -689,7 +695,123 @@
       "escalation_with_category": "エスカレーション: {{category}}",
       "resolve_escalation": "エスカレーションを解決",
       "all_clear": "すべて承認済み",
-      "no_pending": "確認待ちの決定やエスカレーションはありません。"
+      "no_pending": "確認待ちの決定やエスカレーションはありません。",
+      "escalation_pending": "対応待ちのエスカレーション"
+    },
+    "desk_status": {
+      "coding": "コーディング中",
+      "debugging": "デバッグ中",
+      "testing": "テスト中",
+      "blocked": "ブロック中",
+      "failed": "失敗",
+      "approved": "承認済み",
+      "standby": "待機中",
+      "standby_tasks": "タスク待機中"
+    },
+    "categories": {
+      "management": "管理",
+      "architecture": "アーキテクチャ",
+      "frontend": "フロントエンド",
+      "mobile": "モバイル",
+      "backend": "バックエンド",
+      "qa": "品質保証",
+      "security": "セキュリティ",
+      "general": "一般"
+    },
+    "active_tasks_count": "進行中のタスク {{count}} 件",
+    "select_desk": "{{name}} のデスクを選択",
+    "leader_pm": "リード・PM",
+    "runtime_live": "ランタイム稼働中",
+    "runtime_unavailable": "ランタイムを利用できません",
+    "active_skill": "使用中のスキル",
+    "active_tool_call": "ツール呼び出し中",
+    "allowed_skills_count": "許可されたスキル（{{count}}）",
+    "close_inspector": "インスペクターを閉じる",
+    "metrics": {
+      "leader": "プロジェクトリード",
+      "plan_revision": "プランリビジョン",
+      "nodes": "プラン項目",
+      "members": "チームメンバー",
+      "running": "実行中",
+      "gates": "品質ゲート",
+      "reviews": "レビュー中",
+      "pending": "保留中",
+      "completed": "完了"
+    },
+    "activities": {
+      "task_dispatched": "タスクを割り当て",
+      "task_completed": "タスクを完了",
+      "task_failed": "タスクに失敗",
+      "review_requested": "レビューを依頼",
+      "reviewed": "レビューを完了",
+      "plan_approved": "プランを承認",
+      "escalation_created": "エスカレーションを作成"
+    },
+    "flow_kinds": {
+      "task_dispatch": "タスク割り当て",
+      "review_handoff": "レビューへの引き継ぎ",
+      "plan_dependency": "プランの依存関係",
+      "issue_dependency": "課題の依存関係",
+      "escalation": "エスカレーション"
+    },
+    "blockers": {
+      "title": "作業のブロッカー",
+      "more_count": "ほか {{count}} 件",
+      "severity": {
+        "waiting": "待機中",
+        "warning": "警告",
+        "error": "エラー"
+      },
+      "actions": {
+        "open_issue": "課題を表示",
+        "retry": "再試行",
+        "resolve_escalation": "エスカレーションを解決",
+        "approve_plan": "プランを承認"
+      },
+      "reasons": {
+        "issue_dependency": "前提となる課題 {{dependencyCount}} 件を待っています。",
+        "plan_dependency": "前提となるプラン項目を待っています。",
+        "failed_run": "エージェントの実行に失敗しました。",
+        "failed_gate": "品質ゲートに失敗しました。",
+        "blocked_agent": "エージェントがブロックされています。",
+        "runtime_unavailable": "エージェントのランタイムを利用できません。",
+        "approval_required": "続行するには承認が必要です。"
+      }
+    },
+    "dock": {
+      "title": "プロジェクトアシスタント",
+      "ask_mode": "質問",
+      "assign_mode": "タスクを割り当て",
+      "message_label": "メッセージ",
+      "message_placeholder": "メッセージを入力…",
+      "send": "送信",
+      "retry": "再試行",
+      "loading": "メッセージを読み込み中…",
+      "empty": "メッセージはありません。",
+      "error": "メッセージを送信できませんでした。",
+      "queued": "メッセージをキューに追加しました",
+      "offline": "エージェントはオフラインです",
+      "forbidden": "このエージェントにメッセージを送信する権限がありません",
+      "runtime_unavailable": "エージェントのランタイムを利用できません",
+      "leader_unavailable": "プロジェクトリードのチャットを利用できません",
+      "archived": "このチャットはアーカイブ済みです",
+      "busy": "エージェントは処理中です",
+      "unavailable": "チャットを利用できません",
+      "project_required": "続行するにはプロジェクトを選択してください",
+      "target_required": "エージェントを選択してください",
+      "task_title_label": "タスク名",
+      "assign_title": "タスクを割り当て",
+      "agent_label": "エージェント",
+      "issue_created": "タスク {{identifier}} を作成しました",
+      "open_issue": "タスクを開く",
+      "task_title_placeholder": "タスクを説明…",
+      "close": "閉じる",
+      "you": "あなた",
+      "open_chat": "チャットで開く",
+      "prompt_status": "プロジェクトの状況を要約して",
+      "prompt_completed": "完了した作業は？",
+      "prompt_blockers": "何がブロックされていますか？",
+      "prompt_gates": "ゲートの状況を要約して"
     }
   }
 }

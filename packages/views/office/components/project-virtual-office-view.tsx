@@ -1,51 +1,58 @@
-import { useState, useMemo, useCallback } from "react";
+"use client";
+
+import { useCallback, useState } from "react";
+import { useRerunAutonomousIssue, useRetryAutonomousAction } from "@multica/core/projects";
 import { cn } from "@multica/ui/lib/utils";
-import { buildVirtualOfficeScene } from "../spatial-mapper";
+import { useT } from "../../i18n";
+import { OfficeCommanderDock } from "./office-commander-dock";
 import { IsometricOfficeCanvas } from "./isometric-office-canvas";
 import { OfficeInspectorDrawer } from "./office-inspector-drawer";
+import { useOfficeConversation } from "../use-office-conversation";
+import { useOfficeLiveData } from "../use-office-live-data";
 import type {
   VirtualOfficeViewProps,
   OfficeZoneKey,
   OfficeAgentDesk,
   OfficeReplayEvent,
+  OfficeBlocker,
 } from "../types";
 
 export function ProjectVirtualOfficeView({
+  projectId,
   snapshot,
   changeRequests,
-  agents = [],
-  issues = [],
+  leaderSessionId,
+  leaderAgentId,
   canControl = false,
   onApprovePlan,
   onApproveChange,
   onRejectChange,
   onResolveEscalation,
-  onOpenLeaderChat,
-  onSendChatMessage,
   className,
 }: VirtualOfficeViewProps) {
+  const { t } = useT("projects");
+  const { scene, isLoading, isPartial } = useOfficeLiveData(projectId ?? undefined);
   const [selectedStationKey, setSelectedStationKey] = useState<OfficeZoneKey | null>(null);
-  const [selectedDesk, setSelectedDesk] = useState<OfficeAgentDesk | null>(null);
+  const [selectedDeskId, setSelectedDeskId] = useState<string | null>(null);
   const [activeReplay, setActiveReplay] = useState<OfficeReplayEvent | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const rerunIssue = useRerunAutonomousIssue();
+  const retryAction = useRetryAutonomousAction();
 
-  // Compute spatial office scene
-  const scene = useMemo(
-    () =>
-      buildVirtualOfficeScene({
-        snapshot,
-        changeRequests,
-        agents,
-        issues,
-      }),
-    [snapshot, changeRequests, agents, issues],
-  );
+  const selectedDesk = scene.desks.find((desk) => desk.id === selectedDeskId) ?? null;
+  const conversationDesk = selectedDesk ?? scene.desks.find((desk) => desk.isLeader) ?? scene.desks[0] ?? null;
+  const conversation = useOfficeConversation({
+    projectId,
+    desk: conversationDesk,
+    leaderSessionId,
+    leaderAgentId,
+  });
+  const isHandlingBlocker = rerunIssue.isPending || retryAction.isPending;
 
-  // Replay packet flow on map with 3.5s auto-clear
   const handleReplayEvent = useCallback((event: OfficeReplayEvent) => {
     setActiveReplay(event);
-    setSelectedStationKey(event.toStation);
+    setSelectedStationKey(event.toStation ?? null);
     const timer = setTimeout(() => {
       setActiveReplay((current) => (current?.id === event.id ? null : current));
     }, 3800);
@@ -53,14 +60,32 @@ export function ProjectVirtualOfficeView({
   }, []);
 
   const handlePlayRecentFlow = useCallback(() => {
-    if (scene.recentEvents.length > 0) {
-      handleReplayEvent(scene.recentEvents[0]!);
-    }
+    const event = scene.recentEvents[0];
+    if (event) handleReplayEvent(event);
   }, [scene.recentEvents, handleReplayEvent]);
 
-  const handleToggleFullscreen = useCallback(() => {
-    setIsFullscreen((f) => !f);
-  }, []);
+  const handleBlockerAction = useCallback((blocker: OfficeBlocker) => {
+    if (!canControl || !projectId) return;
+    switch (blocker.action.kind) {
+      case "retry_run":
+        if (blocker.issueId) {
+          rerunIssue.mutate({ projectId, issueId: blocker.issueId, taskId: blocker.action.targetId });
+        }
+        break;
+      case "retry_action":
+        retryAction.mutate({ projectId, actionId: blocker.action.targetId });
+        break;
+      case "resolve_escalation":
+        onResolveEscalation?.(blocker.action.targetId);
+        break;
+      case "approve_plan":
+        onApprovePlan?.();
+        break;
+      case "open_issue":
+      case "none":
+        break;
+    }
+  }, [canControl, onApprovePlan, onResolveEscalation, projectId, rerunIssue, retryAction]);
 
   return (
     <div
@@ -70,32 +95,43 @@ export function ProjectVirtualOfficeView({
         className,
       )}
     >
-      {/* 2.5D Isometric Canvas Main Area */}
       <IsometricOfficeCanvas
         scene={scene}
         activeReplay={activeReplay}
-        selectedStationKey={selectedStationKey}
         selectedDesk={selectedDesk}
         isFullscreen={isFullscreen}
         onSelectStation={(key) => {
           setSelectedStationKey(key);
           setIsDrawerOpen(true);
         }}
-        onSelectDesk={(desk) => {
-          setSelectedDesk(desk);
-          if (desk) {
-            setSelectedStationKey(desk.stationKey);
-          }
+        onSelectDesk={(desk: OfficeAgentDesk | null) => {
+          setSelectedDeskId(desk?.id ?? null);
+          if (desk) setSelectedStationKey(desk.stationKey);
           setIsDrawerOpen(true);
         }}
         onPlayRecentFlow={handlePlayRecentFlow}
-        onToggleFullscreen={handleToggleFullscreen}
-        onSendMessage={onSendChatMessage}
-        onOpenLeaderChat={onOpenLeaderChat}
-        className="flex-1"
+        onToggleFullscreen={() => setIsFullscreen((fullscreen) => !fullscreen)}
+        className="min-w-0 flex-1"
       />
 
-      {/* Right Spectator & Inspector Drawer */}
+      {isPartial && !isLoading ? (
+        <p
+          role="status"
+          className="absolute left-3 top-3 z-20 max-w-[calc(100%-1.5rem)] rounded-md border border-warning/30 bg-background/95 px-3 py-2 text-caption text-muted-foreground shadow-sm md:left-4"
+        >
+          {t(($) => $.office.partial_data)}
+        </p>
+      ) : null}
+
+      <OfficeCommanderDock
+        projectId={projectId}
+        desks={scene.desks}
+        selectedDesk={conversationDesk}
+        onSelectDesk={(desk) => setSelectedDeskId(desk?.id ?? null)}
+        conversation={conversation}
+        className="absolute inset-x-0 bottom-3 z-40 md:z-20"
+      />
+
       <OfficeInspectorDrawer
         scene={scene}
         snapshot={snapshot}
@@ -103,7 +139,7 @@ export function ProjectVirtualOfficeView({
         selectedDesk={selectedDesk}
         selectedStationKey={selectedStationKey}
         activeReplay={activeReplay}
-        canControl={canControl}
+        canControl={canControl && !isHandlingBlocker}
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
         onReplayEvent={handleReplayEvent}
@@ -111,7 +147,7 @@ export function ProjectVirtualOfficeView({
         onApproveChange={onApproveChange}
         onRejectChange={onRejectChange}
         onResolveEscalation={onResolveEscalation}
-        onOpenLeaderChat={onOpenLeaderChat}
+        onBlockerAction={handleBlockerAction}
       />
     </div>
   );

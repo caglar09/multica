@@ -713,6 +713,7 @@ func buildChatPrompt(task Task) string {
 
 	var b strings.Builder
 	b.WriteString("You are running as a chat assistant for a Multica workspace.\n")
+	b.WriteString("Respond to the user's message as a conversation. Treat greetings and informational questions as conversation, not task assignments: answer them directly and naturally, using available project context. Do not claim work is underway or complete unless you actually performed requested work in this turn. If the user explicitly asks you to do work, do it and report the result.\n")
 	// Audience is per-session context, so keep it out of the cached runtime
 	// brief. The compact anchors here preserve the non-inferable boundaries: a
 	// group reply is not private to its sender and people not otherwise present

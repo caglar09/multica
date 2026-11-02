@@ -1594,9 +1594,11 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 								/>
 							) : contentView === "office" ? (
 								<ProjectVirtualOfficeView
+						projectId={projectId}
 									snapshot={autonomousSnapshot}
 									changeRequests={leaderChanges.data?.items}
-									agents={agents}
+						leaderSessionId={leaderChat.isPending ? undefined : leaderChat.data?.session?.id ?? null}
+						leaderAgentId={leaderChat.data?.leader?.id}
 									canControl={isWorkspaceAdmin && !isExecutionCancelled}
 									onApprovePlan={handleApproveAutonomousPlan}
 									onApproveChange={(id) =>
@@ -1608,37 +1610,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 									onResolveEscalation={(id) =>
 										resolveEscalation.mutate({ projectId, escalationId: id, decision: "approved" })
 									}
-									onOpenLeaderChat={handleOpenLeaderChat}
-									onSendChatMessage={async ({ targetAgentId, text }) => {
-										try {
-											let sessionId = leaderChat.data?.session?.id;
-											let pmAgentId = leaderChat.data?.leader?.id;
-
-											if (!sessionId && autonomousSnapshot?.enabled) {
-												try {
-													const freshLeaderChat = await api.getProjectLeaderChat(projectId);
-													if (freshLeaderChat?.session?.id) {
-														sessionId = freshLeaderChat.session.id;
-														pmAgentId = freshLeaderChat.leader?.id;
-													}
-												} catch {
-													// Ignore fallback
-												}
-											}
-
-											if (sessionId) {
-												await api.sendChatMessage(sessionId, text);
-												useChatStore.getState().setActiveSession(sessionId);
-												const selectedAgent = targetAgentId || pmAgentId;
-												if (selectedAgent) {
-													useChatStore.getState().setSelectedAgentId(selectedAgent);
-												}
-												useChatStore.getState().setSelectedProjectId(projectId);
-											}
-										} catch (err) {
-											console.warn("Project leader message dispatch warning:", err);
-										}
-									}}
 									className="flex-1"
 								/>
 							) : contentView === "issues" ? (
