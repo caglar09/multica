@@ -684,10 +684,6 @@ func dispatchFailReasonCode(err error) dispatch.ReasonCode {
 // (the resolved leader for a squad autopilot, otherwise the assignee agent
 // itself), so activity / mentions render with the right author identity.
 func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopilot, run *db.AutopilotRun, triggerTimezone string, actorUserID pgtype.UUID) error {
-	leader, _, err := s.resolveAutopilotLeader(ctx, ap)
-	if err != nil {
-		return fmt.Errorf("resolve leader: %w", err)
-	}
 	issueCountPolicy := ResolveIssueCountPolicy(ctx, s.Entitlements, ap.WorkspaceID)
 
 	tx, err := s.TxStarter.Begin(ctx)
@@ -698,11 +694,16 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 
 	qtx := s.Queries.WithTx(tx)
 
-	title := s.interpolateTemplate(ap, *run, triggerTimezone)
-	description := s.buildIssueDescription(ap, *run, triggerTimezone)
-
-	// Refresh the autopilot row at dispatch time so we use the current project
-	// binding instead of any stale snapshot the caller may have cached.
+	// Serialize against autopilot edits, then use the current configuration for
+	// both the target check and issue creation.
+	var lockedAutopilotID pgtype.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT id FROM autopilot
+		WHERE id=$1 AND workspace_id=$2
+		FOR UPDATE
+	`, ap.ID, ap.WorkspaceID).Scan(&lockedAutopilotID); err != nil {
+		return fmt.Errorf("lock autopilot for dispatch: %w", err)
+	}
 	currentAutopilot, err := qtx.GetAutopilotInWorkspace(ctx, db.GetAutopilotInWorkspaceParams{
 		ID:          ap.ID,
 		WorkspaceID: ap.WorkspaceID,
@@ -710,7 +711,40 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	if err != nil {
 		return fmt.Errorf("refresh autopilot: %w", err)
 	}
+	ap = currentAutopilot
+	if ap.ExecutionMode != "create_issue" {
+		return &errDispatchSkipped{reason: "autopilot execution mode changed before dispatch", code: dispatch.ReasonTargetUnavailable}
+	}
 	projectID := currentAutopilot.ProjectID
+	if projectID.Valid {
+		// Approval handlers take FOR SHARE on the project row. Holding FOR UPDATE
+		// here orders their approval/rejection with this final issue write.
+		var lockedProjectID pgtype.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT id FROM project
+			WHERE id=$1 AND workspace_id=$2
+			FOR UPDATE
+		`, projectID, ap.WorkspaceID).Scan(&lockedProjectID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return &errDispatchSkipped{reason: "project no longer exists", code: dispatch.ReasonTargetUnavailable}
+			}
+			return fmt.Errorf("lock project for issue dispatch: %w", err)
+		}
+		executable, err := projectIssueCreationPlanExecutableTx(ctx, tx, ap)
+		if err != nil {
+			return fmt.Errorf("verify project approval before issue creation: %w", err)
+		}
+		if !executable {
+			return &errDispatchSkipped{reason: "project specification and plan are not approved for execution", code: dispatch.ReasonTargetUnavailable}
+		}
+	}
+
+	leader, _, err := s.resolveAutopilotLeader(ctx, ap)
+	if err != nil {
+		return fmt.Errorf("resolve leader: %w", err)
+	}
+	title := s.interpolateTemplate(ap, *run, triggerTimezone)
+	description := s.buildIssueDescription(ap, *run, triggerTimezone)
 
 	if duplicate, found, err := issueguard.LockAndFindRecentAutopilotDuplicate(
 		ctx, qtx, ap.WorkspaceID, ap.ID, projectID, title, autopilotRecentDuplicateWindow,
@@ -1534,13 +1568,56 @@ func (s *AutopilotService) failRun(ctx context.Context, runID pgtype.UUID, reaso
 	}
 }
 
+// projectIssueCreationPlanExecutable applies the same database predicate used
+// by project-plan execution before an autopilot can admit a create_issue run.
+func (s *AutopilotService) projectIssueCreationPlanExecutable(ctx context.Context, ap db.Autopilot) (bool, error) {
+	if ap.ExecutionMode != "create_issue" || !ap.ProjectID.Valid {
+		return true, nil
+	}
+	if !ap.WorkspaceID.Valid {
+		return false, errors.New("project-bound autopilot has no workspace")
+	}
+	if s.TxStarter == nil {
+		return false, errors.New("project execution approval database is not configured")
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin project execution approval check: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	return projectIssueCreationPlanExecutableTx(ctx, tx, ap)
+}
+
+func projectIssueCreationPlanExecutableTx(ctx context.Context, tx pgx.Tx, ap db.Autopilot) (bool, error) {
+	if ap.ExecutionMode != "create_issue" || !ap.ProjectID.Valid {
+		return true, nil
+	}
+	if !ap.WorkspaceID.Valid {
+		return false, errors.New("project-bound autopilot has no workspace")
+	}
+	var executable bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan p
+			WHERE p.workspace_id = $1
+			  AND p.project_id = $2
+			  AND autonomous_project_plan_executable(p.id)
+		)
+	`, ap.WorkspaceID, ap.ProjectID).Scan(&executable); err != nil {
+		return false, fmt.Errorf("check project execution approval: %w", err)
+	}
+	return executable, nil
+}
+
 // shouldSkipDispatch is the pre-flight admission check from MUL-1899.
 // Returns (reason, true) when dispatching now would only enqueue a doomed
 // task — i.e. the assignee (or, for squad autopilots, the squad leader) is
 // gone, archived, has no runtime bound, or its runtime is not currently
-// online. Returns ("", false) on the happy path.
+// online. Project-bound create_issue autopilots must also have an executable
+// project plan. Returns ("", false) on the happy path.
 //
-// Errors are split into two classes:
+// Agent-resolution errors are split into two classes:
 //   - pgx.ErrNoRows / errSquadArchived (the row truly doesn't exist or is
 //     archived) → hard skip. Retrying won't change anything; piling failed
 //     runs would pollute the failure-rate auto-pause monitor.
@@ -1548,8 +1625,23 @@ func (s *AutopilotService) failRun(ctx context.Context, runID pgtype.UUID, reaso
 //     log + do not skip, so a transient DB hiccup never silently swallows a
 //     scheduled run. Migration 096 removed the agent FK on autopilot, so an
 //     agent assignee being missing is now a real condition the gate must
-//     handle (previously cascade-deleted).
+//     handle (previously cascade-deleted). Project approval read errors are
+//     fail-closed because the execution policy cannot be verified.
 func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopilot, actorUserID, triggerID pgtype.UUID) (string, dispatch.ReasonCode, bool) {
+	if ap.ExecutionMode == "create_issue" && ap.ProjectID.Valid {
+		executable, err := s.projectIssueCreationPlanExecutable(ctx, ap)
+		if err != nil {
+			slog.Error("autopilot admission: failed to verify project execution approval",
+				"autopilot_id", util.UUIDToString(ap.ID),
+				"project_id", util.UUIDToString(ap.ProjectID),
+				"error", err,
+			)
+			return "could not verify project specification and plan approval", dispatch.ReasonInternalError, true
+		}
+		if !executable {
+			return "project specification and plan are not approved for execution", dispatch.ReasonTargetUnavailable, true
+		}
+	}
 	if !ap.AssigneeID.Valid {
 		return "autopilot has no assignee", dispatch.ReasonTargetUnavailable, true
 	}

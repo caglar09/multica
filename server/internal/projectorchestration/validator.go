@@ -200,10 +200,27 @@ func ValidatePlan(plan Plan, maxNodes int) error {
 	if err := validateLifecycle(plan); err != nil {
 		return err
 	}
+	if len(plan.Specification.RequirementDetails) == 0 {
+		return fmt.Errorf("%w: %w: rich specification requirements are required for new plans", ErrInvalidPlan, ErrInvalidRequirementCoverage)
+	}
+	for _, node := range plan.Nodes {
+		if !node.IsEpic && requiresRequirementTraceability(node.Kind) && len(node.RequirementIDs) == 0 {
+			return fmt.Errorf("%w: %w: node %q requires at least one requirement ID", ErrInvalidPlan, ErrInvalidRequirementCoverage, node.Key)
+		}
+	}
 	if err := ValidateRequirementCoverage(plan); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidPlan, err)
 	}
 	return nil
+}
+
+func requiresRequirementTraceability(kind NodeKind) bool {
+	switch kind {
+	case NodeImplementation, NodeMigration, NodeReview, NodeQA:
+		return true
+	default:
+		return false
+	}
 }
 
 func validatePolicy(policy Policy) error {

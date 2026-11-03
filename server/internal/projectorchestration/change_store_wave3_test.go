@@ -16,7 +16,7 @@ import (
 )
 
 func TestChangeProposal_CreatesNewSpecRevision(t *testing.T) {
-	fixture := newWave3ChangeFixture(t)
+	fixture := newWave3ChangeFixtureWithApprovedSpecification(t)
 	proposal := fixture.proposal("scope-revision", "Expanded project scope")
 	result, err := fixture.store.ApplyProjectLeaderProposal(fixture.ctx, fixture.workspaceID, fixture.projectID, proposal, "Project Manager", "test-model")
 	if err != nil {
@@ -62,7 +62,7 @@ func TestChangeProposal_CreatesNewSpecRevision(t *testing.T) {
 }
 
 func TestChangeApply_RollsBackOnUserEditConflict(t *testing.T) {
-	fixture := newWave3ChangeFixture(t)
+	fixture := newWave3ChangeFixtureWithApprovedSpecification(t)
 	proposal := fixture.proposal("issue-conflict", "Expanded project scope")
 	result, err := fixture.store.ApplyProjectLeaderProposal(fixture.ctx, fixture.workspaceID, fixture.projectID, proposal, "Project Manager", "test-model")
 	if err != nil {
@@ -207,6 +207,14 @@ func newWave3ChangeFixture(t *testing.T) wave3ChangeFixture {
 	if err != nil {
 		t.Fatalf("persist initial plan: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status='active', plan_digest=autonomous_project_plan_digest(id),
+		    approved_at=now(), approved_by='wave3 fixture human'
+		WHERE id=$1::uuid
+	`, initialPlan.ID); err != nil {
+		t.Fatalf("approve initial plan fixture: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `UPDATE autonomous_project_plan_node SET materialized_issue_id=$2::uuid,status='ready' WHERE plan_id=$1::uuid AND node_key='implementation'`, initialPlan.ID, issueID); err != nil {
 		t.Fatalf("materialize implementation issue: %v", err)
 	}
@@ -218,6 +226,14 @@ func newWave3ChangeFixture(t *testing.T) wave3ChangeFixture {
 		ctx: ctx, pool: pool, store: store, workspaceID: workspaceUUID, projectID: projectUUID,
 		issueID: issueID, initialSpecificationID: initialRevision.ID, initialPlan: initialPlan, nodes: nodes,
 	}
+}
+
+func newWave3ChangeFixtureWithApprovedSpecification(t *testing.T) wave3ChangeFixture {
+	t.Helper()
+	fixture := newWave3ChangeFixture(t)
+	registerPlanApprovalLedgerCleanup(t, fixture)
+	insertHumanSpecificationApproval(t, fixture)
+	return fixture
 }
 
 func (f wave3ChangeFixture) proposal(id, summary string) ProjectChangeProposal {
@@ -237,7 +253,7 @@ func (f wave3ChangeFixture) proposal(id, summary string) ProjectChangeProposal {
 		ProposedSpecification: &proposedSpec,
 		Operations: []ProjectChangeOperation{{
 			Type:   ProjectLeaderOpAddNode,
-			Node:   &NodeSpec{Key: "follow-up", Kind: NodeImplementation, Title: "Follow-up work", Description: "Complete the additional scope", AcceptanceCriteria: []string{"The follow-up is complete"}, Risk: RiskLow, MaxAttempts: 3},
+			Node:   &NodeSpec{Key: "follow-up", Kind: NodeImplementation, Title: "Follow-up work", Description: "Complete the additional scope", RequirementIDs: []string{"REQ-1"}, AcceptanceCriteria: []string{"The follow-up is complete"}, Risk: RiskLow, MaxAttempts: 3},
 			Reason: "The revised scope requires follow-up work",
 		}},
 	}

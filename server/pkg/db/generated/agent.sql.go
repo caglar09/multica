@@ -1798,6 +1798,57 @@ WHERE id = (
       AND atq.runtime_id = $3
       AND atq.status = 'queued'
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
+      -- Quick-create can outlive the project approval that admitted it. Recheck
+      -- the local plan at the final atomic transition. A foreign project hint
+      -- is left to the handler's workspace isolation/degrade path, while a
+      -- deleted parent stays eligible only with its durable source snapshot.
+      AND (
+          atq.context->>'type' IS DISTINCT FROM 'quick_create'
+          OR CASE
+              WHEN NULLIF(atq.context->>'project_id', '') IS NOT NULL THEN
+                  NOT EXISTS (
+                      SELECT 1 FROM project target
+                      WHERE target.id = (atq.context->>'project_id')::uuid
+                        AND target.workspace_id = (atq.context->>'workspace_id')::uuid
+                  )
+                  OR EXISTS (
+                      SELECT 1 FROM autonomous_project_plan p
+                      WHERE p.workspace_id = (atq.context->>'workspace_id')::uuid
+                        AND p.project_id = (atq.context->>'project_id')::uuid
+                        AND autonomous_project_plan_executable(p.id)
+                  )
+              WHEN NULLIF(atq.context->>'parent_issue_id', '') IS NOT NULL THEN
+                  EXISTS (
+                      SELECT 1 FROM issue parent
+                      WHERE parent.id = (atq.context->>'parent_issue_id')::uuid
+                        AND parent.workspace_id = (atq.context->>'workspace_id')::uuid
+                        AND (
+                            parent.project_id IS NULL
+                            OR EXISTS (
+                                SELECT 1 FROM autonomous_project_plan p
+                                WHERE p.workspace_id = parent.workspace_id
+                                  AND p.project_id = parent.project_id
+                                  AND autonomous_project_plan_executable(p.id)
+                            )
+                        )
+                  )
+                  OR (
+                      NULLIF(atq.context->>'source_context_id', '') IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM issue deleted_parent
+                          WHERE deleted_parent.id = (atq.context->>'parent_issue_id')::uuid
+                      )
+                      AND EXISTS (
+                          SELECT 1 FROM issue_source_context source
+                          WHERE source.id = (atq.context->>'source_context_id')::uuid
+                            AND source.workspace_id = (atq.context->>'workspace_id')::uuid
+                            AND source.origin_task_id = atq.id
+                            AND source.source_issue_id = (atq.context->>'parent_issue_id')::uuid
+                      )
+                  )
+              ELSE TRUE
+          END
+      )
       AND EXISTS (
           SELECT 1
           FROM agent a
@@ -6597,6 +6648,53 @@ SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatc
 WHERE atq.runtime_id = $1
   AND atq.status = 'queued'
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
+  AND (
+      atq.context->>'type' IS DISTINCT FROM 'quick_create'
+      OR CASE
+          WHEN NULLIF(atq.context->>'project_id', '') IS NOT NULL THEN
+              NOT EXISTS (
+                  SELECT 1 FROM project target
+                  WHERE target.id = (atq.context->>'project_id')::uuid
+                    AND target.workspace_id = (atq.context->>'workspace_id')::uuid
+              )
+              OR EXISTS (
+                  SELECT 1 FROM autonomous_project_plan p
+                  WHERE p.workspace_id = (atq.context->>'workspace_id')::uuid
+                    AND p.project_id = (atq.context->>'project_id')::uuid
+                    AND autonomous_project_plan_executable(p.id)
+              )
+          WHEN NULLIF(atq.context->>'parent_issue_id', '') IS NOT NULL THEN
+              EXISTS (
+                  SELECT 1 FROM issue parent
+                  WHERE parent.id = (atq.context->>'parent_issue_id')::uuid
+                    AND parent.workspace_id = (atq.context->>'workspace_id')::uuid
+                    AND (
+                        parent.project_id IS NULL
+                        OR EXISTS (
+                            SELECT 1 FROM autonomous_project_plan p
+                            WHERE p.workspace_id = parent.workspace_id
+                              AND p.project_id = parent.project_id
+                              AND autonomous_project_plan_executable(p.id)
+                        )
+                    )
+              )
+              OR (
+                  NULLIF(atq.context->>'source_context_id', '') IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM issue deleted_parent
+                      WHERE deleted_parent.id = (atq.context->>'parent_issue_id')::uuid
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM issue_source_context source
+                      WHERE source.id = (atq.context->>'source_context_id')::uuid
+                        AND source.workspace_id = (atq.context->>'workspace_id')::uuid
+                        AND source.origin_task_id = atq.id
+                        AND source.source_issue_id = (atq.context->>'parent_issue_id')::uuid
+                  )
+              )
+          ELSE TRUE
+      END
+  )
   AND EXISTS (
       -- Keep this authorization fence in sync with ClaimAgentTask.
       SELECT 1
@@ -6706,6 +6804,53 @@ SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatc
 WHERE atq.runtime_id = ANY($1::uuid[])
   AND atq.status = 'queued'
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
+  AND (
+      atq.context->>'type' IS DISTINCT FROM 'quick_create'
+      OR CASE
+          WHEN NULLIF(atq.context->>'project_id', '') IS NOT NULL THEN
+              NOT EXISTS (
+                  SELECT 1 FROM project target
+                  WHERE target.id = (atq.context->>'project_id')::uuid
+                    AND target.workspace_id = (atq.context->>'workspace_id')::uuid
+              )
+              OR EXISTS (
+                  SELECT 1 FROM autonomous_project_plan p
+                  WHERE p.workspace_id = (atq.context->>'workspace_id')::uuid
+                    AND p.project_id = (atq.context->>'project_id')::uuid
+                    AND autonomous_project_plan_executable(p.id)
+              )
+          WHEN NULLIF(atq.context->>'parent_issue_id', '') IS NOT NULL THEN
+              EXISTS (
+                  SELECT 1 FROM issue parent
+                  WHERE parent.id = (atq.context->>'parent_issue_id')::uuid
+                    AND parent.workspace_id = (atq.context->>'workspace_id')::uuid
+                    AND (
+                        parent.project_id IS NULL
+                        OR EXISTS (
+                            SELECT 1 FROM autonomous_project_plan p
+                            WHERE p.workspace_id = parent.workspace_id
+                              AND p.project_id = parent.project_id
+                              AND autonomous_project_plan_executable(p.id)
+                        )
+                    )
+              )
+              OR (
+                  NULLIF(atq.context->>'source_context_id', '') IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM issue deleted_parent
+                      WHERE deleted_parent.id = (atq.context->>'parent_issue_id')::uuid
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM issue_source_context source
+                      WHERE source.id = (atq.context->>'source_context_id')::uuid
+                        AND source.workspace_id = (atq.context->>'workspace_id')::uuid
+                        AND source.origin_task_id = atq.id
+                        AND source.source_issue_id = (atq.context->>'parent_issue_id')::uuid
+                  )
+              )
+          ELSE TRUE
+      END
+  )
   AND EXISTS (
       -- Keep this authorization fence in sync with ClaimAgentTask.
       SELECT 1

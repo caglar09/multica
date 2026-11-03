@@ -106,6 +106,7 @@ export function WorkWaitingWidget({
           planAwaitingApproval && snapshot?.plan ? (
             <AutonomousPlanApprovalCard
               plan={snapshot.plan}
+              specificationApproved={snapshot.specification?.status === "approved"}
               canControl={canControl}
               isPending={Boolean(actions.pending)}
               onApprove={() => actions.onApprovePlan?.()}
@@ -116,6 +117,7 @@ export function WorkWaitingWidget({
                 digest: t(($) => $.plan_approval.digest),
                 digestMissing: t(($) => $.plan_approval.digest_missing),
                 adminOnly: t(($) => $.plan_approval.admin_only),
+                specificationApprovalRequired: t(($) => $.specification_approval.plan_approval_required),
                 approve: t(($) => $.plan_approval.approve),
               }}
             />

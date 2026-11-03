@@ -283,6 +283,10 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
+import type {
+  ApproveProjectSpecificationResponse,
+  RejectProjectSpecificationResponse,
+} from "./schemas";
 import {
   RuntimeProfileSchema,
   RuntimeProfileListSchema,
@@ -293,6 +297,8 @@ import {
   ProjectExportResponseSchema,
   ProjectPortabilityResultSchema,
   ApproveAutonomousProjectPlanResponseSchema,
+  ApproveProjectSpecificationResponseSchema,
+  RejectProjectSpecificationResponseSchema,
   AutonomousProjectControlSchema,
   AutonomousProjectPlanSnapshotSchema,
   AutonomousProjectSnapshotFieldsSchema,
@@ -320,6 +326,8 @@ import {
   AgentBuilderSessionListSchema,
   EMPTY_AGENT_BUILDER_SESSION_LIST,
   EMPTY_APPROVE_AUTONOMOUS_PROJECT_PLAN_RESPONSE,
+  EMPTY_APPROVE_PROJECT_SPECIFICATION_RESPONSE,
+  EMPTY_REJECT_PROJECT_SPECIFICATION_RESPONSE,
   EMPTY_AUTONOMOUS_PROJECT_CONTROL,
   EMPTY_CANCEL_PROJECT_AUTONOMOUS_RESPONSE,
   agentBuilderRuntimeSwitchFallback,
@@ -4253,6 +4261,7 @@ export class ApiClient {
         missing_sections: [],
         quality_gates: [],
         deployments: [],
+        specification: null,
       },
       { endpoint },
     );
@@ -4310,6 +4319,40 @@ export class ApiClient {
 
   async rejectProjectLeaderChange(id: string, changeRequestId: string): Promise<{ rejected: boolean }> {
     return this.fetch(`/api/projects/${id}/autonomous/change-requests/${changeRequestId}/reject`, { method: "POST" });
+  }
+
+  async approveProjectSpecification(
+    id: string,
+    changeRequestId: string,
+    specificationDigest: string,
+  ): Promise<ApproveProjectSpecificationResponse> {
+    const endpoint = "POST /api/projects/{id}/autonomous/spec/approve";
+    const raw = await this.fetch<unknown>(`/api/projects/${id}/autonomous/spec/approve`, {
+      method: "POST",
+      body: JSON.stringify({
+        change_request_id: changeRequestId,
+        specification_digest: specificationDigest,
+      }),
+    });
+    return parseWithFallback(raw, ApproveProjectSpecificationResponseSchema, EMPTY_APPROVE_PROJECT_SPECIFICATION_RESPONSE, { endpoint });
+  }
+
+  async rejectProjectSpecification(
+    id: string,
+    changeRequestId: string,
+    specificationDigest: string,
+    reason: string,
+  ): Promise<RejectProjectSpecificationResponse> {
+    const endpoint = "POST /api/projects/{id}/autonomous/spec/reject";
+    const raw = await this.fetch<unknown>(`/api/projects/${id}/autonomous/spec/reject`, {
+      method: "POST",
+      body: JSON.stringify({
+        change_request_id: changeRequestId,
+        specification_digest: specificationDigest,
+        reason,
+      }),
+    });
+    return parseWithFallback(raw, RejectProjectSpecificationResponseSchema, EMPTY_REJECT_PROJECT_SPECIFICATION_RESPONSE, { endpoint });
   }
 
   async getProjectReport(id: string): Promise<ProjectReportSnapshot> {

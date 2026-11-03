@@ -1,6 +1,7 @@
 package workflowruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -132,6 +133,11 @@ func (e *MikaProjectLeaderExecutor) ProcessCompletion(ctx context.Context, taskI
 	if err := projectorchestration.ValidateProjectLeaderResponse(response); err != nil {
 		return err
 	}
+	store := projectorchestration.NewStore(e.base.pool)
+	if response.SpecificationProposal != nil {
+		_, err := store.RecordProjectLeaderSpecificationProposal(ctx, workspaceID, projectID, *response.SpecificationProposal)
+		return err
+	}
 	if response.Proposal == nil {
 		return nil
 	}
@@ -139,15 +145,18 @@ func (e *MikaProjectLeaderExecutor) ProcessCompletion(ctx context.Context, taskI
 	if err := e.base.pool.QueryRow(ctx, `SELECT model FROM agent WHERE id=$1`, agentID).Scan(&model); err != nil {
 		return err
 	}
-	_, err = projectorchestration.NewStore(e.base.pool).ApplyProjectLeaderProposal(ctx, workspaceID, projectID, *response.Proposal, projectLeaderAgentName, model.String)
+	_, err = store.ApplyProjectLeaderProposal(ctx, workspaceID, projectID, *response.Proposal, projectLeaderAgentName, model.String)
 	return err
 }
 
 // ApproveChange atomically records approval and enqueues the existing durable
 // plan-mutation worker. It never touches issue/task/agent rows.
-func (e *MikaProjectLeaderExecutor) ApproveChange(ctx context.Context, workspaceID, projectID, changeID pgtype.UUID, idempotencyKey string) error {
+func (e *MikaProjectLeaderExecutor) ApproveChange(ctx context.Context, workspaceID, projectID, changeID, actorID pgtype.UUID, idempotencyKey string) error {
 	if e == nil || e.base == nil || e.base.pool == nil {
 		return errors.New("project leader runtime is not configured")
+	}
+	if !workspaceID.Valid || !projectID.Valid || !changeID.Valid || !actorID.Valid {
+		return errors.New("workspace, project, change request and actor are required")
 	}
 	change, err := projectorchestration.NewStore(e.base.pool).LoadChangeRequest(ctx, changeID)
 	if err != nil {
@@ -199,11 +208,41 @@ func (e *MikaProjectLeaderExecutor) ApproveChange(ctx context.Context, workspace
 		return err
 	}
 	defer tx.Rollback(ctx)
+	var actorRole string
+	if err := tx.QueryRow(ctx, `
+		SELECT role FROM member
+		WHERE workspace_id=$1 AND user_id=$2
+		FOR SHARE
+	`, workspaceID, actorID).Scan(&actorRole); err != nil {
+		return fmt.Errorf("load project leader approver membership: %w", err)
+	}
+	if actorRole != "owner" && actorRole != "admin" {
+		return errors.New("workspace owner or admin required to approve project leader change")
+	}
+	var scopedProjectID pgtype.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT id FROM project
+		WHERE workspace_id=$1 AND id=$2
+		FOR SHARE
+	`, workspaceID, projectID).Scan(&scopedProjectID); err != nil {
+		return fmt.Errorf("load project scope for project leader approval: %w", err)
+	}
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "autonomous-project-leader-apply:"+util.UUIDToString(projectID)); err != nil {
 		return err
 	}
+	planLockKey := "autonomous-project-plan:" + util.UUIDToString(workspaceID) + ":" + util.UUIDToString(projectID)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", planLockKey); err != nil {
+		return fmt.Errorf("lock project plan for change approval: %w", err)
+	}
 	var state string
-	if err := tx.QueryRow(ctx, `SELECT state FROM autonomous_project_change_request WHERE id=$1 AND workspace_id=$2 AND project_id=$3 FOR UPDATE`, changeID, workspaceID, projectID).Scan(&state); err != nil {
+	var lockedProposal []byte
+	var lockedBasePlanID pgtype.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT state,proposal,base_plan_id
+		FROM autonomous_project_change_request
+		WHERE id=$1 AND workspace_id=$2 AND project_id=$3
+		FOR UPDATE
+	`, changeID, workspaceID, projectID).Scan(&state, &lockedProposal, &lockedBasePlanID); err != nil {
 		return err
 	}
 	if state == string(projectorchestration.ChangeApplied) {
@@ -212,11 +251,113 @@ func (e *MikaProjectLeaderExecutor) ApproveChange(ctx context.Context, workspace
 	if state != string(projectorchestration.ChangeApprovalRequired) && state != string(projectorchestration.ChangeApproved) {
 		return fmt.Errorf("change request cannot be approved from %s", state)
 	}
+	lockedBasePlanText := ""
+	if lockedBasePlanID.Valid {
+		lockedBasePlanText = util.UUIDToString(lockedBasePlanID)
+	}
+	if !bytes.Equal(lockedProposal, change.Proposal) || lockedBasePlanText != change.BasePlanID {
+		return errors.New("stale project leader proposal: change request changed during approval")
+	}
+	currentPlanID := util.MustParseUUID(current.ID)
+	var lockedPlanRevision int64
+	var storedPlanDigest string
+	if err := tx.QueryRow(ctx, `
+		SELECT revision,plan_digest FROM autonomous_project_plan
+		WHERE id=$1 AND workspace_id=$2 AND project_id=$3
+		FOR UPDATE
+	`, currentPlanID, workspaceID, projectID).Scan(&lockedPlanRevision, &storedPlanDigest); err != nil {
+		return fmt.Errorf("lock project leader base plan: %w", err)
+	}
+	if lockedPlanRevision != current.Revision || storedPlanDigest != current.PlanDigest {
+		return errors.New("stale project leader proposal: base plan changed during approval")
+	}
+	if err := lockProjectLeaderPlanRows(ctx, tx, currentPlanID, nodes); err != nil {
+		return err
+	}
+	var currentPlanDigest string
+	if err := tx.QueryRow(ctx, `SELECT autonomous_project_plan_digest($1)`, currentPlanID).Scan(&currentPlanDigest); err != nil {
+		return fmt.Errorf("calculate locked project leader base plan digest: %w", err)
+	}
+	if currentPlanDigest != storedPlanDigest {
+		return errors.New("stale project leader proposal: base plan content changed during approval")
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('multica.approval_actor_type','human',true),set_config('multica.approval_actor_ref',$1,true)`, util.UUIDToString(actorID)); err != nil {
+		return fmt.Errorf("set project leader approval actor: %w", err)
+	}
+	var proposalDigest string
+	if err := tx.QueryRow(ctx, `SELECT autonomous_project_change_proposal_digest($1)`, changeID).Scan(&proposalDigest); err != nil {
+		return fmt.Errorf("calculate project leader proposal digest: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `UPDATE autonomous_project_change_request SET state='approved',updated_at=now() WHERE id=$1`, changeID); err != nil {
 		return err
+	}
+	if err := projectorchestration.RecordApprovalTx(ctx, tx, projectorchestration.ApprovalEvent{
+		WorkspaceID: workspaceID, ProjectID: projectID,
+		IdempotencyKey: "change-request-approve:" + util.UUIDToString(changeID),
+		SubjectType:    "change_request", SubjectID: util.UUIDToString(changeID), SubjectDigest: proposalDigest,
+		Decision: "approved", ActorType: "human", ActorID: actorID, ActorDisplay: util.UUIDToString(actorID),
+		Rationale:      "Approved the current project change proposal after base revision validation",
+		SourceEndpoint: "/api/projects/:id/autonomous/change-requests/:changeRequestId/approve", Origin: "local",
+	}); err != nil {
+		return fmt.Errorf("record project leader change approval: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO autonomous_control_plane_job(workspace_id,project_id,job_type,idempotency_key,payload,status,priority,max_attempts,available_at) VALUES($1,$2,'plan_mutation',$3,$4,'pending',70,3,now()) ON CONFLICT(workspace_id,project_id,job_type,idempotency_key) DO NOTHING`, workspaceID, projectID, idempotencyKey, raw); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func lockProjectLeaderPlanRows(ctx context.Context, tx pgx.Tx, planID pgtype.UUID, loaded []projectorchestration.LogicalPlanNode) error {
+	rows, err := tx.Query(ctx, `
+		SELECT logical_node_id::text,status
+		FROM autonomous_project_plan_node
+		WHERE plan_id=$1
+		ORDER BY id
+		FOR UPDATE
+	`, planID)
+	if err != nil {
+		return fmt.Errorf("lock project leader plan nodes: %w", err)
+	}
+	lockedNodeStatuses := make(map[string]string, len(loaded))
+	for rows.Next() {
+		var logicalNodeID, status string
+		if err := rows.Scan(&logicalNodeID, &status); err != nil {
+			rows.Close()
+			return fmt.Errorf("read locked project leader plan node: %w", err)
+		}
+		lockedNodeStatuses[logicalNodeID] = status
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read locked project leader plan nodes: %w", err)
+	}
+	rows.Close()
+	if len(lockedNodeStatuses) != len(loaded) {
+		return errors.New("stale project leader proposal: base plan nodes changed during approval")
+	}
+	for _, node := range loaded {
+		if status, ok := lockedNodeStatuses[node.LogicalNodeID]; !ok || status != node.Status {
+			return errors.New("stale project leader proposal: base plan node state changed during approval")
+		}
+	}
+	edges, err := tx.Query(ctx, `
+		SELECT id FROM autonomous_project_plan_edge
+		WHERE plan_id=$1
+		ORDER BY id
+		FOR UPDATE
+	`, planID)
+	if err != nil {
+		return fmt.Errorf("lock project leader plan edges: %w", err)
+	}
+	defer edges.Close()
+	for edges.Next() {
+		var id pgtype.UUID
+		if err := edges.Scan(&id); err != nil {
+			return fmt.Errorf("read locked project leader plan edge: %w", err)
+		}
+	}
+	if err := edges.Err(); err != nil {
+		return fmt.Errorf("read locked project leader plan edges: %w", err)
+	}
+	return nil
 }

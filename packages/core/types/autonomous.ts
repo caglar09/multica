@@ -1,3 +1,5 @@
+import type { PortableProjectSpecification } from "./project";
+
 export type AutonomousHealthStatus = "idle" | "ready" | "running" | "paused" | "attention";
 
 export interface AutonomousProjectControl {
@@ -337,6 +339,30 @@ export interface AutonomousBudget {
   total_attempts: number;
 }
 
+export interface AutonomousProjectApprovalHistoryEntry {
+  id: string;
+  revision: number | null;
+  digest: string;
+  decision: "approved" | "rejected" | "unknown";
+  actor_type: "human" | "system" | "unknown";
+  actor_display: string;
+  rationale: string;
+  origin: "local" | "imported" | "unknown";
+  acted_at: string;
+}
+
+export interface AutonomousProjectSpecificationApproval {
+  revision_id: string;
+  revision: number;
+  digest: string;
+  source_kind: string;
+  status: "awaiting_approval" | "approved" | "rejected";
+  is_proposal: boolean;
+  change_request_id: string | null;
+  specification: PortableProjectSpecification;
+  approval_history: AutonomousProjectApprovalHistoryEntry[];
+}
+
 export interface AutonomousProjectSnapshot {
   partial: boolean;
   missing_sections: string[];
@@ -353,6 +379,7 @@ export interface AutonomousProjectSnapshot {
   activity: AutonomousActivityItem[];
   decisions: AutonomousDecision[];
   plan: AutonomousProjectPlanSnapshot | null;
+  specification: AutonomousProjectSpecificationApproval | null;
   quality_gates: AutonomousQualityGate[];
   deployments: AutonomousProjectDeployment[];
   escalations: AutonomousEscalation[];

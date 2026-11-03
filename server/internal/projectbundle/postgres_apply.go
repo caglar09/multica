@@ -3,16 +3,19 @@ package projectbundle
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueposition"
+	projectorchestration "github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -42,16 +45,19 @@ func (s *PostgresStore) applyInTransaction(
 			return PortabilityResult{}, fmt.Errorf("lock project for portability sync: %w", err)
 		}
 		var err error
-		current, err = exportProject(ctx, tx, workspaceID, *projectID)
+		current, err = exportPortabilityComparisonBundle(ctx, tx, workspaceID, *projectID)
 		if err != nil {
 			return PortabilityResult{}, err
 		}
 	}
 	preview := BuildPreview(current, bundle, creating)
-	if err := s.addReferenceWarnings(ctx, tx, workspaceID, bundle, &preview, options); err != nil {
+	if err := rejectIdentityConflicts(preview); err != nil {
 		return PortabilityResult{}, err
 	}
-	if err := rejectIdentityConflicts(preview); err != nil {
+	if err := previewConflictError(preview); err != nil {
+		return PortabilityResult{}, err
+	}
+	if err := s.addReferenceWarnings(ctx, tx, workspaceID, bundle, &preview, options); err != nil {
 		return PortabilityResult{}, err
 	}
 
@@ -83,6 +89,39 @@ func (s *PostgresStore) applyInTransaction(
 		}
 		if err := applyBootstrap(ctx, tx, workspaceID, targetProjectID, userID, bootstrap); err != nil {
 			return PortabilityResult{}, err
+		}
+	}
+	importedSpecificationID := pgtype.UUID{}
+	if len(bundle.SpecificationRevisions) > 0 {
+		var importErr error
+		importedSpecificationID, importErr = importPortableSpecificationRevisions(ctx, tx, workspaceID, targetProjectID, bundle.SpecificationRevisions)
+		if importErr != nil {
+			return PortabilityResult{}, importErr
+		}
+		if bundle.Bootstrap != nil && bundle.Bootstrap.Plan != nil && bundle.Bootstrap.Plan.Specification != nil {
+			if err := verifyPortablePlanSpecification(ctx, tx, importedSpecificationID, *bundle.Bootstrap.Plan.Specification); err != nil {
+				return PortabilityResult{}, err
+			}
+		} else if bundle.Bootstrap != nil && bundle.Bootstrap.Plan != nil {
+			importedSpecification, err := loadPortableSpecification(ctx, tx, importedSpecificationID)
+			if err != nil {
+				return PortabilityResult{}, err
+			}
+			if importedSpecification.Goal != bundle.Bootstrap.Plan.Goal {
+				return PortabilityResult{}, errors.New("portable plan goal does not match the latest imported specification history")
+			}
+		}
+	}
+	planAdopted := false
+	if bundle.Bootstrap != nil && bundle.Bootstrap.Plan != nil {
+		planSourceRevision, sourceErr := portablePlanSourceRevision(*bundle.Bootstrap.Plan, importedSpecificationID)
+		if sourceErr != nil {
+			return PortabilityResult{}, sourceErr
+		}
+		var adoptionErr error
+		planAdopted, adoptionErr = importedPlanAdopted(ctx, tx, workspaceID, targetProjectID, planSourceRevision)
+		if adoptionErr != nil {
+			return PortabilityResult{}, adoptionErr
 		}
 	}
 
@@ -121,6 +160,11 @@ func (s *PostgresStore) applyInTransaction(
 				}
 			}
 		}
+		if !planAdopted {
+			if err := keepImportedTaskUnassigned(ctx, tx, workspaceID, targetProjectID, issueID); err != nil {
+				return PortabilityResult{}, taskChangeError(task.Key, "dispatch_gate", err)
+			}
+		}
 		addTaskAliases(task, issueID, taskIDs)
 	}
 	for _, task := range orderedTasks {
@@ -131,7 +175,12 @@ func (s *PostgresStore) applyInTransaction(
 		}
 	}
 	if bundle.Bootstrap != nil && bundle.Bootstrap.Plan != nil {
-		if err := applyPlan(ctx, tx, workspaceID, targetProjectID, *bundle.Bootstrap.Plan, taskIDs); err != nil {
+		if err := applyPlan(ctx, tx, workspaceID, targetProjectID, *bundle.Bootstrap.Plan, importedSpecificationID, taskIDs); err != nil {
+			return PortabilityResult{}, err
+		}
+	}
+	if len(bundle.Approvals) > 0 {
+		if err := importPortableApprovals(ctx, tx, workspaceID, targetProjectID, bundle.Approvals); err != nil {
 			return PortabilityResult{}, err
 		}
 	}
@@ -140,6 +189,54 @@ func (s *PostgresStore) applyInTransaction(
 	result.ProjectID = uuidString(targetProjectID)
 	result.Warnings = preview.Warnings
 	return result, nil
+}
+
+func exportProjectForSync(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUID) (Bundle, error) {
+	var project PortableProject
+	var description, icon, leadType pgtype.Text
+	var leadID pgtype.UUID
+	var startDate, dueDate pgtype.Date
+	var status, priority, prefix string
+	if err := q.QueryRow(ctx, `
+		SELECT title,description,icon,status,priority,lead_type,lead_id,start_date,due_date
+		FROM project WHERE id=$1 AND workspace_id=$2
+	`, projectID, workspaceID).Scan(&project.Title, &description, &icon, &status, &priority, &leadType, &leadID, &startDate, &dueDate); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Bundle{}, ErrProjectNotFound
+		}
+		return Bundle{}, fmt.Errorf("load imported project for sync: %w", err)
+	}
+	project.Status = &status
+	project.Priority = &priority
+	if description.Valid {
+		project.Description = &description.String
+	}
+	if icon.Valid {
+		project.Icon = &icon.String
+	}
+	if startDate.Valid {
+		value := startDate.Time.Format("2006-01-02")
+		project.StartDate = &value
+	}
+	if dueDate.Valid {
+		value := dueDate.Time.Format("2006-01-02")
+		project.DueDate = &value
+	}
+	if leadType.Valid && leadID.Valid {
+		var err error
+		project.Lead, err = exportActor(ctx, q, workspaceID, leadType.String, leadID)
+		if err != nil {
+			return Bundle{}, err
+		}
+	}
+	if err := q.QueryRow(ctx, `SELECT issue_prefix FROM workspace WHERE id=$1`, workspaceID).Scan(&prefix); err != nil {
+		return Bundle{}, fmt.Errorf("load project issue prefix for sync: %w", err)
+	}
+	current := Bundle{SchemaVersion: SchemaVersionV2, Project: project, Tasks: []PortableTask{}}
+	if err := exportTasks(ctx, q, workspaceID, projectID, prefix, &current); err != nil {
+		return Bundle{}, err
+	}
+	return current, nil
 }
 
 func createProject(ctx context.Context, q Queryer, workspaceID, userID pgtype.UUID, project PortableProject, preview *PortabilityPreview) (pgtype.UUID, error) {
@@ -332,11 +429,8 @@ func createTask(
 	if strings.TrimSpace(task.Title) == "" {
 		return pgtype.UUID{}, invalidInput(errors.New("task.title is required for a new task"))
 	}
-	statusInput := ""
-	if task.Status != nil {
-		statusInput = *task.Status
-	}
-	status, _, _, err := resolveStatus(ctx, tx, workspaceID, statusInput, stringValue(task.StatusCategory))
+	// Imported project work stays unassigned and unstarted until local adoption.
+	status, _, _, err := resolveStatus(ctx, tx, workspaceID, "", "unstarted")
 	if err != nil {
 		return pgtype.UUID{}, err
 	}
@@ -350,18 +444,6 @@ func createTask(
 	}
 	var assigneeType pgtype.Text
 	var assigneeID pgtype.UUID
-	if task.Assignee != nil {
-		id, kind, err := resolveActor(ctx, tx, workspaceID, task.Assignee)
-		if err != nil {
-			return pgtype.UUID{}, err
-		}
-		if id.Valid {
-			assigneeID = id
-			assigneeType = pgtype.Text{String: kind, Valid: true}
-		} else {
-			addWarning(preview, fmt.Sprintf("Task %q assignee %q could not be matched in the target workspace and was left unassigned.", task.Key, actorName(task.Assignee)))
-		}
-	}
 	var parentID pgtype.UUID
 	if task.ParentKey != nil {
 		var ok bool
@@ -442,12 +524,11 @@ func updateTask(
 	options ApplyOptions,
 	preview *PortabilityPreview,
 ) error {
-	var currentStatus string
 	var metadataRaw []byte
 	if err := tx.QueryRow(ctx, `
-		SELECT status, metadata FROM issue
+		SELECT metadata FROM issue
 		WHERE id = $1 AND workspace_id = $2 AND project_id = $3 FOR UPDATE
-	`, issueID, workspaceID, projectID).Scan(&currentStatus, &metadataRaw); err != nil {
+	`, issueID, workspaceID, projectID).Scan(&metadataRaw); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrProjectNotFound
 		}
@@ -468,27 +549,7 @@ func updateTask(
 	if task.Has("description") || task.present == nil {
 		add("description", nullableString(task.Description))
 	}
-	statusChanged := false
-	resolvedStatus := currentStatus
-	if task.Has("status") || task.Has("status_category") || task.present == nil {
-		statusInput := ""
-		if task.Status != nil {
-			statusInput = *task.Status
-		}
-		status, _, _, err := resolveStatus(ctx, tx, workspaceID, statusInput, stringValue(task.StatusCategory))
-		if err != nil {
-			return err
-		}
-		status, err = lockAndResolveStatus(ctx, qtx, workspaceID, status, stringValue(task.StatusCategory), preview)
-		if err != nil {
-			return err
-		}
-		if status != currentStatus {
-			statusChanged = true
-		}
-		resolvedStatus = status
-		add("status", status)
-	}
+	// Imported operational state is provenance; local status and assignment stay local on sync.
 	if task.Has("priority") || task.present == nil {
 		priority := "none"
 		if task.Priority != nil && validPriorities[*task.Priority] {
@@ -513,37 +574,7 @@ func updateTask(
 	if task.Has("position") || task.present == nil {
 		if task.Position != nil {
 			add("position", *task.Position)
-		} else if statusChanged {
-			position, err := issueposition.NextTopPosition(ctx, tx, workspaceID, resolvedStatus)
-			if err != nil {
-				return fmt.Errorf("allocate issue position: %w", err)
-			}
-			add("position", position)
 		}
-	} else if statusChanged {
-		position, err := issueposition.NextTopPosition(ctx, tx, workspaceID, resolvedStatus)
-		if err != nil {
-			return fmt.Errorf("allocate issue position: %w", err)
-		}
-		add("position", position)
-	}
-	if task.Has("assignee") || task.present == nil {
-		var assigneeType pgtype.Text
-		var assigneeID pgtype.UUID
-		if task.Assignee != nil {
-			id, kind, err := resolveActor(ctx, tx, workspaceID, task.Assignee)
-			if err != nil {
-				return err
-			}
-			if id.Valid {
-				assigneeType = pgtype.Text{String: kind, Valid: true}
-				assigneeID = id
-			} else {
-				addWarning(preview, fmt.Sprintf("Task %q assignee %q could not be matched in the target workspace and was left unassigned.", task.Key, actorName(task.Assignee)))
-			}
-		}
-		add("assignee_type", assigneeType)
-		add("assignee_id", assigneeID)
 	}
 	if task.Has("acceptance_criteria") || task.present == nil {
 		criteriaItems := task.AcceptanceCriteria
@@ -586,6 +617,21 @@ func updateTask(
 		if err := importComments(ctx, tx, workspaceID, userID, issueID, task, encodedMetadata, preview); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func keepImportedTaskUnassigned(ctx context.Context, tx pgx.Tx, workspaceID, projectID, issueID pgtype.UUID) error {
+	status := statusForCategory("unstarted")
+	if _, err := tx.Exec(ctx, `
+		UPDATE issue
+		SET status = $4, assignee_type = NULL, assignee_id = NULL,
+		    revision = revision + 1, updated_at = now(),
+		    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
+		WHERE id = $1 AND workspace_id = $2 AND project_id = $3
+		  AND (status IS DISTINCT FROM $4 OR assignee_type IS NOT NULL OR assignee_id IS NOT NULL)
+	`, issueID, workspaceID, projectID, status); err != nil {
+		return fmt.Errorf("keep imported task unassigned and unstarted: %w", err)
 	}
 	return nil
 }
@@ -934,13 +980,305 @@ func mergeBootstrap(ctx context.Context, q Queryer, workspaceID, projectID pgtyp
 	return incoming, nil
 }
 
-func applyPlan(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUID, plan PortablePlan, taskIDs map[string]pgtype.UUID) error {
-	raw, err := json.Marshal(plan)
+const portableSpecificationImportPrefix = "portable-import:v1:"
+
+type portableSpecificationImportSource struct {
+	ID         string  `json:"id"`
+	Revision   int64   `json:"revision"`
+	SourceKind string  `json:"source_kind"`
+	SourceRef  *string `json:"source_ref"`
+	Digest     string  `json:"digest"`
+	CreatedAt  string  `json:"created_at"`
+}
+
+func portableSpecificationImportRef(source PortableSpecificationRevision) (string, error) {
+	metadata, err := json.Marshal(portableSpecificationImportSource{
+		ID: source.ID, Revision: source.Revision, SourceKind: source.SourceKind,
+		SourceRef: source.SourceRef, Digest: source.Digest, CreatedAt: source.CreatedAt,
+	})
+	if err != nil {
+		return "", err
+	}
+	return portableSpecificationImportPrefix + base64.RawURLEncoding.EncodeToString(metadata), nil
+}
+
+func decodePortableSpecificationImportRef(sourceRef string) (portableSpecificationImportSource, bool) {
+	if !strings.HasPrefix(sourceRef, portableSpecificationImportPrefix) {
+		return portableSpecificationImportSource{}, false
+	}
+	metadata, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(sourceRef, portableSpecificationImportPrefix))
+	if err != nil {
+		return portableSpecificationImportSource{}, false
+	}
+	var source portableSpecificationImportSource
+	if err := json.Unmarshal(metadata, &source); err != nil || source.ID == "" || source.Revision < 1 {
+		return portableSpecificationImportSource{}, false
+	}
+	return source, true
+}
+
+func importPortableSpecificationRevisions(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUID, sources []PortableSpecificationRevision) (pgtype.UUID, error) {
+	if err := validatePortableSpecificationRevisions(sources); err != nil {
+		return pgtype.UUID{}, err
+	}
+	ordered := append([]PortableSpecificationRevision(nil), sources...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Revision < ordered[j].Revision })
+	if _, err := q.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "autonomous-project-specification:"+uuidString(workspaceID)+":"+uuidString(projectID)); err != nil {
+		return pgtype.UUID{}, err
+	}
+	imported := make([]pgtype.UUID, 0, len(ordered))
+	for _, source := range ordered {
+		createdAt, err := time.Parse(time.RFC3339Nano, source.CreatedAt)
+		if err != nil {
+			return pgtype.UUID{}, fmt.Errorf("parse imported specification revision %q timestamp: %w", source.ID, err)
+		}
+		if err := validatePortableJSONObject(source.Content); err != nil {
+			return pgtype.UUID{}, fmt.Errorf("imported specification revision %q content: %w", source.ID, err)
+		}
+		sourceRef, err := portableSpecificationImportRef(source)
+		if err != nil {
+			return pgtype.UUID{}, err
+		}
+		var revisionID pgtype.UUID
+		var localRevision int64
+		var goal string
+		var content []byte
+		err = q.QueryRow(ctx, `
+			SELECT id, revision, goal, specification
+			FROM autonomous_project_specification_revision
+			WHERE workspace_id=$1 AND project_id=$2 AND source_kind='project_bootstrap' AND source_ref=$3
+		`, workspaceID, projectID, sourceRef).Scan(&revisionID, &localRevision, &goal, &content)
+		if err == nil {
+			if goal != source.Goal || !jsonDocumentsEquivalent(content, source.Content) {
+				return pgtype.UUID{}, fmt.Errorf("imported specification revision %q conflicts with its prior provenance", source.ID)
+			}
+		} else if errors.Is(err, pgx.ErrNoRows) {
+			if err := q.QueryRow(ctx, `SELECT COALESCE(MAX(revision),0)+1 FROM autonomous_project_specification_revision WHERE workspace_id=$1 AND project_id=$2`, workspaceID, projectID).Scan(&localRevision); err != nil {
+				return pgtype.UUID{}, fmt.Errorf("allocate imported specification revision: %w", err)
+			}
+			if err := q.QueryRow(ctx, `
+				INSERT INTO autonomous_project_specification_revision(
+					workspace_id,project_id,revision,source_kind,source_ref,goal,specification,created_at
+				) VALUES($1,$2,$3,'project_bootstrap',$4,$5,$6::jsonb,$7)
+				RETURNING id
+			`, workspaceID, projectID, localRevision, sourceRef, source.Goal, string(source.Content), createdAt).Scan(&revisionID); err != nil {
+				return pgtype.UUID{}, fmt.Errorf("insert imported specification revision %q: %w", source.ID, err)
+			}
+		} else {
+			return pgtype.UUID{}, fmt.Errorf("find imported specification revision %q: %w", source.ID, err)
+		}
+		var digest string
+		if err := q.QueryRow(ctx, `SELECT autonomous_project_specification_digest($1)`, revisionID).Scan(&digest); err != nil {
+			return pgtype.UUID{}, fmt.Errorf("digest imported specification revision %q: %w", source.ID, err)
+		}
+		if digest != source.Digest {
+			return pgtype.UUID{}, fmt.Errorf("imported specification revision %q digest does not match its content", source.ID)
+		}
+		imported = append(imported, revisionID)
+	}
+	latestID := imported[len(imported)-1]
+	var headSourceRef pgtype.Text
+	err := q.QueryRow(ctx, `
+		SELECT h.specification_revision_id, r.source_ref
+		FROM autonomous_project_specification_head h
+		JOIN autonomous_project_specification_revision r ON r.id=h.specification_revision_id
+		WHERE h.workspace_id=$1 AND h.project_id=$2
+	`, workspaceID, projectID).Scan(new(pgtype.UUID), &headSourceRef)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, fmt.Errorf("read imported specification head: %w", err)
+	}
+	shouldUpdateHead := errors.Is(err, pgx.ErrNoRows) ||
+		(headSourceRef.Valid && (strings.HasPrefix(headSourceRef.String, portableSpecificationImportPrefix) || strings.HasPrefix(headSourceRef.String, "portable:")))
+	if shouldUpdateHead {
+		var revision int64
+		if err := q.QueryRow(ctx, `SELECT revision FROM autonomous_project_specification_revision WHERE id=$1`, latestID).Scan(&revision); err != nil {
+			return pgtype.UUID{}, fmt.Errorf("read imported specification head revision: %w", err)
+		}
+		if _, err := q.Exec(ctx, `
+			INSERT INTO autonomous_project_specification_head(workspace_id,project_id,specification_revision_id,revision)
+			VALUES($1,$2,$3,$4)
+			ON CONFLICT(workspace_id,project_id) DO UPDATE SET
+				specification_revision_id=EXCLUDED.specification_revision_id,revision=EXCLUDED.revision,updated_at=now()
+		`, workspaceID, projectID, latestID, revision); err != nil {
+			return pgtype.UUID{}, fmt.Errorf("set imported specification head: %w", err)
+		}
+	}
+	return latestID, nil
+}
+
+func jsonDocumentsEquivalent(left, right []byte) bool {
+	var leftValue, rightValue any
+	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return false
+	}
+	leftJSON, leftErr := json.Marshal(leftValue)
+	rightJSON, rightErr := json.Marshal(rightValue)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
+}
+
+func portableSpecificationContent(spec PortableSpecification) ([]byte, error) {
+	return json.Marshal(struct {
+		Summary                   string                             `json:"summary"`
+		Requirements              []PortableSpecificationRequirement `json:"requirements"`
+		NonFunctionalRequirements []string                           `json:"non_functional_requirements"`
+		Constraints               []string                           `json:"constraints"`
+		NonGoals                  []string                           `json:"non_goals"`
+		DefinitionOfDone          []string                           `json:"definition_of_done"`
+		AcceptanceExpectations    []string                           `json:"acceptance_expectations"`
+	}{
+		Summary: spec.Summary, Requirements: spec.Requirements,
+		NonFunctionalRequirements: spec.NonFunctionalRequirements, Constraints: spec.Constraints,
+		NonGoals: spec.NonGoals, DefinitionOfDone: spec.DefinitionOfDone,
+		AcceptanceExpectations: spec.AcceptanceExpectations,
+	})
+}
+
+func verifyPortablePlanSpecification(ctx context.Context, q Queryer, revisionID pgtype.UUID, planSpecification PortableSpecification) error {
+	var goal string
+	var content []byte
+	if err := q.QueryRow(ctx, `SELECT goal,specification FROM autonomous_project_specification_revision WHERE id=$1`, revisionID).Scan(&goal, &content); err != nil {
+		return fmt.Errorf("load imported plan specification history: %w", err)
+	}
+	expected, err := portableSpecificationContent(planSpecification)
 	if err != nil {
 		return err
 	}
+	if goal != planSpecification.Goal || !jsonDocumentsEquivalent(content, expected) {
+		return errors.New("portable plan specification does not match the latest imported specification history")
+	}
+	return nil
+}
+
+func loadPortableSpecification(ctx context.Context, q Queryer, revisionID pgtype.UUID) (PortableSpecification, error) {
+	var specification PortableSpecification
+	var goal string
+	var content []byte
+	if err := q.QueryRow(ctx, `SELECT goal,specification FROM autonomous_project_specification_revision WHERE id=$1`, revisionID).Scan(&goal, &content); err != nil {
+		return PortableSpecification{}, fmt.Errorf("load imported project specification: %w", err)
+	}
+	if err := json.Unmarshal(content, &specification); err != nil {
+		return PortableSpecification{}, fmt.Errorf("decode imported project specification: %w", err)
+	}
+	specification.Goal = goal
+	return specification, nil
+}
+
+func portablePlanSourceRevision(plan PortablePlan, specificationRevisionID pgtype.UUID) (string, error) {
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		return "", err
+	}
+	if specificationRevisionID.Valid {
+		raw, err = json.Marshal(struct {
+			Plan                    json.RawMessage `json:"plan"`
+			SpecificationRevisionID string          `json:"specification_revision_id"`
+		}{Plan: raw, SpecificationRevisionID: uuidString(specificationRevisionID)})
+		if err != nil {
+			return "", err
+		}
+	}
 	digest := sha256.Sum256(raw)
-	sourceRevision := "portable:" + hex.EncodeToString(digest[:])
+	return "portable:" + hex.EncodeToString(digest[:]), nil
+}
+
+func importedPlanAdopted(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUID, sourceRevision string) (bool, error) {
+	var adopted bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan p
+			JOIN autonomous_project_specification_revision s ON s.id=p.specification_revision_id
+			JOIN autonomous_project_approval_event spec_approval
+			  ON spec_approval.workspace_id=p.workspace_id AND spec_approval.project_id=p.project_id
+			 AND spec_approval.subject_type='specification_revision'
+			 AND spec_approval.subject_id=s.id::text
+			 AND spec_approval.subject_revision=s.revision
+			 AND spec_approval.subject_digest=autonomous_project_specification_digest(s.id)
+			 AND spec_approval.decision='approved' AND spec_approval.actor_type='human'
+			 AND spec_approval.actor_id IS NOT NULL AND spec_approval.origin='local'
+			JOIN autonomous_project_approval_event adoption
+			  ON adoption.workspace_id=p.workspace_id AND adoption.project_id=p.project_id
+			 AND adoption.subject_type='import_adoption' AND adoption.subject_id=p.id::text
+			 AND adoption.subject_revision=p.revision AND adoption.subject_digest=p.plan_digest
+			 AND adoption.origin_ref->>'specification_digest'=spec_approval.subject_digest
+			 AND adoption.origin_ref->>'plan_digest'=p.plan_digest
+			 AND adoption.decision='approved' AND adoption.actor_type='human'
+			 AND adoption.actor_id IS NOT NULL AND adoption.origin='local'
+			WHERE p.workspace_id=$1 AND p.project_id=$2 AND p.source_revision=$3
+			  AND p.planner_name='portable-import'
+		)
+	`, workspaceID, projectID, sourceRevision).Scan(&adopted)
+	if err != nil {
+		return false, fmt.Errorf("check imported project plan adoption: %w", err)
+	}
+	return adopted, nil
+}
+
+func importPortableApprovals(ctx context.Context, tx pgx.Tx, workspaceID, projectID pgtype.UUID, approvals []PortableApproval) error {
+	if err := validatePortableApprovals(approvals); err != nil {
+		return err
+	}
+	for _, source := range approvals {
+		idempotencyKey := "portable-import:" + source.ID
+		preserveRawOriginRef := false
+		if source.Origin == "imported" && source.ActorID == nil && strings.HasPrefix(source.IdempotencyKey, "portable-import:") {
+			idempotencyKey = source.IdempotencyKey
+			preserveRawOriginRef = true
+		}
+		originRef, err := json.Marshal(struct {
+			Version        int              `json:"version"`
+			ImportedVia    string           `json:"imported_via"`
+			SourceApproval PortableApproval `json:"source_approval"`
+		}{Version: 1, ImportedVia: "/api/projects/import", SourceApproval: source})
+		if err != nil {
+			return err
+		}
+		if preserveRawOriginRef {
+			var existingID string
+			var existingOriginRef []byte
+			var existingActedAt time.Time
+			err := tx.QueryRow(ctx, `
+			SELECT id::text, origin_ref, acted_at
+			FROM autonomous_project_approval_event
+			WHERE workspace_id=$1 AND project_id=$2 AND idempotency_key=$3
+		`, workspaceID, projectID, idempotencyKey).Scan(&existingID, &existingOriginRef, &existingActedAt)
+			if err == nil {
+				sourceActedAt, parseErr := time.Parse(time.RFC3339Nano, source.ActedAt)
+				if parseErr == nil && existingID == source.ID &&
+					existingActedAt.UTC().Equal(sourceActedAt.UTC()) &&
+					jsonDocumentsEquivalent(existingOriginRef, source.OriginRef) {
+					// Older imports stored this raw ref directly. Reuse it only for the
+					// exact exported row so repeated sync remains idempotent.
+					originRef = append([]byte(nil), existingOriginRef...)
+				}
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("read existing imported approval provenance %q: %w", source.ID, err)
+			}
+		}
+		subjectRevision := pgtype.Int8{}
+		if source.SubjectRevision != nil {
+			subjectRevision = pgtype.Int8{Int64: *source.SubjectRevision, Valid: true}
+		}
+		if err := projectorchestration.RecordApprovalTx(ctx, tx, projectorchestration.ApprovalEvent{
+			WorkspaceID: workspaceID, ProjectID: projectID,
+			IdempotencyKey: idempotencyKey,
+			SubjectType:    source.SubjectType, SubjectID: source.SubjectID,
+			SubjectRevision: subjectRevision, SubjectDigest: source.SubjectDigest,
+			Decision: source.Decision, ActorType: source.ActorType, ActorDisplay: source.ActorDisplay,
+			PolicyRef: source.PolicyRef, Rationale: source.Rationale,
+			SourceEndpoint: source.SourceEndpoint, Origin: "imported", OriginRef: originRef,
+		}); err != nil {
+			return fmt.Errorf("record imported approval provenance %q: %w", source.ID, err)
+		}
+	}
+	return nil
+}
+
+func applyPlan(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUID, plan PortablePlan, importedSpecificationID pgtype.UUID, taskIDs map[string]pgtype.UUID) error {
+	sourceRevision, err := portablePlanSourceRevision(plan, importedSpecificationID)
+	if err != nil {
+		return err
+	}
 	var existing bool
 	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM autonomous_project_plan WHERE workspace_id = $1 AND project_id = $2 AND source_revision = $3)`, workspaceID, projectID, sourceRevision).Scan(&existing); err != nil {
 		return fmt.Errorf("check imported plan: %w", err)
@@ -957,22 +1295,32 @@ func applyPlan(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUI
 		requirementTexts = append(requirementTexts, requirement.Text)
 	}
 	legacySpecification := map[string]any{"requirements": requirementTexts}
-	specificationRevisionID := pgtype.UUID{}
-	if plan.Specification != nil {
-		details := make([]map[string]string, 0, len(plan.Specification.Requirements))
-		for _, requirement := range plan.Specification.Requirements {
+	specificationRevisionID := importedSpecificationID
+	effectiveSpecification := plan.Specification
+	if importedSpecificationID.Valid {
+		loaded, err := loadPortableSpecification(ctx, q, importedSpecificationID)
+		if err != nil {
+			return err
+		}
+		effectiveSpecification = &loaded
+	}
+	if effectiveSpecification != nil {
+		details := make([]map[string]string, 0, len(effectiveSpecification.Requirements))
+		for _, requirement := range effectiveSpecification.Requirements {
 			details = append(details, map[string]string{"id": requirement.ID, "text": requirement.Text, "rationale": requirement.Rationale, "source": requirement.Source})
 		}
-		legacySpecification["summary"] = plan.Specification.Summary
+		legacySpecification["summary"] = effectiveSpecification.Summary
 		legacySpecification["requirement_details"] = details
-		legacySpecification["non_functional_requirements"] = plan.Specification.NonFunctionalRequirements
-		legacySpecification["constraints"] = plan.Specification.Constraints
-		legacySpecification["non_goals"] = plan.Specification.NonGoals
-		legacySpecification["definition_of_done"] = plan.Specification.DefinitionOfDone
-		legacySpecification["acceptance_expectations"] = plan.Specification.AcceptanceExpectations
-		specificationRevisionID, err = createPortableSpecification(ctx, q, workspaceID, projectID, *plan.Specification, sourceRevision)
-		if err != nil {
-			return fmt.Errorf("create imported project specification: %w", err)
+		legacySpecification["non_functional_requirements"] = effectiveSpecification.NonFunctionalRequirements
+		legacySpecification["constraints"] = effectiveSpecification.Constraints
+		legacySpecification["non_goals"] = effectiveSpecification.NonGoals
+		legacySpecification["definition_of_done"] = effectiveSpecification.DefinitionOfDone
+		legacySpecification["acceptance_expectations"] = effectiveSpecification.AcceptanceExpectations
+		if !specificationRevisionID.Valid {
+			specificationRevisionID, err = createPortableSpecification(ctx, q, workspaceID, projectID, *effectiveSpecification, sourceRevision)
+			if err != nil {
+				return fmt.Errorf("create imported project specification: %w", err)
+			}
 		}
 	}
 	specification, err := json.Marshal(legacySpecification)
@@ -994,6 +1342,14 @@ func applyPlan(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUI
 		if err != nil {
 			return err
 		}
+		requirementIDs := node.RequirementIDs
+		if requirementIDs == nil {
+			requirementIDs = []string{}
+		}
+		requirementIDsJSON, err := json.Marshal(requirementIDs)
+		if err != nil {
+			return err
+		}
 		status := planNodeStatus(node.Status)
 		var materializedIssue pgtype.UUID
 		if id, ok := taskIDs[node.Key]; ok {
@@ -1002,10 +1358,10 @@ func applyPlan(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUI
 		if _, err := q.Exec(ctx, `
 			INSERT INTO autonomous_project_plan_node (
 				plan_id, workspace_id, project_id, node_key, kind, title, description,
-				status, priority, acceptance_criteria, materialized_issue_id
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+				status, priority, acceptance_criteria, materialized_issue_id, requirement_ids
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb)
 		`, planID, workspaceID, projectID, node.Key, nonEmpty(node.Kind, "implementation"), node.Title,
-			node.Description, status, max32(node.Priority, 0), criteria, materializedIssue); err != nil {
+			node.Description, status, max32(node.Priority, 0), criteria, materializedIssue, requirementIDsJSON); err != nil {
 			return fmt.Errorf("create imported plan node %q: %w", node.Key, err)
 		}
 	}

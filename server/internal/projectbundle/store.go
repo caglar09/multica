@@ -93,10 +93,20 @@ func (s *PostgresStore) PreviewPortability(ctx context.Context, workspaceID pgty
 	}
 	current := Bundle{SchemaVersion: SchemaVersionV1, Project: PortableProject{}, Tasks: []PortableTask{}}
 	if projectID != nil && projectID.Valid {
-		var err error
-		current, err = s.ExportProject(ctx, workspaceID, *projectID)
+		tx, err := s.TxStarter.Begin(ctx)
 		if err != nil {
 			return PortabilityPreview{}, err
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"); err != nil {
+			return PortabilityPreview{}, fmt.Errorf("set project portability preview snapshot: %w", err)
+		}
+		current, err = exportPortabilityComparisonBundle(ctx, tx, workspaceID, *projectID)
+		if err != nil {
+			return PortabilityPreview{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return PortabilityPreview{}, fmt.Errorf("finish project portability preview snapshot: %w", err)
 		}
 	}
 	preview := BuildPreview(current, bundle, projectID == nil || !projectID.Valid)
@@ -107,6 +117,48 @@ func (s *PostgresStore) PreviewPortability(ctx context.Context, workspaceID pgty
 		return PortabilityPreview{}, err
 	}
 	return preview, nil
+}
+
+func exportPortabilityComparisonBundle(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUID) (Bundle, error) {
+	var hasImportedSpecification bool
+	if err := q.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM autonomous_project_specification_revision
+			WHERE workspace_id=$1 AND project_id=$2
+			  AND (source_ref LIKE 'portable-import:v1:%' OR source_ref LIKE 'portable:%')
+		)
+	`, workspaceID, projectID).Scan(&hasImportedSpecification); err != nil {
+		return Bundle{}, fmt.Errorf("check imported specification history: %w", err)
+	}
+	var current Bundle
+	var err error
+	if hasImportedSpecification {
+		current, err = exportProjectForSync(ctx, q, workspaceID, projectID)
+		if err == nil {
+			err = exportApprovals(ctx, q, workspaceID, projectID, &current)
+		}
+		if err == nil {
+			err = exportSpecifications(ctx, q, workspaceID, projectID, &current)
+		}
+	} else {
+		current, err = exportProject(ctx, q, workspaceID, projectID)
+	}
+	if err != nil {
+		return Bundle{}, err
+	}
+	var currentRevisionID pgtype.UUID
+	err = q.QueryRow(ctx, `
+		SELECT specification_revision_id
+		FROM autonomous_project_specification_head
+		WHERE workspace_id=$1 AND project_id=$2
+	`, workspaceID, projectID).Scan(&currentRevisionID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return Bundle{}, fmt.Errorf("read project portability specification head: %w", err)
+	}
+	if currentRevisionID.Valid {
+		current.currentSpecificationRevisionID = pgtypeUUIDString(currentRevisionID)
+	}
+	return current, nil
 }
 
 func (s *PostgresStore) ApplyPortability(ctx context.Context, workspaceID, userID pgtype.UUID, projectID *pgtype.UUID, bundle Bundle, options ApplyOptions) (PortabilityResult, error) {

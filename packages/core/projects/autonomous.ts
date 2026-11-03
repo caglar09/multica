@@ -113,6 +113,39 @@ export function useApproveAutonomousProjectPlan() {
   });
 }
 
+export function useApproveAutonomousProjectSpecification() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({ projectId, changeRequestId, specificationDigest }: {
+      projectId: string;
+      changeRequestId: string;
+      specificationDigest: string;
+    }) => api.approveProjectSpecification(projectId, changeRequestId, specificationDigest),
+    onSettled: (_data, _error, vars) => {
+      qc.invalidateQueries({ queryKey: autonomousProjectKeys.detail(wsId, vars.projectId) });
+    },
+  });
+}
+
+export function useRejectAutonomousProjectSpecification() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({ projectId, changeRequestId, specificationDigest, reason }: {
+      projectId: string;
+      changeRequestId: string;
+      specificationDigest: string;
+      reason: string;
+    }) => api.rejectProjectSpecification(projectId, changeRequestId, specificationDigest, reason),
+    onSettled: (_data, _error, vars) => {
+      qc.invalidateQueries({ queryKey: autonomousProjectKeys.detail(wsId, vars.projectId) });
+    },
+  });
+}
+
 export function useRestartAutonomousWorkflow() {
   return useAutonomousControlMutation((projectId) =>
     api.restartProjectAutonomousWorkflow(projectId),

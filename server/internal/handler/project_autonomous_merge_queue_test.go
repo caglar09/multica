@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -19,17 +20,24 @@ func TestMergeQueueRequiresCurrentLinkedReviewAndUnitEvidence(t *testing.T) {
 	ctx := context.Background()
 	workspaceID, projectID := parseUUID(testWorkspaceID), parseUUID(project.ID)
 	store := projectorchestration.NewStore(testPool)
-	var specificationRevisionID pgtype.UUID
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO autonomous_project_specification_revision (
-			workspace_id, project_id, revision, source_kind, goal, specification
-		) VALUES ($1, $2, 1, 'planner', 'Merge reviewed change', '{}'::jsonb)
-		RETURNING id
-	`, workspaceID, projectID).Scan(&specificationRevisionID); err != nil {
-		t.Fatalf("insert specification revision: %v", err)
+	projectSpec := projectorchestration.ProjectSpecification{
+		Goal: "Merge reviewed change", Summary: "Implement and review one change.",
+		Requirements: []projectorchestration.SpecificationRequirement{{
+			ID: "REQ-MERGE-1", Text: "Implement the reviewed change.",
+			Rationale: "The project scope requires this implementation.", Source: "brief",
+		}},
+		DefinitionOfDone: []string{"Implementation is independently reviewed."},
 	}
+	specificationRevision, err := store.CreateSpecificationRevision(ctx, workspaceID, projectID,
+		"project_bootstrap", "merge-queue-test-"+uuid.NewString(), projectSpec, true)
+	if err != nil {
+		t.Fatalf("create current specification revision: %v", err)
+	}
+	approveProjectSpecificationFixture(t, project.ID, specificationRevision)
+	specificationRevisionID := parseUUID(specificationRevision.ID)
 	t.Cleanup(func() {
 		cleanupCtx := context.Background()
+		purgeApprovalEventsForProject(t, projectID)
 		if _, err := testPool.Exec(cleanupCtx, `DELETE FROM autonomous_project_change_set WHERE workspace_id=$1 AND project_id=$2`, workspaceID, projectID); err != nil {
 			t.Errorf("clean project change sets: %v", err)
 		}
@@ -49,16 +57,9 @@ func TestMergeQueueRequiresCurrentLinkedReviewAndUnitEvidence(t *testing.T) {
 
 	plan, err := store.PersistPlan(ctx, workspaceID, projectID, "merge-queue-test", "test-planner", "",
 		projectorchestration.Plan{
-			Version: projectorchestration.CurrentPlanVersion,
-			Goal:    "Merge reviewed change",
-			Specification: projectorchestration.Specification{
-				Summary:          "Implement and review one change.",
-				Requirements:     []string{"Implement the reviewed change."},
-				DefinitionOfDone: []string{"Implementation is independently reviewed."},
-				RequirementDetails: []projectorchestration.SpecificationRequirement{{
-					ID: "REQ-MERGE-1", Text: "Implement the reviewed change.",
-				}},
-			},
+			Version:                 projectorchestration.CurrentPlanVersion,
+			Goal:                    "Merge reviewed change",
+			Specification:           projectSpec.LegacySpecification(),
 			SpecificationRevisionID: specificationRevisionID.String(),
 			Policy:                  projectorchestration.DefaultPolicy(),
 			Nodes: []projectorchestration.NodeSpec{
@@ -74,6 +75,7 @@ func TestMergeQueueRequiresCurrentLinkedReviewAndUnitEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("persist merge queue plan: %v", err)
 	}
+	approveProjectPlanFixture(t, project.ID, plan)
 	runtimeID := dbfx.Runtime(t, "merge queue evidence runtime")
 	agentID := dbfx.Agent(t, "merge queue evidence agent", runtimeID)
 	implementationIssueID := dbfx.Issue(t, "Merge queue implementation", testutil.Cols{"project_id": project.ID})

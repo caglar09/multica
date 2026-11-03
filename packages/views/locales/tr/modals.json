@@ -143,7 +143,11 @@
     "local_invalid_dir": "Bu dizin kullanılamaz. Başka bir tane seçin.",
     "local_hint": "Diğer makinelerdeki ajanlar bu yolu göremez — başlatılamazlar. Paylaşılan çalışma için depoları kullanın.",
     "bootstrap": {
-      "standard_project": "Standart proje"
+      "standard_project": "Standart proje",
+      "autonomous_assisted": "Otonom · Destekli",
+      "autonomous_development": "Otonom · Geliştirme",
+      "autonomous_delivery": "Otonom · Teslimat",
+      "autonomous_closed_loop": "Otonom · Kapalı döngü"
     }
   },
   "create_issue": {

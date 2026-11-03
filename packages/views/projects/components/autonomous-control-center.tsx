@@ -46,6 +46,8 @@ import {
   useRetryAutonomousAction,
   useUpdateAutonomousBrain,
   useApproveAutonomousProjectPlan,
+  useApproveAutonomousProjectSpecification,
+  useRejectAutonomousProjectSpecification,
   useResolveAutonomousEscalation,
   projectLeaderChatOptions,
   projectLeaderChangesOptions,
@@ -77,6 +79,7 @@ import { CreateSkillDialog } from "../../skills/components/create-skill-dialog";
 import { useT } from "../../i18n";
 import { ProjectManagerHub } from "./project-manager-hub";
 import { AutonomousPlanApprovalCard } from "./autonomous-plan-approval-card";
+import { AutonomousSpecificationApprovalCard } from "./autonomous-specification-approval-card";
 import { QualityGateEvidenceCard } from "./quality-gate-evidence-card";
 import { RequirementCoverageTab } from "./requirement-coverage-tab";
 
@@ -1511,6 +1514,8 @@ export function AutonomousControlCenter({
   const rerunIssue = useRerunAutonomousIssue();
   const resolveEscalation = useResolveAutonomousEscalation();
   const approvePlan = useApproveAutonomousProjectPlan();
+  const approveSpecification = useApproveAutonomousProjectSpecification();
+  const rejectSpecification = useRejectAutonomousProjectSpecification();
   const updateBrain = useUpdateAutonomousBrain();
   const leaderChat = useQuery({
     ...projectLeaderChatOptions(wsId, projectId),
@@ -1639,6 +1644,50 @@ export function AutonomousControlCenter({
           toast.error(t(($) => $.plan_approval.approve_error)),
       },
     );
+  };
+
+  const handleApproveSpecification = () => {
+    const specification = data.specification;
+    if (
+      !specification?.is_proposal ||
+      !specification.change_request_id ||
+      !specification.digest ||
+      specification.status !== "awaiting_approval"
+    ) return;
+    approveSpecification.mutate(
+      {
+        projectId,
+        changeRequestId: specification.change_request_id,
+        specificationDigest: specification.digest,
+      },
+      {
+        onSuccess: () => toast.success(t(($) => $.specification_approval.approve_success)),
+        onError: () => toast.error(t(($) => $.specification_approval.approve_error)),
+      },
+    );
+  };
+
+  const handleRejectSpecification = async (reason: string): Promise<boolean> => {
+    const specification = data.specification;
+    if (
+      !specification?.is_proposal ||
+      !specification.change_request_id ||
+      !specification.digest ||
+      specification.status !== "awaiting_approval"
+    ) return false;
+    try {
+      await rejectSpecification.mutateAsync({
+        projectId,
+        changeRequestId: specification.change_request_id,
+        specificationDigest: specification.digest,
+        reason,
+      });
+      toast.success(t(($) => $.specification_approval.reject_success));
+      return true;
+    } catch {
+      toast.error(t(($) => $.specification_approval.reject_error));
+      return false;
+    }
   };
 
   const handleRestartWorkflow = () => {
@@ -2177,12 +2226,57 @@ export function AutonomousControlCenter({
           </TabsContent>
 
           <TabsContent value="plan" className="space-y-4">
+            {data.specification ? (
+              <AutonomousSpecificationApprovalCard
+                specification={data.specification}
+                canControl={canControl}
+                isPending={
+                  approveSpecification.isPending || rejectSpecification.isPending
+                }
+                onApprove={handleApproveSpecification}
+                onReject={handleRejectSpecification}
+                labels={{
+                  title: t(($) => $.specification_approval.title),
+                  summary: t(($) => $.specification_approval.summary),
+                  requirements: t(($) => $.specification_approval.requirements),
+                  requirementsEmpty: t(($) => $.specification_approval.requirements_empty),
+                  digest: t(($) => $.specification_approval.digest),
+                  approve: t(($) => $.specification_approval.approve),
+                  reject: t(($) => $.specification_approval.reject),
+                  adminOnly: t(($) => $.specification_approval.admin_only),
+                  localAdoptionRequired: t(($) => $.specification_approval.local_adoption_required),
+                  awaitingApproval: t(($) => $.specification_approval.awaiting_approval),
+                  approved: t(($) => $.specification_approval.approved),
+                  rejected: t(($) => $.specification_approval.rejected),
+                  approvalHistory: t(($) => $.specification_approval.approval_history),
+                  historyEmpty: t(($) => $.specification_approval.history_empty),
+                  eventApproved: t(($) => $.specification_approval.event_approved),
+                  eventRejected: t(($) => $.specification_approval.event_rejected),
+                  eventUnknown: t(($) => $.specification_approval.event_unknown),
+                  originLocal: t(($) => $.specification_approval.origin_local),
+                  originImported: t(($) => $.specification_approval.origin_imported),
+                  originUnknown: t(($) => $.specification_approval.origin_unknown),
+                  rejectionTitle: t(($) => $.specification_approval.rejection_title),
+                  rejectionDescription: t(($) => $.specification_approval.rejection_description),
+                  rejectionReason: t(($) => $.specification_approval.rejection_reason),
+                  rejectionReasonPlaceholder: t(($) => $.specification_approval.rejection_reason_placeholder),
+                  rejectionReasonRequired: t(($) => $.specification_approval.rejection_reason_required),
+                  rejectionFailed: t(($) => $.specification_approval.rejection_failed),
+                  cancel: t(($) => $.specification_approval.cancel),
+                  submitRejection: t(($) => $.specification_approval.submit_rejection),
+                }}
+              />
+            ) : null}
             {data.plan ? (
               <>
                 {data.plan.plan_digest ||
                 data.plan.status === "awaiting_approval" ? (
                   <AutonomousPlanApprovalCard
                     plan={data.plan}
+                    specificationApproved={
+                      data.specification?.status === "approved" &&
+                      !data.specification.is_proposal
+                    }
                     canControl={canControl}
                     isPending={approvePlan.isPending}
                     onApprove={handleApprovePlan}
@@ -2197,6 +2291,9 @@ export function AutonomousControlCenter({
                       digest: t(($) => $.plan_approval.digest),
                       digestMissing: t(($) => $.plan_approval.digest_missing),
                       adminOnly: t(($) => $.plan_approval.admin_only),
+                      specificationApprovalRequired: t(
+                        ($) => $.specification_approval.plan_approval_required,
+                      ),
                       approve: t(($) => $.plan_approval.approve),
                     }}
                   />

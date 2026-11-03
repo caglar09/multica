@@ -25,8 +25,17 @@ const (
 // reasoning-only Project Leader runtime. The model may explain and propose; it
 // never mutates Project OS state directly.
 type ProjectLeaderResponse struct {
-	Message  string                 `json:"message"`
-	Proposal *ProjectChangeProposal `json:"proposal,omitempty"`
+	Message               string                              `json:"message"`
+	Proposal              *ProjectChangeProposal              `json:"proposal,omitempty"`
+	SpecificationProposal *ProjectLeaderSpecificationProposal `json:"specification_proposal,omitempty"`
+}
+
+// ProjectLeaderSpecificationProposal is the PM's initial requirements draft.
+// It has its own approval lifecycle and does not mutate the active spec head.
+type ProjectLeaderSpecificationProposal struct {
+	ProposalID    string               `json:"proposal_id"`
+	Rationale     string               `json:"rationale"`
+	Specification ProjectSpecification `json:"specification"`
 }
 
 type ProjectChangeProposal struct {
@@ -61,6 +70,12 @@ func ValidateProjectLeaderResponse(response ProjectLeaderResponse) error {
 	if strings.TrimSpace(response.Message) == "" {
 		return errors.New("project leader response message is required")
 	}
+	if response.Proposal != nil && response.SpecificationProposal != nil {
+		return errors.New("project leader response must contain one proposal type")
+	}
+	if response.SpecificationProposal != nil {
+		return ValidateProjectLeaderSpecificationProposal(*response.SpecificationProposal)
+	}
 	if response.Proposal == nil {
 		return nil
 	}
@@ -68,6 +83,19 @@ func ValidateProjectLeaderResponse(response ProjectLeaderResponse) error {
 		return err
 	}
 	return validateProjectLeaderProposalSpecification(*response.Proposal)
+}
+
+func ValidateProjectLeaderSpecificationProposal(proposal ProjectLeaderSpecificationProposal) error {
+	if strings.TrimSpace(proposal.ProposalID) == "" {
+		return errors.New("project leader specification proposal id is required")
+	}
+	if strings.TrimSpace(proposal.Rationale) == "" {
+		return errors.New("project leader specification proposal rationale is required")
+	}
+	if err := ValidateProjectSpecification(proposal.Specification); err != nil {
+		return fmt.Errorf("project leader specification proposal is invalid: %w", err)
+	}
+	return nil
 }
 
 func ValidateProjectChangeProposal(proposal ProjectChangeProposal) error {

@@ -64,6 +64,50 @@ describe("ApiClient autonomous project control snapshot", () => {
 
     expect(legacy.control).toMatchObject({ paused: true, cancelled_at: null });
     expect(malformed.control).toMatchObject({ paused: false, cancelled_at: null });
+    expect(legacy.specification).toBeNull();
+  });
+
+  it("preserves the pending specification digest and approval timeline", async () => {
+    const digest = "a".repeat(64);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      enabled: true,
+      specification: {
+        revision_id: "spec-1",
+        revision: 2,
+        digest,
+        source_kind: "change_request",
+        status: "awaiting_approval",
+        is_proposal: true,
+        change_request_id: "change-1",
+        specification: {
+          goal: "Ship the capability",
+          summary: "Ship the capability safely",
+          requirements: [{ id: "REQ-1", text: "Preserve review", rationale: "Needed", source: "brief" }],
+        },
+        approval_history: [{
+          id: "event-1",
+          revision: 1,
+          digest: "b".repeat(64),
+          decision: "rejected",
+          actor_type: "human",
+          actor_display: "Workspace admin",
+          rationale: "Needs narrower scope",
+          origin: "local",
+          acted_at: "2026-11-02T12:00:00Z",
+        }],
+      },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const snapshot = await new ApiClient("https://api.example.test").getProjectAutonomous("project-1");
+
+    expect(snapshot.specification).toMatchObject({
+      revision_id: "spec-1",
+      digest,
+      status: "awaiting_approval",
+      is_proposal: true,
+      approval_history: [{ decision: "rejected", rationale: "Needs narrower scope" }],
+    });
   });
 
   it("parses the displayed plan digest and binds approval to that digest", async () => {
@@ -107,6 +151,64 @@ describe("ApiClient autonomous project control snapshot", () => {
       }),
     );
     expect(approval).toEqual({ approved: true, plan_digest: digest, status: "active" });
+  });
+});
+
+describe("ApiClient project specification approval", () => {
+  const response = (payload: unknown) => new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+
+  it("posts exact-digest approval and rejection requests and fails closed on malformed responses", async () => {
+    const digest = "a".repeat(64);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({
+        approved: true,
+        change_request_id: "change-1",
+        specification_revision_id: "spec-1",
+        specification_revision: 2,
+        specification_digest: digest,
+      }))
+      .mockResolvedValueOnce(response({
+        rejected: "yes",
+        change_request_id: "change-2",
+        specification_revision_id: "spec-2",
+        specification_revision: 3,
+        specification_digest: digest,
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    const approval = await client.approveProjectSpecification("project-1", "change-1", digest);
+    const rejection = await client.rejectProjectSpecification("project-1", "change-2", digest, "Requirements no longer match.");
+
+    expect(fetchMock.mock.calls[0]).toEqual([
+      "https://api.example.test/api/projects/project-1/autonomous/spec/approve",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ change_request_id: "change-1", specification_digest: digest }),
+      }),
+    ]);
+    expect(fetchMock.mock.calls[1]).toEqual([
+      "https://api.example.test/api/projects/project-1/autonomous/spec/reject",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          change_request_id: "change-2",
+          specification_digest: digest,
+          reason: "Requirements no longer match.",
+        }),
+      }),
+    ]);
+    expect(approval.approved).toBe(true);
+    expect(rejection).toEqual({
+      rejected: false,
+      change_request_id: "",
+      specification_revision_id: "",
+      specification_revision: 0,
+      specification_digest: "",
+    });
   });
 });
 

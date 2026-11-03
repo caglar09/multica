@@ -161,6 +161,60 @@ func (s *Store) LoadLatestSpecification(ctx context.Context, workspaceID, projec
 	return out, true, nil
 }
 
+// LoadHumanApprovedSpecification returns the current specification head only
+// when its latest approval event is a local human approval for the exact SQL
+// digest of that revision. Imported approvals and stale approval events do not
+// authorize planning.
+func (s *Store) LoadHumanApprovedSpecification(ctx context.Context, workspaceID, projectID pgtype.UUID) (SpecificationRevision, bool, error) {
+	if s == nil || s.pool == nil {
+		return SpecificationRevision{}, false, errors.New("project orchestration store is not configured")
+	}
+	var out SpecificationRevision
+	var id pgtype.UUID
+	var sourceRef pgtype.Text
+	var raw []byte
+	var created pgtype.Timestamptz
+	err := s.pool.QueryRow(ctx, `
+		SELECT r.id,r.revision,r.source_kind,r.source_ref,r.specification,r.created_at
+		FROM autonomous_project_specification_head h
+		JOIN autonomous_project_specification_revision r
+		  ON r.id=h.specification_revision_id
+		 AND r.workspace_id=h.workspace_id
+		 AND r.project_id=h.project_id
+		 AND r.revision=h.revision
+		WHERE h.workspace_id=$1 AND h.project_id=$2
+		  AND COALESCE((
+			SELECT e.decision='approved'
+			   AND e.actor_type='human'
+			   AND e.origin='local'
+			   AND e.subject_digest=autonomous_project_specification_digest(r.id)
+			FROM autonomous_project_approval_event e
+			WHERE e.workspace_id=h.workspace_id
+			  AND e.project_id=h.project_id
+			  AND e.subject_type='specification_revision'
+			  AND e.subject_id=r.id::text
+			  AND e.subject_revision=r.revision
+			ORDER BY e.acted_at DESC,e.id DESC
+			LIMIT 1
+		  ),FALSE)
+	`, workspaceID, projectID).Scan(&id, &out.Revision, &out.SourceKind, &sourceRef, &raw, &created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SpecificationRevision{}, false, nil
+	}
+	if err != nil {
+		return SpecificationRevision{}, false, err
+	}
+	if err := json.Unmarshal(raw, &out.Specification); err != nil {
+		return SpecificationRevision{}, false, err
+	}
+	out.ID = util.UUIDToString(id)
+	out.WorkspaceID = util.UUIDToString(workspaceID)
+	out.ProjectID = util.UUIDToString(projectID)
+	out.SourceRef = sourceRef.String
+	out.CreatedAt = created.Time
+	return out, true, nil
+}
+
 func (s *Store) ListSpecificationRevisions(ctx context.Context, workspaceID, projectID pgtype.UUID, limit int) ([]SpecificationRevision, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
@@ -391,6 +445,43 @@ func (s *Store) RecordChangeProposal(ctx context.Context, id pgtype.UUID, propos
 		}
 	}
 	return s.LoadChangeRequest(ctx, id)
+}
+
+// RecordProjectLeaderSpecificationProposal persists the PM's initial project
+// specification as an approval-required change request. The immutable
+// specification revision remains off-head until a separate spec approval.
+func (s *Store) RecordProjectLeaderSpecificationProposal(ctx context.Context, workspaceID, projectID pgtype.UUID, proposal ProjectLeaderSpecificationProposal) (ChangeRequest, error) {
+	if s == nil || s.pool == nil {
+		return ChangeRequest{}, errors.New("project orchestration store is not configured")
+	}
+	if !workspaceID.Valid || !projectID.Valid {
+		return ChangeRequest{}, errors.New("workspace_id and project_id are required")
+	}
+	if err := ValidateProjectLeaderSpecificationProposal(proposal); err != nil {
+		return ChangeRequest{}, err
+	}
+	if _, hasPlan, err := s.LoadLatestPlan(ctx, workspaceID, projectID); err != nil {
+		return ChangeRequest{}, err
+	} else if hasPlan {
+		return ChangeRequest{}, errors.New("initial project specification proposal is only valid before the first plan")
+	}
+	proposalID := strings.TrimSpace(proposal.ProposalID)
+	requestKey := "project-leader-specification:" + proposalID
+	requestText := strings.TrimSpace(proposal.Specification.Goal) + "\n\n" + strings.TrimSpace(proposal.Rationale)
+	cr, err := s.ReceiveChangeRequest(ctx, workspaceID, projectID, requestKey, ChangeRequirement, ChangeSourceProjectDirector, proposalID, requestText)
+	if err != nil {
+		return ChangeRequest{}, err
+	}
+	changeID, err := parseProjectUUID(cr.ID)
+	if err != nil {
+		return ChangeRequest{}, err
+	}
+	impact := ChangeImpact{
+		Level:            ImpactHigh,
+		RequiresApproval: true,
+		Reasons:          []string{"initial project specification requires explicit approval"},
+	}
+	return s.RecordChangeProposal(ctx, changeID, proposal, impact, &proposal.Specification)
 }
 
 func (s *Store) BindChangeApprovalEscalation(ctx context.Context, id, escalationID pgtype.UUID) error {

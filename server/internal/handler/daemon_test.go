@@ -2255,6 +2255,7 @@ func TestClaimTask_QuickCreateInjectsProjectDescription(t *testing.T) {
 	projectID := dbfx.Project(t, "Quick-create project description", testutil.Cols{
 		"description": projectDescription,
 	})
+	seedApprovedProjectIssuePlanFixture(t, projectID)
 
 	quickContext, _ := json.Marshal(map[string]any{
 		"type":         "quick_create",

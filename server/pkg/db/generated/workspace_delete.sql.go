@@ -117,6 +117,15 @@ func (q *Queries) DeleteWorkspaceAgents(ctx context.Context, workspaceID pgtype.
 	return err
 }
 
+const deleteWorkspaceApprovalEvents = `-- name: DeleteWorkspaceApprovalEvents :exec
+DELETE FROM autonomous_project_approval_event WHERE workspace_id = $1
+`
+
+func (q *Queries) DeleteWorkspaceApprovalEvents(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceApprovalEvents, workspaceID)
+	return err
+}
+
 const deleteWorkspaceAutonomousChildren = `-- name: DeleteWorkspaceAutonomousChildren :exec
 WITH
 ws_runs AS MATERIALIZED (

@@ -16,17 +16,20 @@ export interface AutonomousPlanApprovalLabels {
   digest: string;
   digestMissing: string;
   adminOnly: string;
+  specificationApprovalRequired: string;
   approve: string;
 }
 
 export function AutonomousPlanApprovalCard({
   plan,
+  specificationApproved,
   canControl,
   isPending,
   labels,
   onApprove,
 }: {
   plan: AutonomousProjectPlanSnapshot;
+  specificationApproved: boolean;
   canControl: boolean;
   isPending: boolean;
   labels: AutonomousPlanApprovalLabels;
@@ -62,7 +65,7 @@ export function AutonomousPlanApprovalCard({
         {awaitingApproval ? (
           canControl ? (
             <Button
-              disabled={!plan.plan_digest || isPending}
+              disabled={!plan.plan_digest || !specificationApproved || isPending}
               onClick={onApprove}
             >
               {labels.approve}
@@ -75,6 +78,11 @@ export function AutonomousPlanApprovalCard({
         ) : (
           <Badge variant="outline">{plan.status}</Badge>
         )}
+        {awaitingApproval && canControl && !specificationApproved ? (
+          <p className="text-caption text-muted-foreground" role="status">
+            {labels.specificationApprovalRequired}
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );

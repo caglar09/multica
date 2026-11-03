@@ -315,6 +315,62 @@ func TestCreateMediaGatedIssueCommitsDeferredTaskAtomicallyBeforeCreatedEvent(t 
 	}
 }
 
+func TestCreateBeforeCommitFailureRollsBackIssueAndSuppressesEvents(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, userID, _, _ := seedAttributionFixture(t, pool)
+	workspaceUUID := util.MustParseUUID(workspaceID)
+	userUUID := util.MustParseUUID(userID)
+	bus := events.New()
+	createdEvents := 0
+	bus.Subscribe(protocol.EventIssueCreated, func(events.Event) { createdEvents++ })
+	issueService := NewIssueService(q, pool, bus, nil, nil)
+	rejected := errors.New("project node bind rejected")
+	var callbackSawUncommittedIssue bool
+
+	result, err := issueService.Create(ctx, IssueCreateParams{
+		WorkspaceID: workspaceUUID,
+		Title:       "Before-commit rollback issue",
+		Status:      "todo",
+		Priority:    "medium",
+		CreatorType: "member",
+		CreatorID:   userUUID,
+	}, IssueCreateOpts{
+		BeforeCommit: func(ctx context.Context, tx pgx.Tx, issue db.Issue) error {
+			var insertedID pgtype.UUID
+			if err := tx.QueryRow(ctx, `
+				SELECT id FROM issue WHERE id=$1 AND workspace_id=$2
+			`, issue.ID, workspaceUUID).Scan(&insertedID); err != nil {
+				return fmt.Errorf("read created issue inside transaction: %w", err)
+			}
+			callbackSawUncommittedIssue = insertedID == issue.ID
+			return rejected
+		},
+	})
+	if !errors.Is(err, rejected) {
+		t.Fatalf("Create error = %v, want callback rejection", err)
+	}
+	if !callbackSawUncommittedIssue {
+		t.Fatal("before-commit callback did not see the issue row in its transaction")
+	}
+	if result.Issue.ID.Valid || result.DuplicateIssue != nil {
+		t.Fatalf("Create result after rollback = %+v, want no committed issue", result)
+	}
+	var persisted int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM issue WHERE workspace_id=$1 AND title='Before-commit rollback issue'
+	`, workspaceUUID).Scan(&persisted); err != nil {
+		t.Fatalf("count issue after callback rollback: %v", err)
+	}
+	if persisted != 0 {
+		t.Fatalf("persisted issues after callback rollback = %d, want 0", persisted)
+	}
+	if createdEvents != 0 {
+		t.Fatalf("issue-created events after callback rollback = %d, want 0", createdEvents)
+	}
+}
+
 func TestCreateIssuePropertiesCommitFailureHasNoSideEffects(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()

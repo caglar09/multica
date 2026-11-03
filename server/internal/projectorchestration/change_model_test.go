@@ -31,17 +31,48 @@ func TestApplyPlanMutationPreservesHierarchyFields(t *testing.T) {
 }
 
 func changeTestNode(key, title string) NodeSpec {
-	return NodeSpec{Key: key, Kind: NodeProduct, Title: title, Description: title, Priority: 1, RequiredCapabilities: []string{"planning"}, AcceptanceCriteria: []string{"accepted"}, Risk: RiskLow, MaxAttempts: 3}
+	return NodeSpec{Key: key, Kind: NodeProduct, Title: title, Description: title, Priority: 1, RequiredCapabilities: []string{"planning"}, RequirementIDs: []string{"REQ-CHANGE-1"}, AcceptanceCriteria: []string{"accepted"}, Risk: RiskLow, MaxAttempts: 3}
 }
 func changeTestPlan(nodes ...NodeSpec) Plan {
-	return Plan{Version: CurrentPlanVersion, Goal: "Ship a changeable project", Specification: Specification{Summary: "A project that can evolve safely", Requirements: []string{"Preserve logical work identity"}, DefinitionOfDone: []string{"Approved changes are traceable"}}, Policy: DefaultPolicy(), Nodes: nodes}
+	specification := ProjectSpecification{
+		Goal:    "Ship a changeable project",
+		Summary: "A project that can evolve safely",
+		Requirements: []SpecificationRequirement{{
+			ID: "REQ-CHANGE-1", Text: "Preserve logical work identity", Rationale: "Changes must retain traceability", Source: "brief",
+		}},
+		DefinitionOfDone: []string{"Approved changes are traceable"},
+	}
+	plan := Plan{
+		Version:       CurrentPlanVersion,
+		Goal:          specification.Goal,
+		Specification: specification.LegacySpecification(),
+		Policy:        DefaultPolicy(),
+		Nodes:         append([]NodeSpec(nil), nodes...),
+	}
+	var epicKey string
+	for _, node := range plan.Nodes {
+		if epicKey == "" && node.IsEpic {
+			epicKey = node.Key
+		}
+	}
+	implementation := NodeSpec{Key: "change_test_implementation", Kind: NodeImplementation, Title: "Implement change test requirement", RequirementIDs: []string{"REQ-CHANGE-1"}, AcceptanceCriteria: []string{"The requirement is implemented"}, Risk: RiskLow, MaxAttempts: 3}
+	verification := NodeSpec{Key: "change_test_review", Kind: NodeReview, Title: "Review change test requirement", RequirementIDs: []string{"REQ-CHANGE-1"}, AcceptanceCriteria: []string{"The requirement is independently verified"}, Risk: RiskLow, MaxAttempts: 3}
+	if epicKey != "" {
+		implementation.ParentEpicKey = epicKey
+		verification.ParentEpicKey = epicKey
+	}
+	plan.Nodes = append(plan.Nodes, implementation, verification)
+	return plan
 }
 
 func TestApplyPlanMutationRenamePreservesLogicalIdentityAndEdges(t *testing.T) {
 	first := changeTestNode("discover", "Discover")
 	second := changeTestNode("design", "Design")
 	plan := changeTestPlan(first, second)
-	plan.Edges = []EdgeSpec{{From: "discover", To: "design", Type: DependencyHard}}
+	plan.Edges = []EdgeSpec{
+		{From: "discover", To: "design", Type: DependencyHard},
+		{From: "change_test_implementation", To: "change_test_review", Type: DependencyHard},
+	}
 	nodes := []LogicalPlanNode{{LogicalNodeID: "11111111-1111-1111-1111-111111111111", Spec: first, Status: "completed"}, {LogicalNodeID: "22222222-2222-2222-2222-222222222222", Spec: second, Status: "pending"}}
 	renamed := first
 	renamed.Key = "discovery"
@@ -65,8 +96,24 @@ func TestApplyPlanMutationRenamePreservesLogicalIdentityAndEdges(t *testing.T) {
 	if !found {
 		t.Fatal("renamed node not found")
 	}
-	if len(result.Plan.Edges) != 1 || result.Plan.Edges[0].From != "discovery" || result.Plan.Edges[0].To != "design" {
-		t.Fatalf("rename did not rewrite edges: %#v", result.Plan.Edges)
+	wantEdges := []EdgeSpec{
+		{From: "discovery", To: "design", Type: DependencyHard},
+		{From: "change_test_implementation", To: "change_test_review", Type: DependencyHard},
+	}
+	if len(result.Plan.Edges) != len(wantEdges) {
+		t.Fatalf("mutation edges = %#v, want %#v", result.Plan.Edges, wantEdges)
+	}
+	for _, want := range wantEdges {
+		found := false
+		for _, edge := range result.Plan.Edges {
+			if edge == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("mutation edges = %#v, want edge %#v", result.Plan.Edges, want)
+		}
 	}
 }
 

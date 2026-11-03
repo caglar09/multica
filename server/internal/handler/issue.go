@@ -2778,6 +2778,13 @@ type QuickCreateIssueResponse struct {
 	TaskID string `json:"task_id"`
 }
 
+func writeProjectPlanRequired(w http.ResponseWriter) {
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"code":  "project_plan_required",
+		"error": "Project work requires a current human-approved local specification and executable plan.",
+	})
+}
+
 func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 	var req QuickCreateIssueRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2946,6 +2953,7 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		projectUUID = pid
 	}
+	dispatchProjectUUID := projectUUID
 
 	// Optional parent_issue_id — validate same-workspace membership just like
 	// the regular CreateIssue path. Frontend seeds this from the "Add sub
@@ -2966,6 +2974,21 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		parentIssueUUID = pid
+		if !dispatchProjectUUID.Valid && parent.ProjectID.Valid {
+			dispatchProjectUUID = parent.ProjectID
+		}
+	}
+	if dispatchProjectUUID.Valid {
+		executable, err := service.ProjectIssuePlanExecutable(r.Context(), h.DB, wsUUID, dispatchProjectUUID)
+		if err != nil {
+			slog.Warn("quick-create project execution gate failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to verify project execution plan")
+			return
+		}
+		if !executable {
+			writeProjectPlanRequired(w)
+			return
+		}
 	}
 
 	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, priority, dueDate, projectUUID, parentIssueUUID, attachmentIDs)
@@ -3522,6 +3545,12 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if creatorType == "agent" && analyticsAgentID == "" {
 		analyticsAgentID = actualCreatorID
 	}
+	var manualIssueProvenance *service.ManualIssueProvenance
+	if creatorType == "member" {
+		manualIssueProvenance = &service.ManualIssueProvenance{
+			ActorID: parseUUID(actualCreatorID), ActorDisplay: "Workspace member", SourceEndpoint: "/api/issues",
+		}
+	}
 
 	attachmentMode := attachmentURLModeFromRequest(r)
 	buildAttachmentResponses := func(atts []db.Attachment) []AttachmentResponse {
@@ -3557,9 +3586,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		Properties:     properties,
 		AllowDuplicate: req.AllowDuplicate,
 	}, service.IssueCreateOpts{
-		ActorID:          actualCreatorID,
-		AnalyticsAgentID: analyticsAgentID,
-		Platform:         func() string { p, _, _ := middleware.ClientMetadataFromContext(r.Context()); return p }(),
+		ManualIssueProvenance: manualIssueProvenance,
+		ActorID:               actualCreatorID,
+		AnalyticsAgentID:      analyticsAgentID,
+		Platform:              func() string { p, _, _ := middleware.ClientMetadataFromContext(r.Context()); return p }(),
 		BroadcastPayload: func(issue db.Issue, atts []db.Attachment, labels []db.IssueLabel) map[string]any {
 			payload := issueToResponse(issue, prefix)
 			// The event other tabs receive must carry the category too — filling
@@ -3588,6 +3618,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			"error": duplicateIssueMessage(existing),
 			"issue": existing,
 		})
+		return
+	}
+	if errors.Is(err, service.ErrProjectPlanRequired) {
+		writeProjectPlanRequired(w)
 		return
 	}
 	if errors.Is(err, service.ErrParentIssueNotFound) {

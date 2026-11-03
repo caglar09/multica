@@ -277,11 +277,11 @@ func (r *Runtime) ProcessProjectLeaderCompletion(ctx context.Context, taskID pgt
 	return r.projectLeader.ProcessCompletion(ctx, taskID, result)
 }
 
-func (r *Runtime) ApproveProjectLeaderChange(ctx context.Context, workspaceID, projectID, changeID pgtype.UUID, idempotencyKey string) error {
+func (r *Runtime) ApproveProjectLeaderChange(ctx context.Context, workspaceID, projectID, changeID, actorID pgtype.UUID, idempotencyKey string) error {
 	if r == nil || r.projectLeader == nil {
 		return errors.New("project leader runtime is not configured")
 	}
-	return r.projectLeader.ApproveChange(ctx, workspaceID, projectID, changeID, idempotencyKey)
+	return r.projectLeader.ApproveChange(ctx, workspaceID, projectID, changeID, actorID, idempotencyKey)
 }
 
 func definition() workflow.Definition {
@@ -1220,6 +1220,18 @@ func (r *Runtime) RestartProjectWorkflow(
 		if exists {
 			if err := projectPlanRestartApprovalError(stored.Status); err != nil {
 				return err
+			}
+			if stored.Plan.SpecificationRevisionID == "" {
+				return projectorchestration.ErrPlanApprovalRequired
+			}
+			var specificationApproved bool
+			if err := r.pool.QueryRow(ctx, `
+				SELECT autonomous_project_specification_approved($1::uuid)
+			`, stored.Plan.SpecificationRevisionID).Scan(&specificationApproved); err != nil {
+				return fmt.Errorf("verify specification approval before project repair: %w", err)
+			}
+			if !specificationApproved {
+				return projectorchestration.ErrPlanApprovalRequired
 			}
 		}
 		if exists && stored.Status == "completed" {

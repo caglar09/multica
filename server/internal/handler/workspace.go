@@ -1375,6 +1375,15 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceAutonomousProjectChangeRequests(ctx, requester.WorkspaceID) },
 		},
 		{
+			name: "delete approval events",
+			run: func() error {
+				if _, err := tx.Exec(ctx, "SET LOCAL multica.approval_purge = 'on'"); err != nil {
+					return err
+				}
+				return qtx.DeleteWorkspaceApprovalEvents(ctx, requester.WorkspaceID)
+			},
+		},
+		{
 			name: "delete autonomous project data",
 			run:  func() error { return qtx.DeleteWorkspaceAutonomousProjectData(ctx, requester.WorkspaceID) },
 		},

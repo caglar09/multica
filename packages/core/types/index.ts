@@ -408,6 +408,8 @@ export type {
   AutonomousDecision,
   AutonomousProjectHealth,
   AutonomousProjectSnapshot,
+  AutonomousProjectApprovalHistoryEntry,
+  AutonomousProjectSpecificationApproval,
   AutonomousProjectPlanNode,
   AutonomousProjectRequirement,
   AutonomousProjectPlanEdge,

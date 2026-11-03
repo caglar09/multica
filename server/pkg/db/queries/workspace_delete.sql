@@ -725,6 +725,9 @@ SELECT 1;
 -- name: DeleteWorkspaceAutonomousProjectChangeRequests :exec
 DELETE FROM autonomous_project_change_request WHERE autonomous_project_change_request.workspace_id = $1;
 
+-- name: DeleteWorkspaceApprovalEvents :exec
+DELETE FROM autonomous_project_approval_event WHERE workspace_id = $1;
+
 -- name: DeleteWorkspaceAutonomousProjectData :exec
 WITH
 deleted_performance AS (

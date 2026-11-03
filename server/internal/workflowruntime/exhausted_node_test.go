@@ -8,6 +8,7 @@ import (
 
 func TestConductorDoesNotResumeExhaustedNode(t *testing.T) {
 	f := newAutonomousDeploymentBridgeFixture(t)
+	approveAutonomousDeploymentBridgeFixturePlan(t, f)
 	for _, exhausted := range []bool{true, false} {
 		attempt := 0
 		if exhausted {
@@ -33,6 +34,7 @@ func TestConductorDoesNotResumeExhaustedNode(t *testing.T) {
 
 func TestConductorExhaustedClaimReportsBudget(t *testing.T) {
 	f := newAutonomousDeploymentBridgeFixture(t)
+	approveAutonomousDeploymentBridgeFixturePlan(t, f)
 	if _, err := f.pool.Exec(f.ctx, `UPDATE autonomous_project_plan_node SET status='ready',attempt=max_attempts WHERE id=$1`, f.nodeID); err != nil {
 		t.Fatal(err)
 	}

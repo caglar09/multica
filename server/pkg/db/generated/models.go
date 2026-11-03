@@ -244,6 +244,27 @@ type AutonomousControlPlaneJob struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+type AutonomousProjectApprovalEvent struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ProjectID       pgtype.UUID        `json:"project_id"`
+	IdempotencyKey  string             `json:"idempotency_key"`
+	SubjectType     string             `json:"subject_type"`
+	SubjectID       string             `json:"subject_id"`
+	SubjectRevision pgtype.Int8        `json:"subject_revision"`
+	SubjectDigest   string             `json:"subject_digest"`
+	Decision        string             `json:"decision"`
+	ActorType       string             `json:"actor_type"`
+	ActorID         pgtype.UUID        `json:"actor_id"`
+	ActorDisplay    string             `json:"actor_display"`
+	PolicyRef       pgtype.Text        `json:"policy_ref"`
+	Rationale       string             `json:"rationale"`
+	SourceEndpoint  string             `json:"source_endpoint"`
+	Origin          string             `json:"origin"`
+	OriginRef       []byte             `json:"origin_ref"`
+	ActedAt         pgtype.Timestamptz `json:"acted_at"`
+}
+
 type AutonomousProjectArtifact struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`

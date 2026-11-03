@@ -191,27 +191,185 @@ type AutonomousBrainResponse struct {
 }
 
 type AutonomousProjectResponse struct {
-	Partial         bool                                  `json:"partial"`
-	MissingSections []string                              `json:"missing_sections"`
-	Enabled         bool                                  `json:"enabled"`
-	Control         AutonomousControlResponse             `json:"control"`
-	Health          AutonomousProjectHealthResponse       `json:"health"`
-	Bootstrap       *AutonomousProjectBootstrapResponse   `json:"bootstrap"`
-	Draft           *AutonomousTeamDraftResponse          `json:"draft"`
-	Runtimes        []AutonomousRuntimeOptionResponse     `json:"runtimes"`
-	Skills          []AutonomousSkillOptionResponse       `json:"skills"`
-	Team            *AutonomousTeamResponse               `json:"team"`
-	Workflows       []AutonomousWorkflowResponse          `json:"workflows"`
-	Actions         []AutonomousActionResponse            `json:"actions"`
-	Activity        []AutonomousActivityResponse          `json:"activity"`
-	Decisions       []AutonomousDecisionResponse          `json:"decisions"`
-	Plan            *AutonomousProjectPlanResponse        `json:"plan"`
-	QualityGates    []AutonomousQualityGateResponse       `json:"quality_gates"`
-	Deployments     []AutonomousProjectDeploymentResponse `json:"deployments"`
-	Escalations     []AutonomousEscalationResponse        `json:"escalations"`
-	Diagnostics     []AutonomousDiagnosticResponse        `json:"diagnostics"`
-	Budget          *AutonomousBudgetResponse             `json:"budget"`
-	Brain           *AutonomousBrainResponse              `json:"brain"`
+	Partial         bool                                    `json:"partial"`
+	MissingSections []string                                `json:"missing_sections"`
+	Enabled         bool                                    `json:"enabled"`
+	Control         AutonomousControlResponse               `json:"control"`
+	Health          AutonomousProjectHealthResponse         `json:"health"`
+	Bootstrap       *AutonomousProjectBootstrapResponse     `json:"bootstrap"`
+	Draft           *AutonomousTeamDraftResponse            `json:"draft"`
+	Runtimes        []AutonomousRuntimeOptionResponse       `json:"runtimes"`
+	Skills          []AutonomousSkillOptionResponse         `json:"skills"`
+	Team            *AutonomousTeamResponse                 `json:"team"`
+	Workflows       []AutonomousWorkflowResponse            `json:"workflows"`
+	Actions         []AutonomousActionResponse              `json:"actions"`
+	Activity        []AutonomousActivityResponse            `json:"activity"`
+	Decisions       []AutonomousDecisionResponse            `json:"decisions"`
+	Plan            *AutonomousProjectPlanResponse          `json:"plan"`
+	QualityGates    []AutonomousQualityGateResponse         `json:"quality_gates"`
+	Deployments     []AutonomousProjectDeploymentResponse   `json:"deployments"`
+	Escalations     []AutonomousEscalationResponse          `json:"escalations"`
+	Diagnostics     []AutonomousDiagnosticResponse          `json:"diagnostics"`
+	Budget          *AutonomousBudgetResponse               `json:"budget"`
+	Brain           *AutonomousBrainResponse                `json:"brain"`
+	Specification   *AutonomousProjectSpecificationResponse `json:"specification"`
+}
+
+type AutonomousProjectSpecificationResponse struct {
+	RevisionID      string                                     `json:"revision_id"`
+	Revision        int64                                      `json:"revision"`
+	Digest          string                                     `json:"digest"`
+	SourceKind      string                                     `json:"source_kind"`
+	Status          string                                     `json:"status"`
+	IsProposal      bool                                       `json:"is_proposal"`
+	ChangeRequestID *string                                    `json:"change_request_id"`
+	Specification   json.RawMessage                            `json:"specification"`
+	ApprovalHistory []AutonomousProjectApprovalHistoryResponse `json:"approval_history"`
+}
+
+type AutonomousProjectApprovalHistoryResponse struct {
+	ID           string `json:"id"`
+	Revision     *int64 `json:"revision"`
+	Digest       string `json:"digest"`
+	Decision     string `json:"decision"`
+	ActorType    string `json:"actor_type"`
+	ActorDisplay string `json:"actor_display"`
+	Rationale    string `json:"rationale"`
+	Origin       string `json:"origin"`
+	ActedAt      string `json:"acted_at"`
+}
+
+func (h *Handler) loadAutonomousProjectSpecification(ctx context.Context, workspaceID, projectID pgtype.UUID) (*AutonomousProjectSpecificationResponse, error) {
+	var result AutonomousProjectSpecificationResponse
+	var proposalID, revisionID pgtype.UUID
+	var revision int64
+	var sourceKind, digest, status string
+	var specification []byte
+	var isProposal bool
+
+	err := h.DB.QueryRow(ctx, `
+		SELECT c.id,r.id,r.revision,r.source_kind,
+		       jsonb_set(r.specification,'{goal}',to_jsonb(r.goal),true),
+		       autonomous_project_specification_digest(r.id)
+		FROM autonomous_project_change_request c
+		JOIN autonomous_project_specification_revision r
+		  ON r.id=c.proposed_specification_revision_id
+		 AND r.workspace_id=c.workspace_id AND r.project_id=c.project_id
+		WHERE c.workspace_id=$1 AND c.project_id=$2
+		  AND c.source='project_director' AND c.request_type='requirement_change'
+		  AND c.state='approval_required'
+		  AND c.request_key='project-leader-specification:'||c.source_ref
+		  AND c.proposal ? 'specification'
+		  AND c.proposal->>'proposal_id'=c.source_ref
+		  AND r.source_kind='change_request' AND r.source_ref=c.id::text
+		ORDER BY c.updated_at DESC,c.created_at DESC,c.id DESC
+		LIMIT 1
+	`, workspaceID, projectID).Scan(&proposalID, &revisionID, &revision, &sourceKind, &specification, &digest)
+	if err == nil {
+		status = "awaiting_approval"
+		isProposal = true
+		proposalIDCopy := uuidToString(proposalID)
+		result.ChangeRequestID = &proposalIDCopy
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	} else {
+		err = h.DB.QueryRow(ctx, `
+			SELECT r.id,r.revision,r.source_kind,
+			       jsonb_set(r.specification,'{goal}',to_jsonb(r.goal),true),
+			       autonomous_project_specification_digest(r.id)
+			FROM autonomous_project_specification_head h
+			JOIN autonomous_project_specification_revision r
+			  ON r.id=h.specification_revision_id
+			 AND r.workspace_id=h.workspace_id AND r.project_id=h.project_id
+			WHERE h.workspace_id=$1 AND h.project_id=$2
+		`, workspaceID, projectID).Scan(&revisionID, &revision, &sourceKind, &specification, &digest)
+		if err == nil {
+			status = "awaiting_approval"
+			var decision pgtype.Text
+			decisionErr := h.DB.QueryRow(ctx, `
+				SELECT decision FROM autonomous_project_approval_event
+				WHERE workspace_id=$1 AND project_id=$2 AND subject_type='specification_revision'
+				  AND subject_id=$3 AND subject_digest=$4 AND origin='local'
+				ORDER BY acted_at DESC,id DESC LIMIT 1
+			`, workspaceID, projectID, uuidToString(revisionID), digest).Scan(&decision)
+			if decisionErr == nil {
+				status = decision.String
+			} else if !errors.Is(decisionErr, pgx.ErrNoRows) {
+				return nil, decisionErr
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		} else {
+			// Keep the latest rejected proposal visible when it is the project's only specification.
+			err = h.DB.QueryRow(ctx, `
+				SELECT c.id,r.id,r.revision,r.source_kind,
+				       jsonb_set(r.specification,'{goal}',to_jsonb(r.goal),true),
+				       autonomous_project_specification_digest(r.id)
+				FROM autonomous_project_change_request c
+				JOIN autonomous_project_specification_revision r
+				  ON r.id=c.proposed_specification_revision_id
+				 AND r.workspace_id=c.workspace_id AND r.project_id=c.project_id
+				WHERE c.workspace_id=$1 AND c.project_id=$2
+				  AND c.source='project_director' AND c.request_type='requirement_change'
+				  AND c.state='rejected'
+				  AND c.request_key='project-leader-specification:'||c.source_ref
+				  AND c.proposal ? 'specification'
+				  AND c.proposal->>'proposal_id'=c.source_ref
+				  AND r.source_kind='change_request' AND r.source_ref=c.id::text
+				ORDER BY c.updated_at DESC,c.created_at DESC,c.id DESC
+				LIMIT 1
+			`, workspaceID, projectID).Scan(&proposalID, &revisionID, &revision, &sourceKind, &specification, &digest)
+			if err == nil {
+				status = "rejected"
+				isProposal = true
+				proposalIDCopy := uuidToString(proposalID)
+				result.ChangeRequestID = &proposalIDCopy
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return nil, err
+			} else {
+				return nil, nil
+			}
+		}
+	}
+
+	result.RevisionID = uuidToString(revisionID)
+	result.Revision = revision
+	result.Digest = digest
+	result.SourceKind = sourceKind
+	result.Status = status
+	result.IsProposal = isProposal
+	result.Specification = append(json.RawMessage(nil), specification...)
+	result.ApprovalHistory = []AutonomousProjectApprovalHistoryResponse{}
+	rows, err := h.DB.Query(ctx, `
+		SELECT id,subject_revision,subject_digest,decision,actor_type,actor_display,rationale,origin,acted_at
+		FROM autonomous_project_approval_event
+		WHERE workspace_id=$1 AND project_id=$2 AND subject_type='specification_revision'
+		ORDER BY acted_at DESC,id DESC LIMIT 50
+	`, workspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item AutonomousProjectApprovalHistoryResponse
+		var id pgtype.UUID
+		var revision pgtype.Int8
+		var actedAt time.Time
+		if err := rows.Scan(&id, &revision, &item.Digest, &item.Decision, &item.ActorType, &item.ActorDisplay, &item.Rationale, &item.Origin, &actedAt); err != nil {
+			return nil, err
+		}
+		item.ID = uuidToString(id)
+		if revision.Valid {
+			revisionValue := revision.Int64
+			item.Revision = &revisionValue
+		}
+		item.ActedAt = actedAt.UTC().Format(time.RFC3339Nano)
+		result.ApprovalHistory = append(result.ApprovalHistory, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 type AutonomousProjectDeploymentResponse struct {
@@ -799,6 +957,11 @@ func (h *Handler) GetProjectAutonomousControlCenter(w http.ResponseWriter, r *ht
 		resp.Plan = &projectPlan
 	} else if !errors.Is(planErr, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to load autonomous project plan")
+		return
+	}
+	resp.Specification, err = h.loadAutonomousProjectSpecification(r.Context(), workspaceID, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load autonomous project specification approval state")
 		return
 	}
 
@@ -1858,6 +2021,30 @@ func (h *Handler) requireAutonomousControlAdmin(
 	return userUUID, true
 }
 
+func requireAutonomousControlAdminTx(ctx context.Context, tx pgx.Tx, workspaceID, userID pgtype.UUID) error {
+	var role string
+	if err := tx.QueryRow(ctx, `
+		SELECT role FROM member
+		WHERE workspace_id=$1 AND user_id=$2
+		FOR SHARE
+	`, workspaceID, userID).Scan(&role); err != nil {
+		return err
+	}
+	if role != "owner" && role != "admin" {
+		return errors.New("workspace owner or admin required")
+	}
+	return nil
+}
+
+func requireAutonomousProjectScopeTx(ctx context.Context, tx pgx.Tx, workspaceID, projectID pgtype.UUID) error {
+	var scopedProjectID pgtype.UUID
+	return tx.QueryRow(ctx, `
+		SELECT id FROM project
+		WHERE workspace_id=$1 AND id=$2
+		FOR SHARE
+	`, workspaceID, projectID).Scan(&scopedProjectID)
+}
+
 func (h *Handler) UpdateProjectAutonomousBrainConfig(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
 	if !ok {
@@ -2357,7 +2544,39 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "failed to encode autonomous team configuration")
 		return
 	}
-	tag, err := h.DB.Exec(r.Context(), `
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to confirm autonomous team configuration")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if err := requireAutonomousControlAdminTx(r.Context(), tx, workspaceID, userUUID); err != nil {
+		writeError(w, http.StatusForbidden, "workspace owner or admin required")
+		return
+	}
+	if err := requireAutonomousProjectScopeTx(r.Context(), tx, workspaceID, projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	var lockedStatus string
+	if err := tx.QueryRow(r.Context(), `
+		SELECT status
+		FROM autonomous_project_team_draft
+		WHERE workspace_id = $1 AND project_id = $2
+		FOR UPDATE
+	`, workspaceID, projectID).Scan(&lockedStatus); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "autonomous team draft not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to lock autonomous team draft")
+		}
+		return
+	}
+	if lockedStatus != "awaiting_configuration" {
+		writeError(w, http.StatusConflict, "autonomous team draft is not awaiting configuration")
+		return
+	}
+	tag, err := tx.Exec(r.Context(), `
 		UPDATE autonomous_project_team_draft
 		SET selections = $3,
 		    status = 'provisioning',
@@ -2382,6 +2601,27 @@ func (h *Handler) ConfirmProjectAutonomousTeam(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusConflict, "autonomous team configuration changed; refresh and try again")
 		return
 	}
+	var selectionDigest string
+	if err := tx.QueryRow(r.Context(), `SELECT autonomous_project_team_selection_digest($1)`, projectID).Scan(&selectionDigest); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to calculate autonomous team selection digest")
+		return
+	}
+	if err := projectorchestration.RecordApprovalTx(r.Context(), tx, projectorchestration.ApprovalEvent{
+		WorkspaceID: workspaceID, ProjectID: projectID,
+		IdempotencyKey: "team-confirm:" + uuidToString(projectID) + ":" + selectionDigest,
+		SubjectType:    "team_draft", SubjectID: uuidToString(projectID), SubjectDigest: selectionDigest,
+		Decision: "approved", ActorType: "human", ActorID: userUUID, ActorDisplay: uuidToString(userUUID),
+		Rationale:      "Confirmed the configured autonomous team selection",
+		SourceEndpoint: "/api/projects/:id/autonomous/team/confirm", Origin: "local",
+		OriginRef: selectionsJSON,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record autonomous team approval")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit autonomous team approval")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"provisioning": true})
 }
 
@@ -2398,7 +2638,8 @@ func (h *Handler) StartProjectAutonomousPlanning(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
-	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
+	userID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
 		return
 	}
 	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID}); err != nil {
@@ -2409,7 +2650,53 @@ func (h *Handler) StartProjectAutonomousPlanning(w http.ResponseWriter, r *http.
 		return
 	}
 
-	tag, err := h.DB.Exec(r.Context(), `
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start project task planning")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if err := requireAutonomousControlAdminTx(r.Context(), tx, workspaceID, userID); err != nil {
+		writeError(w, http.StatusForbidden, "workspace owner or admin required")
+		return
+	}
+	if err := requireAutonomousProjectScopeTx(r.Context(), tx, workspaceID, projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	var specificationApproved bool
+	if err := tx.QueryRow(r.Context(), `
+		SELECT COALESCE((
+			SELECT autonomous_project_specification_approved(h.specification_revision_id)
+			FROM autonomous_project_specification_head h
+			WHERE h.workspace_id = $1 AND h.project_id = $2
+		), FALSE)
+	`, workspaceID, projectID).Scan(&specificationApproved); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to verify project specification approval")
+		return
+	}
+	if !specificationApproved {
+		writeError(w, http.StatusConflict, "approve the current project specification before starting planning")
+		return
+	}
+	var draftStatus string
+	if err := tx.QueryRow(r.Context(), `
+		SELECT status FROM autonomous_project_team_draft
+		WHERE workspace_id=$1 AND project_id=$2
+		FOR UPDATE
+	`, workspaceID, projectID).Scan(&draftStatus); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusConflict, "project task planning is not ready or has already started")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to lock project task planning state")
+		}
+		return
+	}
+	if draftStatus != "applied" {
+		writeError(w, http.StatusConflict, "project task planning is not ready or has already started")
+		return
+	}
+	tag, err := tx.Exec(r.Context(), `
 		UPDATE autonomous_project_team_draft
 		SET continuation_started_at = now(),
 		    continuation_completed_at = NULL,
@@ -2419,6 +2706,12 @@ func (h *Handler) StartProjectAutonomousPlanning(w http.ResponseWriter, r *http.
 		  AND status = 'applied'
 		  AND confirmed_at IS NOT NULL
 		  AND continuation_started_at IS NULL
+		  AND EXISTS (
+			SELECT 1 FROM autonomous_project_specification_head h
+			WHERE h.workspace_id = $1
+			  AND h.project_id = $2
+			  AND autonomous_project_specification_approved(h.specification_revision_id)
+		  )
 		  AND NOT EXISTS (
 			SELECT 1 FROM autonomous_project_control c
 			WHERE c.workspace_id = $1
@@ -2432,6 +2725,26 @@ func (h *Handler) StartProjectAutonomousPlanning(w http.ResponseWriter, r *http.
 	}
 	if tag.RowsAffected() == 0 {
 		writeError(w, http.StatusConflict, "project task planning is not ready or has already started")
+		return
+	}
+	var selectionDigest string
+	if err := tx.QueryRow(r.Context(), `SELECT autonomous_project_team_selection_digest($1)`, projectID).Scan(&selectionDigest); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to calculate planning scope digest")
+		return
+	}
+	if err := projectorchestration.RecordApprovalTx(r.Context(), tx, projectorchestration.ApprovalEvent{
+		WorkspaceID: workspaceID, ProjectID: projectID,
+		IdempotencyKey: "planning-start:" + uuidToString(projectID) + ":" + selectionDigest,
+		SubjectType:    "planning_start", SubjectID: uuidToString(projectID), SubjectDigest: selectionDigest,
+		Decision: "approved", ActorType: "human", ActorID: userID, ActorDisplay: uuidToString(userID),
+		Rationale:      "Started planning for the confirmed autonomous team selection",
+		SourceEndpoint: "/api/projects/:id/autonomous/planning/start", Origin: "local",
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record planning start approval")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit project planning start")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"planning": true})
@@ -2492,7 +2805,8 @@ func (h *Handler) RestartProjectAutonomousWorkflow(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
-	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
+	_, ok = h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
 		return
 	}
 	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
@@ -2675,13 +2989,36 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, "decision must be approved or rejected")
 		return
 	}
+	rationale := strings.TrimSpace(req.Note)
+	if rationale == "" {
+		if req.Decision == "rejected" {
+			rationale = "Rejected the requested escalation scope after review"
+		} else {
+			rationale = "Approved the current escalation scope after review"
+		}
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start escalation resolution")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if err := requireAutonomousControlAdminTx(r.Context(), tx, workspaceID, userID); err != nil {
+		writeError(w, http.StatusForbidden, "workspace owner or admin required")
+		return
+	}
+	if err := requireAutonomousProjectScopeTx(r.Context(), tx, workspaceID, projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
 	var contextJSON []byte
 	var escalationPlanID, escalationNodeID pgtype.UUID
-	if err := h.DB.QueryRow(r.Context(), `
+	if err := tx.QueryRow(r.Context(), `
 		SELECT context, plan_id, node_id
 		FROM autonomous_project_escalation
 		WHERE id=$1 AND workspace_id=$2 AND project_id=$3
 		  AND category='approval_required' AND status IN ('open','acknowledged')
+		FOR UPDATE
 	`, escalationID, workspaceID, projectID).Scan(&contextJSON, &escalationPlanID, &escalationNodeID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "open approval escalation not found")
@@ -2698,11 +3035,12 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 	productionScoped := scope.ApprovalScope == "production_release"
 	resolutionFields := map[string]any{
 		"decision":    req.Decision,
-		"note":        strings.TrimSpace(req.Note),
+		"note":        rationale,
 		"resolved_by": uuidToString(userID),
 	}
 	var tag pgconn.CommandTag
-	var err error
+	var subjectDigest string
+	subjectRevision := pgtype.Int8{}
 	if productionScoped {
 		planID, planErr := util.ParseUUID(scope.PlanID)
 		nodeID, nodeErr := util.ParseUUID(scope.NodeID)
@@ -2721,7 +3059,7 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 			return
 		}
 		var current bool
-		if err := h.DB.QueryRow(r.Context(), `
+		if err := tx.QueryRow(r.Context(), `
 			SELECT EXISTS (
 				SELECT 1
 				FROM autonomous_project_plan p
@@ -2735,6 +3073,7 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 				  AND n.id=$5 AND n.node_key=$6 AND n.status='blocked'
 				  AND p.release_manifest_id=$7 AND p.release_manifest_digest=$8
 				  AND m.environment='production' AND m.manifest_id=$7 AND m.manifest_digest=$8
+				FOR UPDATE OF p,n,m
 			)
 		`, planID, workspaceID, projectID, scope.PlanRevision, nodeID, scope.NodeKey, manifestID, scope.ManifestDigest).Scan(&current); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to verify current production release scope")
@@ -2744,6 +3083,8 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 			writeError(w, http.StatusConflict, "production approval no longer matches the active manifest")
 			return
 		}
+		subjectDigest = scope.ManifestDigest
+		subjectRevision = pgtype.Int8{Int64: scope.PlanRevision, Valid: true}
 		resolutionFields["approval_scope"] = scope.ApprovalScope
 		resolutionFields["workspace_id"] = scope.WorkspaceID
 		resolutionFields["project_id"] = scope.ProjectID
@@ -2758,7 +3099,7 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 			writeError(w, http.StatusInternalServerError, "failed to encode production approval")
 			return
 		}
-		tag, err = h.DB.Exec(r.Context(), `
+		tag, err = tx.Exec(r.Context(), `
 			UPDATE autonomous_project_escalation
 			SET status='resolved', resolution=$4, resolved_at=now()
 			WHERE id=$1 AND workspace_id=$2 AND project_id=$3
@@ -2779,12 +3120,20 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 		`, escalationID, workspaceID, projectID, resolution, planID, nodeID, contextJSON,
 			scope.PlanRevision, manifestID, scope.ManifestDigest, scope.NodeKey)
 	} else {
+		if err := tx.QueryRow(r.Context(), `
+			SELECT encode(digest(convert_to(context::text, 'UTF8'), 'sha256'), 'hex')
+			FROM autonomous_project_escalation
+			WHERE id=$1 AND workspace_id=$2 AND project_id=$3
+		`, escalationID, workspaceID, projectID).Scan(&subjectDigest); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to calculate escalation scope digest")
+			return
+		}
 		resolution, marshalErr := json.Marshal(resolutionFields)
 		if marshalErr != nil {
 			writeError(w, http.StatusInternalServerError, "failed to encode escalation resolution")
 			return
 		}
-		tag, err = h.DB.Exec(r.Context(), `
+		tag, err = tx.Exec(r.Context(), `
 		UPDATE autonomous_project_escalation
 		SET status = 'resolved',
 		    resolution = $4,
@@ -2806,6 +3155,20 @@ func (h *Handler) ResolveProjectAutonomousEscalation(w http.ResponseWriter, r *h
 		} else {
 			writeError(w, http.StatusNotFound, "open approval escalation not found")
 		}
+		return
+	}
+	if err := projectorchestration.RecordApprovalTx(r.Context(), tx, projectorchestration.ApprovalEvent{
+		WorkspaceID: workspaceID, ProjectID: projectID,
+		IdempotencyKey: "escalation-resolution:" + uuidToString(escalationID),
+		SubjectType:    "escalation", SubjectID: uuidToString(escalationID), SubjectRevision: subjectRevision, SubjectDigest: subjectDigest,
+		Decision: req.Decision, ActorType: "human", ActorID: userID, ActorDisplay: uuidToString(userID),
+		Rationale: rationale, SourceEndpoint: "/api/projects/:id/autonomous/escalations/:escalationId/resolve", Origin: "local",
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record escalation resolution")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit escalation resolution")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"resolved": true, "decision": req.Decision, "approval_scope": scope.ApprovalScope})
@@ -2974,7 +3337,8 @@ func (h *Handler) ApproveProjectLeaderChange(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
+	userID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
 		return
 	}
 	if h.ProjectLeaderApprove == nil {
@@ -2990,7 +3354,7 @@ func (h *Handler) ApproveProjectLeaderChange(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
-	if err := h.ProjectLeaderApprove(r.Context(), workspaceID, projectID, changeID, req.IdempotencyKey); err != nil {
+	if err := h.ProjectLeaderApprove(r.Context(), workspaceID, projectID, changeID, userID, req.IdempotencyKey); err != nil {
 		status := http.StatusInternalServerError
 		if strings.Contains(strings.ToLower(err.Error()), "stale") || strings.Contains(strings.ToLower(err.Error()), "cannot") {
 			status = http.StatusConflict
@@ -3014,10 +3378,59 @@ func (h *Handler) RejectProjectLeaderChange(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if _, ok := h.requireAutonomousControlAdmin(w, r, workspaceID); !ok {
+	userID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
 		return
 	}
-	tag, err := h.DB.Exec(r.Context(), `UPDATE autonomous_project_change_request SET state='rejected',error='rejected by project administrator',updated_at=now() WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND source='project_director' AND state='approval_required'`, changeID, workspaceID, projectID)
+	var req struct {
+		Reason string `json:"reason,omitempty"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid rejection request")
+			return
+		}
+	}
+	rationale := strings.TrimSpace(req.Reason)
+	if rationale == "" {
+		rationale = "Rejected by the project administrator after reviewing the change proposal"
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reject project leader change")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if err := requireAutonomousControlAdminTx(r.Context(), tx, workspaceID, userID); err != nil {
+		writeError(w, http.StatusForbidden, "workspace owner or admin required")
+		return
+	}
+	if err := requireAutonomousProjectScopeTx(r.Context(), tx, workspaceID, projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `SELECT set_config('multica.approval_actor_type','human',true),set_config('multica.approval_actor_ref',$1,true)`, uuidToString(userID)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to set change approval actor")
+		return
+	}
+	var state string
+	if err := tx.QueryRow(r.Context(), `
+		SELECT state FROM autonomous_project_change_request
+		WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND source='project_director'
+		FOR UPDATE
+	`, changeID, workspaceID, projectID).Scan(&state); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "change request not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to lock project leader change")
+		}
+		return
+	}
+	if state != "approval_required" {
+		writeError(w, http.StatusConflict, "change request is not awaiting approval")
+		return
+	}
+	tag, err := tx.Exec(r.Context(), `UPDATE autonomous_project_change_request SET state='rejected',error=$4,updated_at=now() WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND source='project_director' AND state='approval_required'`, changeID, workspaceID, projectID, rationale)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to reject project leader change")
 		return
@@ -3026,5 +3439,308 @@ func (h *Handler) RejectProjectLeaderChange(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, "change request is not awaiting approval")
 		return
 	}
+	var proposalDigest string
+	if err := tx.QueryRow(r.Context(), `SELECT autonomous_project_change_proposal_digest($1)`, changeID).Scan(&proposalDigest); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to calculate change proposal digest")
+		return
+	}
+	if err := projectorchestration.RecordApprovalTx(r.Context(), tx, projectorchestration.ApprovalEvent{
+		WorkspaceID: workspaceID, ProjectID: projectID,
+		IdempotencyKey: "change-request-reject:" + uuidToString(changeID),
+		SubjectType:    "change_request", SubjectID: uuidToString(changeID), SubjectDigest: proposalDigest,
+		Decision: "rejected", ActorType: "human", ActorID: userID, ActorDisplay: uuidToString(userID),
+		Rationale: rationale, SourceEndpoint: "/api/projects/:id/autonomous/change-requests/:changeRequestId/reject", Origin: "local",
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record change request rejection")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit change request rejection")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"rejected": true})
+}
+
+type projectSpecificationApprovalTarget struct {
+	changeRequestID pgtype.UUID
+	revisionID      pgtype.UUID
+	revision        int64
+	digest          string
+}
+
+func loadProjectSpecificationApprovalTargetTx(ctx context.Context, tx pgx.Tx, workspaceID, projectID, changeRequestID pgtype.UUID) (projectSpecificationApprovalTarget, string, bool, error) {
+	var target projectSpecificationApprovalTarget
+	var state, requestType, source, requestKey string
+	var revisionID pgtype.UUID
+	var revision pgtype.Int8
+	var sourceKind, sourceRef pgtype.Text
+	var proposalMatches bool
+	err := tx.QueryRow(ctx, `
+		SELECT c.state,c.request_type,c.source,c.request_key,
+		       r.id,r.revision,r.source_kind,r.source_ref,
+		       c.request_key='project-leader-specification:'||c.source_ref
+		         AND c.proposal ? 'specification'
+		         AND c.proposal->>'proposal_id'=c.source_ref
+		FROM autonomous_project_change_request c
+		LEFT JOIN autonomous_project_specification_revision r
+		  ON r.id=c.proposed_specification_revision_id
+		 AND r.workspace_id=c.workspace_id AND r.project_id=c.project_id
+		WHERE c.id=$1 AND c.workspace_id=$2 AND c.project_id=$3
+		FOR UPDATE OF c
+	`, changeRequestID, workspaceID, projectID).Scan(&state, &requestType, &source, &requestKey, &revisionID, &revision, &sourceKind, &sourceRef, &proposalMatches)
+	if err != nil {
+		return projectSpecificationApprovalTarget{}, "", false, err
+	}
+	eligible := source == "project_director" && requestType == "requirement_change" &&
+		strings.HasPrefix(requestKey, "project-leader-specification:") && proposalMatches && revisionID.Valid && revision.Valid &&
+		sourceKind.Valid && sourceKind.String == "change_request" && sourceRef.Valid &&
+		sourceRef.String == uuidToString(changeRequestID)
+	if !eligible {
+		return projectSpecificationApprovalTarget{}, state, false, nil
+	}
+	target.revisionID = revisionID
+	target.revision = revision.Int64
+	if err := tx.QueryRow(ctx, `SELECT autonomous_project_specification_digest($1)`, revisionID).Scan(&target.digest); err != nil {
+		return projectSpecificationApprovalTarget{}, state, false, err
+	}
+	return target, state, true, nil
+}
+
+func validProjectSpecificationDigest(digest string) bool {
+	if len(digest) != 64 || strings.ToLower(digest) != digest {
+		return false
+	}
+	_, err := hex.DecodeString(digest)
+	return err == nil
+}
+
+func beginProjectSpecificationApprovalTx(w http.ResponseWriter, r *http.Request, h *Handler, workspaceID, projectID, userID pgtype.UUID) (pgx.Tx, bool) {
+	if h.TxStarter == nil {
+		writeError(w, http.StatusServiceUnavailable, "specification approval is unavailable")
+		return nil, false
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to begin specification approval")
+		return nil, false
+	}
+	if err := requireAutonomousControlAdminTx(r.Context(), tx, workspaceID, userID); err != nil {
+		_ = tx.Rollback(r.Context())
+		writeError(w, http.StatusForbidden, "workspace owner or admin required")
+		return nil, false
+	}
+	if err := requireAutonomousProjectScopeTx(r.Context(), tx, workspaceID, projectID); err != nil {
+		_ = tx.Rollback(r.Context())
+		writeError(w, http.StatusNotFound, "project not found")
+		return nil, false
+	}
+	if _, err := tx.Exec(r.Context(), `SELECT set_config('multica.approval_actor_type','human',true),set_config('multica.approval_actor_ref',$1,true)`, uuidToString(userID)); err != nil {
+		_ = tx.Rollback(r.Context())
+		writeError(w, http.StatusInternalServerError, "failed to set specification approval actor")
+		return nil, false
+	}
+	return tx, true
+}
+
+// ApproveProjectSpecification activates only a local Project Manager
+// specification proposal after the administrator confirms its exact digest.
+func (h *Handler) ApproveProjectSpecification(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	userID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
+		return
+	}
+	var req struct {
+		ChangeRequestID     string `json:"change_request_id"`
+		SpecificationDigest string `json:"specification_digest"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid specification approval request")
+		return
+	}
+	changeRequestID, ok := parseUUIDOrBadRequest(w, req.ChangeRequestID, "change request id")
+	if !ok {
+		return
+	}
+	if !validProjectSpecificationDigest(req.SpecificationDigest) {
+		writeError(w, http.StatusBadRequest, "specification_digest must be a lowercase SHA-256 digest")
+		return
+	}
+	tx, ok := beginProjectSpecificationApprovalTx(w, r, h, workspaceID, projectID, userID)
+	if !ok {
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	target, state, eligible, err := loadProjectSpecificationApprovalTargetTx(r.Context(), tx, workspaceID, projectID, changeRequestID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "specification proposal not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to load specification proposal")
+		}
+		return
+	}
+	if !eligible {
+		writeError(w, http.StatusNotFound, "local specification proposal not found")
+		return
+	}
+	if state != "approval_required" {
+		writeError(w, http.StatusConflict, "specification proposal is not awaiting approval")
+		return
+	}
+	if target.digest != req.SpecificationDigest {
+		writeError(w, http.StatusConflict, "specification changed; review the current digest")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE autonomous_project_change_request SET state='approved',error=NULL,updated_at=now() WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND state='approval_required'`, changeRequestID, workspaceID, projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to approve specification proposal")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `
+		INSERT INTO autonomous_project_specification_head(workspace_id,project_id,specification_revision_id,revision)
+		VALUES($1,$2,$3,$4)
+		ON CONFLICT(workspace_id,project_id) DO UPDATE SET
+		  specification_revision_id=EXCLUDED.specification_revision_id,
+		  revision=EXCLUDED.revision,updated_at=now()
+	`, workspaceID, projectID, target.revisionID, target.revision); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to activate project specification")
+		return
+	}
+	if err := projectorchestration.RecordApprovalTx(r.Context(), tx, projectorchestration.ApprovalEvent{
+		WorkspaceID: workspaceID, ProjectID: projectID,
+		IdempotencyKey: "project-spec-approve:" + uuidToString(changeRequestID),
+		SubjectType:    "specification_revision", SubjectID: uuidToString(target.revisionID),
+		SubjectRevision: pgtype.Int8{Int64: target.revision, Valid: true}, SubjectDigest: target.digest,
+		Decision: "approved", ActorType: "human", ActorID: userID, ActorDisplay: uuidToString(userID),
+		Rationale:      "Approved the exact reviewed specification digest",
+		SourceEndpoint: "/api/projects/:id/autonomous/spec/approve", Origin: "local",
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record specification approval")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit specification approval")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"approved": true, "change_request_id": uuidToString(changeRequestID),
+		"specification_revision_id": uuidToString(target.revisionID),
+		"specification_revision":    target.revision, "specification_digest": target.digest,
+	})
+}
+
+// RejectProjectSpecification records the administrator's reason and delivers
+// it to the Project Manager session as part of the same transaction.
+func (h *Handler) RejectProjectSpecification(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	userID, ok := h.requireAutonomousControlAdmin(w, r, workspaceID)
+	if !ok {
+		return
+	}
+	var req struct {
+		ChangeRequestID     string `json:"change_request_id"`
+		SpecificationDigest string `json:"specification_digest"`
+		Reason              string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid specification rejection request")
+		return
+	}
+	changeRequestID, ok := parseUUIDOrBadRequest(w, req.ChangeRequestID, "change request id")
+	if !ok {
+		return
+	}
+	if !validProjectSpecificationDigest(req.SpecificationDigest) {
+		writeError(w, http.StatusBadRequest, "specification_digest must be a lowercase SHA-256 digest")
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		writeError(w, http.StatusBadRequest, "reason is required")
+		return
+	}
+	tx, ok := beginProjectSpecificationApprovalTx(w, r, h, workspaceID, projectID, userID)
+	if !ok {
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	target, state, eligible, err := loadProjectSpecificationApprovalTargetTx(r.Context(), tx, workspaceID, projectID, changeRequestID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "specification proposal not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to load specification proposal")
+		}
+		return
+	}
+	if !eligible {
+		writeError(w, http.StatusNotFound, "local specification proposal not found")
+		return
+	}
+	if state != "approval_required" {
+		writeError(w, http.StatusConflict, "specification proposal is not awaiting approval")
+		return
+	}
+	if target.digest != req.SpecificationDigest {
+		writeError(w, http.StatusConflict, "specification changed; review the current digest")
+		return
+	}
+	var sessionID pgtype.UUID
+	if err := tx.QueryRow(r.Context(), `
+		SELECT id FROM chat_session
+		WHERE workspace_id=$1 AND project_id=$2 AND session_kind='autonomous_project_leader' AND status='active'
+		ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE
+	`, workspaceID, projectID).Scan(&sessionID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusConflict, "project manager session is unavailable")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to load project manager session")
+		}
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE autonomous_project_change_request SET state='rejected',error=$4,updated_at=now() WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND state='approval_required'`, changeRequestID, workspaceID, projectID, reason); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reject specification proposal")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `
+		INSERT INTO chat_message (chat_session_id,role,content,message_kind)
+		VALUES ($1,'user',$2,'message')
+	`, sessionID, "System notification: Your project specification proposal was rejected by a workspace administrator. Reason: "+reason); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to deliver rejection to project manager")
+		return
+	}
+	if err := projectorchestration.RecordApprovalTx(r.Context(), tx, projectorchestration.ApprovalEvent{
+		WorkspaceID: workspaceID, ProjectID: projectID,
+		IdempotencyKey: "project-spec-reject:" + uuidToString(changeRequestID),
+		SubjectType:    "specification_revision", SubjectID: uuidToString(target.revisionID),
+		SubjectRevision: pgtype.Int8{Int64: target.revision, Valid: true}, SubjectDigest: target.digest,
+		Decision: "rejected", ActorType: "human", ActorID: userID, ActorDisplay: uuidToString(userID),
+		Rationale: reason, SourceEndpoint: "/api/projects/:id/autonomous/spec/reject", Origin: "local",
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record specification rejection")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit specification rejection")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rejected": true, "change_request_id": uuidToString(changeRequestID),
+		"specification_revision_id": uuidToString(target.revisionID),
+		"specification_revision":    target.revision, "specification_digest": target.digest,
+	})
 }

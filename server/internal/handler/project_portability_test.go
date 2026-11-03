@@ -132,7 +132,10 @@ func TestProjectDiscoveryImportPreviewsBeforeApplyingReviewedReport(t *testing.T
 	}
 
 	applyResponse := httptest.NewRecorder()
-	testHandler.ImportProject(applyResponse, newRequest("POST", "/api/projects/import", projectbundle.ImportRequest{DiscoveryReport: preview.DiscoveryReport}))
+	testHandler.ImportProject(applyResponse, newRequest("POST", "/api/projects/import", projectbundle.ImportRequest{
+		DiscoveryReport: preview.DiscoveryReport,
+		ProjectContext:  &contextPayload,
+	}))
 	if applyResponse.Code != http.StatusCreated {
 		t.Fatalf("reviewed discovery apply status = %d, want 201: %s", applyResponse.Code, applyResponse.Body.String())
 	}

@@ -96,12 +96,17 @@ func exportProject(ctx context.Context, q Queryer, workspaceID, projectID pgtype
 		return Bundle{}, fmt.Errorf("load issue prefix for export: %w", err)
 	}
 	bundle := Bundle{
-		SchemaVersion: SchemaVersionV1,
-		ExportedAt:    time.Now().UTC().Format(time.RFC3339Nano),
-		Origin:        PortableOrigin{WorkspaceID: uuidString(workspaceID), ProjectID: uuidString(projectIDValue)},
-		Project:       project,
-		Resources:     []PortableResource{},
-		Tasks:         []PortableTask{},
+		SchemaVersion:          SchemaVersionV2,
+		ExportedAt:             time.Now().UTC().Format(time.RFC3339Nano),
+		Origin:                 PortableOrigin{WorkspaceID: uuidString(workspaceID), ProjectID: uuidString(projectIDValue)},
+		Project:                project,
+		Resources:              []PortableResource{},
+		Tasks:                  []PortableTask{},
+		Approvals:              []PortableApproval{},
+		SpecificationRevisions: []PortableSpecificationRevision{},
+	}
+	if err := exportApprovals(ctx, q, workspaceID, projectIDValue, &bundle); err != nil {
+		return Bundle{}, err
 	}
 	if err := exportResources(ctx, q, workspaceID, projectIDValue, &bundle); err != nil {
 		return Bundle{}, err
@@ -112,10 +117,164 @@ func exportProject(ctx context.Context, q Queryer, workspaceID, projectID pgtype
 	if err := exportBootstrap(ctx, q, workspaceID, projectIDValue, &bundle); err != nil {
 		return Bundle{}, err
 	}
+	if err := exportSpecifications(ctx, q, workspaceID, projectIDValue, &bundle); err != nil {
+		return Bundle{}, err
+	}
 	if err := ValidateBundle(bundle); err != nil {
 		return Bundle{}, fmt.Errorf("exported project is not portable: %w", err)
 	}
 	return bundle, nil
+}
+
+func exportSpecifications(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUID, bundle *Bundle) error {
+	bundle.SpecificationRevisions = []PortableSpecificationRevision{}
+	rows, err := q.Query(ctx, `
+		SELECT id::text, revision, source_kind, source_ref, goal, specification,
+		       autonomous_project_specification_digest(id), created_at
+		FROM autonomous_project_specification_revision
+		WHERE workspace_id = $1 AND project_id = $2
+		ORDER BY revision, id
+	`, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("list project specification revisions for export: %w", err)
+	}
+	for rows.Next() {
+		var revision PortableSpecificationRevision
+		var sourceRef pgtype.Text
+		var content []byte
+		var createdAt time.Time
+		if err := rows.Scan(&revision.ID, &revision.Revision, &revision.SourceKind, &sourceRef,
+			&revision.Goal, &content, &revision.Digest, &createdAt); err != nil {
+			rows.Close()
+			return fmt.Errorf("read project specification revision for export: %w", err)
+		}
+		if !json.Valid(content) {
+			rows.Close()
+			return fmt.Errorf("decode project specification revision %d: invalid JSON content", revision.Revision)
+		}
+		if sourceRef.Valid {
+			revision.SourceRef = &sourceRef.String
+		}
+		revision.Content = append(json.RawMessage(nil), content...)
+		revision.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
+		bundle.SpecificationRevisions = append(bundle.SpecificationRevisions, revision)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate project specification revisions: %w", err)
+	}
+	rows.Close()
+
+	var currentGoal string
+	var content []byte
+	err = q.QueryRow(ctx, `
+		SELECT r.goal, r.specification
+		FROM autonomous_project_specification_head h
+		JOIN autonomous_project_specification_revision r
+		  ON r.id = h.specification_revision_id
+		 AND r.workspace_id = h.workspace_id
+		 AND r.project_id = h.project_id
+		WHERE h.workspace_id = $1 AND h.project_id = $2
+	`, workspaceID, projectID).Scan(&currentGoal, &content)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load current project specification for export: %w", err)
+	}
+	var specification PortableSpecification
+	if err := json.Unmarshal(content, &specification); err != nil {
+		return fmt.Errorf("decode current project specification: %w", err)
+	}
+	specification.Goal = currentGoal
+	if bundle.Bootstrap == nil {
+		bundle.Bootstrap = &PortableBootstrap{}
+	}
+	if bundle.Bootstrap.Plan == nil {
+		bundle.Bootstrap.Plan = &PortablePlan{Goal: specification.Goal}
+	}
+	bundle.Bootstrap.Plan.Specification = &specification
+	return nil
+}
+
+func exportApprovals(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUID, bundle *Bundle) error {
+	bundle.Approvals = []PortableApproval{}
+	rows, err := q.Query(ctx, `
+		SELECT id::text, idempotency_key, subject_type, subject_id, subject_revision,
+		       subject_digest, decision, actor_type, actor_id, actor_display, policy_ref,
+		       rationale, source_endpoint, origin, origin_ref, acted_at
+		FROM autonomous_project_approval_event
+		WHERE workspace_id = $1 AND project_id = $2
+		ORDER BY acted_at, id
+	`, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("list project approvals for export: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var approval PortableApproval
+		var subjectRevision pgtype.Int8
+		var actorID pgtype.UUID
+		var policyRef pgtype.Text
+		var originRef []byte
+		var actedAt time.Time
+		if err := rows.Scan(&approval.ID, &approval.IdempotencyKey, &approval.SubjectType,
+			&approval.SubjectID, &subjectRevision, &approval.SubjectDigest, &approval.Decision,
+			&approval.ActorType, &actorID, &approval.ActorDisplay, &policyRef, &approval.Rationale,
+			&approval.SourceEndpoint, &approval.Origin, &originRef, &actedAt); err != nil {
+			return fmt.Errorf("read project approval for export: %w", err)
+		}
+		if subjectRevision.Valid {
+			value := subjectRevision.Int64
+			approval.SubjectRevision = &value
+		}
+		if actorID.Valid {
+			value := uuidString(actorID)
+			approval.ActorID = &value
+		}
+		if policyRef.Valid {
+			approval.PolicyRef = &policyRef.String
+		}
+		approval.OriginRef = append(json.RawMessage(nil), originRef...)
+		approval.ActedAt = actedAt.UTC().Format(time.RFC3339Nano)
+		if approval.Origin == "imported" {
+			if source, ok := sourceApprovalFromImportRef(approval.OriginRef); ok {
+				approval = source
+			}
+		}
+		bundle.Approvals = append(bundle.Approvals, approval)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate project approvals: %w", err)
+	}
+	sort.SliceStable(bundle.Approvals, func(i, j int) bool {
+		left, leftErr := time.Parse(time.RFC3339Nano, bundle.Approvals[i].ActedAt)
+		right, rightErr := time.Parse(time.RFC3339Nano, bundle.Approvals[j].ActedAt)
+		if leftErr == nil && rightErr == nil && !left.Equal(right) {
+			return left.Before(right)
+		}
+		if (leftErr == nil) != (rightErr == nil) {
+			return leftErr == nil
+		}
+		if bundle.Approvals[i].ID != bundle.Approvals[j].ID {
+			return bundle.Approvals[i].ID < bundle.Approvals[j].ID
+		}
+		return bundle.Approvals[i].IdempotencyKey < bundle.Approvals[j].IdempotencyKey
+	})
+	return nil
+}
+
+func sourceApprovalFromImportRef(originRef json.RawMessage) (PortableApproval, bool) {
+	var wrapper struct {
+		SourceApproval *PortableApproval `json:"source_approval"`
+	}
+	if err := json.Unmarshal(originRef, &wrapper); err != nil || wrapper.SourceApproval == nil {
+		return PortableApproval{}, false
+	}
+	if strings.TrimSpace(wrapper.SourceApproval.ID) == "" || strings.TrimSpace(wrapper.SourceApproval.IdempotencyKey) == "" {
+		return PortableApproval{}, false
+	}
+	return *wrapper.SourceApproval, true
 }
 
 func exportResources(ctx context.Context, q Queryer, workspaceID, projectID pgtype.UUID, bundle *Bundle) error {
@@ -192,8 +351,15 @@ func exportTasks(ctx context.Context, q Queryer, workspaceID, projectID pgtype.U
 				return fmt.Errorf("decode acceptance criteria for task %s: %w", identifier, err)
 			}
 		}
-		row.task.Metadata = mergeMetadata(row.task.Metadata, decodeMetadata(metadata))
-		row.comments = readCommentProvenance(row.task.Metadata)
+		decodedMetadata, err := decodeExportMetadata(metadata)
+		if err != nil {
+			return fmt.Errorf("decode metadata for task %s: %w", identifier, err)
+		}
+		row.task.Metadata = mergeMetadata(row.task.Metadata, decodedMetadata)
+		row.comments, err = readExportCommentProvenance(row.task.Metadata)
+		if err != nil {
+			return fmt.Errorf("decode comment provenance for task %s: %w", identifier, err)
+		}
 		if originID, ok := row.task.Metadata["multica_origin_id"].(string); ok && strings.TrimSpace(originID) != "" {
 			row.task.OriginID = originID
 		}
@@ -479,12 +645,21 @@ func exportBootstrap(ctx context.Context, q Queryer, workspaceID, projectID pgty
 	if err == nil {
 		planFound = true
 		var spec struct {
-			Requirements []PlanRequirement `json:"requirements"`
+			Requirements json.RawMessage `json:"requirements"`
 		}
 		if len(specification) > 0 {
-			_ = json.Unmarshal(specification, &spec)
+			if err := json.Unmarshal(specification, &spec); err != nil {
+				return fmt.Errorf("decode project plan specification: %w", err)
+			}
 		}
-		plan.Requirements = spec.Requirements
+		if len(spec.Requirements) > 0 && string(spec.Requirements) != "null" {
+			if err := json.Unmarshal(spec.Requirements, &plan.Requirements); err != nil {
+				var legacyRequirements []string
+				if legacyErr := json.Unmarshal(spec.Requirements, &legacyRequirements); legacyErr != nil {
+					return fmt.Errorf("decode project plan requirements: %w", err)
+				}
+			}
+		}
 		taskKeyByID := make(map[string]string, len(bundle.Tasks))
 		for _, task := range bundle.Tasks {
 			if task.localIssueID != "" {
@@ -493,7 +668,7 @@ func exportBootstrap(ctx context.Context, q Queryer, workspaceID, projectID pgty
 		}
 		nodeKeyMap := make(map[string]string)
 		nodes, err := q.Query(ctx, `
-			SELECT node_key, title, description, kind, status, priority, acceptance_criteria, materialized_issue_id
+			SELECT node_key, title, description, kind, status, priority, acceptance_criteria, requirement_ids, materialized_issue_id
 			FROM autonomous_project_plan_node
 			WHERE plan_id = $1 AND workspace_id = $2 AND project_id = $3
 			ORDER BY node_key
@@ -503,9 +678,9 @@ func exportBootstrap(ctx context.Context, q Queryer, workspaceID, projectID pgty
 		}
 		for nodes.Next() {
 			var node PlanNode
-			var criteria []byte
+			var criteria, requirementIDs []byte
 			var materializedIssueID pgtype.UUID
-			if err := nodes.Scan(&node.Key, &node.Title, &node.Description, &node.Kind, &node.Status, &node.Priority, &criteria, &materializedIssueID); err != nil {
+			if err := nodes.Scan(&node.Key, &node.Title, &node.Description, &node.Kind, &node.Status, &node.Priority, &criteria, &requirementIDs, &materializedIssueID); err != nil {
 				nodes.Close()
 				return fmt.Errorf("read project plan node for export: %w", err)
 			}
@@ -513,6 +688,12 @@ func exportBootstrap(ctx context.Context, q Queryer, workspaceID, projectID pgty
 				if err := json.Unmarshal(criteria, &node.AcceptanceCriteria); err != nil {
 					nodes.Close()
 					return fmt.Errorf("decode project plan criteria: %w", err)
+				}
+			}
+			if len(requirementIDs) > 0 {
+				if err := json.Unmarshal(requirementIDs, &node.RequirementIDs); err != nil {
+					nodes.Close()
+					return fmt.Errorf("decode project plan node requirement IDs: %w", err)
 				}
 			}
 			originalKey := node.Key
@@ -563,7 +744,10 @@ func exportBootstrap(ctx context.Context, q Queryer, workspaceID, projectID pgty
 	if bundle.Bootstrap != nil {
 		unique := make([]PortableKnowledge, 0, len(bundle.Bootstrap.Knowledge))
 		for _, item := range bundle.Bootstrap.Knowledge {
-			key := knowledgeKey(item)
+			key, err := knowledgeKey(item)
+			if err != nil {
+				return fmt.Errorf("decode project bootstrap knowledge content: %w", err)
+			}
 			if seenKnowledge[key] {
 				continue
 			}
@@ -590,10 +774,15 @@ func exportBootstrap(ctx context.Context, q Queryer, workspaceID, projectID pgty
 		if bundle.Bootstrap == nil {
 			bundle.Bootstrap = &PortableBootstrap{}
 		}
-		if seenKnowledge[knowledgeKey(item)] {
+		key, err := knowledgeKey(item)
+		if err != nil {
+			brain.Close()
+			return fmt.Errorf("decode project brain entry content: %w", err)
+		}
+		if seenKnowledge[key] {
 			continue
 		}
-		seenKnowledge[knowledgeKey(item)] = true
+		seenKnowledge[key] = true
 		bundle.Bootstrap.Knowledge = append(bundle.Bootstrap.Knowledge, item)
 	}
 	if err := brain.Err(); err != nil {
@@ -610,14 +799,19 @@ func exportBootstrap(ctx context.Context, q Queryer, workspaceID, projectID pgty
 	return nil
 }
 
-func knowledgeKey(item PortableKnowledge) string {
+func knowledgeKey(item PortableKnowledge) (string, error) {
 	var decoded any
-	if len(item.Content) > 0 && json.Unmarshal(item.Content, &decoded) == nil {
-		if canonical, err := json.Marshal(decoded); err == nil {
-			return item.Kind + "\x00" + item.Title + "\x00" + string(canonical)
+	if len(item.Content) > 0 {
+		if err := json.Unmarshal(item.Content, &decoded); err != nil {
+			return "", fmt.Errorf("decode JSON: %w", err)
 		}
+		canonical, err := json.Marshal(decoded)
+		if err != nil {
+			return "", fmt.Errorf("canonicalize JSON: %w", err)
+		}
+		return item.Kind + "\x00" + item.Title + "\x00" + string(canonical), nil
 	}
-	return item.Kind + "\x00" + item.Title + "\x00" + string(item.Content)
+	return item.Kind + "\x00" + item.Title, nil
 }
 
 func exportActor(ctx context.Context, q Queryer, workspaceID pgtype.UUID, actorType string, actorID pgtype.UUID) (*PortableActorRef, error) {
@@ -673,12 +867,27 @@ func loadStatusCategories(ctx context.Context, q Queryer, workspaceID pgtype.UUI
 func decodeMetadata(raw []byte) map[string]any {
 	var metadata map[string]any
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &metadata)
+		if err := json.Unmarshal(raw, &metadata); err != nil {
+			return make(map[string]any)
+		}
 	}
 	if metadata == nil {
 		metadata = make(map[string]any)
 	}
 	return metadata
+}
+
+func decodeExportMetadata(raw []byte) (map[string]any, error) {
+	var metadata map[string]any
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &metadata); err != nil {
+			return nil, err
+		}
+	}
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	return metadata, nil
 }
 
 func mergeMetadata(target, source map[string]any) map[string]any {
@@ -697,8 +906,22 @@ func readCommentProvenance(metadata map[string]any) map[string]commentProvenance
 	if !ok || raw == "" {
 		return result
 	}
-	_ = json.Unmarshal([]byte(raw), &result)
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return make(map[string]commentProvenance)
+	}
 	return result
+}
+
+func readExportCommentProvenance(metadata map[string]any) (map[string]commentProvenance, error) {
+	result := make(map[string]commentProvenance)
+	raw, ok := metadata[portableCommentsMetadataKey].(string)
+	if !ok || raw == "" {
+		return result, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func statusCategory(status string) string {

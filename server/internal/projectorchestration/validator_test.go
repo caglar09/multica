@@ -10,20 +10,67 @@ func validPlan() Plan {
 		Version: CurrentPlanVersion,
 		Goal:    "Ship authentication",
 		Specification: Specification{
-			Summary:          "Users can register and sign in.",
-			Requirements:     []string{"Registration", "Login"},
+			Summary:      "Users can register and sign in.",
+			Requirements: []string{"Registration", "Login"},
+			RequirementDetails: []SpecificationRequirement{
+				{ID: "REQ-REGISTRATION", Text: "Registration"},
+				{ID: "REQ-LOGIN", Text: "Login"},
+			},
 			DefinitionOfDone: []string{"Acceptance tests pass"},
 		},
 		Policy: DefaultPolicy(),
 		Nodes: []NodeSpec{
 			{Key: "arch", Kind: NodeArchitecture, Title: "Auth architecture", Risk: RiskMedium, MaxAttempts: 2},
-			{Key: "impl", Kind: NodeImplementation, Title: "Implement user flow", Risk: RiskHigh, MaxAttempts: 3, AcceptanceCriteria: []string{"Login works"}},
-			{Key: "review", Kind: NodeReview, Title: "Independent review", Risk: RiskMedium, MaxAttempts: 3, AcceptanceCriteria: []string{"No blocking findings"}},
+			{Key: "impl", Kind: NodeImplementation, Title: "Implement user flow", Risk: RiskHigh, MaxAttempts: 3, AcceptanceCriteria: []string{"Login works"}, RequirementIDs: []string{"REQ-REGISTRATION", "REQ-LOGIN"}},
+			{Key: "review", Kind: NodeReview, Title: "Independent review", Risk: RiskMedium, MaxAttempts: 3, AcceptanceCriteria: []string{"No blocking findings"}, RequirementIDs: []string{"REQ-REGISTRATION", "REQ-LOGIN"}},
 		},
 		Edges: []EdgeSpec{
 			{From: "arch", To: "impl", Type: DependencyHard},
 			{From: "impl", To: "review", Type: DependencyHard},
 		},
+	}
+}
+
+func TestValidatePlanRejectsMissingRichSpecificationRequirements(t *testing.T) {
+	plan := validPlan()
+	plan.Specification.RequirementDetails = nil
+	if err := ValidatePlan(plan, 20); !errors.Is(err, ErrInvalidRequirementCoverage) {
+		t.Fatalf("ValidatePlan() error = %v, want ErrInvalidRequirementCoverage", err)
+	}
+}
+
+func TestValidatePlanRequiresRequirementIDsForTraceabilityNodes(t *testing.T) {
+	tests := []struct {
+		name string
+		kind NodeKind
+	}{
+		{name: "implementation", kind: NodeImplementation},
+		{name: "migration", kind: NodeMigration},
+		{name: "review", kind: NodeReview},
+		{name: "qa", kind: NodeQA},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := validPlan()
+			plan.Nodes[1].Kind = tt.kind
+			if tt.kind == NodeMigration {
+				plan = HardenPlan(plan)
+				plan = EnsureLifecycle(plan)
+				plan = HardenPlan(plan)
+			}
+			plan.Nodes[1].RequirementIDs = nil
+			if err := ValidatePlan(plan, 20); !errors.Is(err, ErrInvalidRequirementCoverage) {
+				t.Fatalf("ValidatePlan() error = %v, want ErrInvalidRequirementCoverage", err)
+			}
+		})
+	}
+}
+
+func TestValidatePlanRejectsUnknownNodeRequirementID(t *testing.T) {
+	plan := validPlan()
+	plan.Nodes[1].RequirementIDs = []string{"REQ-UNKNOWN"}
+	if err := ValidatePlan(plan, 20); !errors.Is(err, ErrInvalidRequirementCoverage) {
+		t.Fatalf("ValidatePlan() error = %v, want ErrInvalidRequirementCoverage", err)
 	}
 }
 
@@ -77,8 +124,11 @@ func TestEnsureLifecycleAddsSecurityAndReviewForAuthImplementation(t *testing.T)
 		Version: CurrentPlanVersion,
 		Goal:    "Ship authenticated application",
 		Specification: Specification{
-			Summary:          "Authenticated application is usable.",
-			Requirements:     []string{"Authentication"},
+			Summary:      "Authenticated application is usable.",
+			Requirements: []string{"Authentication"},
+			RequirementDetails: []SpecificationRequirement{
+				{ID: "REQ-AUTH", Text: "Authentication"},
+			},
 			DefinitionOfDone: []string{"Security and review gates pass"},
 		},
 		Policy: DefaultPolicy(),
@@ -91,6 +141,7 @@ func TestEnsureLifecycleAddsSecurityAndReviewForAuthImplementation(t *testing.T)
 				Risk:               RiskMedium,
 				MaxAttempts:        3,
 				AcceptanceCriteria: []string{"Authentication works end to end"},
+				RequirementIDs:     []string{"REQ-AUTH"},
 			},
 		},
 	}
@@ -119,8 +170,11 @@ func TestEnsureLifecycleAddsMigrationIntegrationAndReview(t *testing.T) {
 		Version: CurrentPlanVersion,
 		Goal:    "Apply schema migration safely",
 		Specification: Specification{
-			Summary:          "Schema is migrated without regressions.",
-			Requirements:     []string{"Schema migration"},
+			Summary:      "Schema is migrated without regressions.",
+			Requirements: []string{"Schema migration"},
+			RequirementDetails: []SpecificationRequirement{
+				{ID: "REQ-SCHEMA", Text: "Schema migration"},
+			},
 			DefinitionOfDone: []string{"Migration and integration checks pass"},
 		},
 		Policy: DefaultPolicy(),
@@ -133,6 +187,7 @@ func TestEnsureLifecycleAddsMigrationIntegrationAndReview(t *testing.T) {
 				Risk:               RiskMedium,
 				MaxAttempts:        3,
 				AcceptanceCriteria: []string{"Migration is reversible and data remains valid"},
+				RequirementIDs:     []string{"REQ-SCHEMA"},
 			},
 		},
 	}

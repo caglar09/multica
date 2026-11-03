@@ -251,16 +251,31 @@ func TestStructuredQAHandoff(t *testing.T) {
 }
 
 func TestReviewApproved(t *testing.T) {
-	if !reviewApproved(map[string]any{"result": map[string]any{"verdict": "approved"}}) {
+	approved := map[string]any{"verdict": "approved", "summary": "The reviewed changes meet the acceptance criteria.", "findings": []any{}}
+	if !reviewApproved(map[string]any{"result": approved}) {
 		t.Fatal("approved verdict was not recognized")
 	}
-	if !reviewApproved(map[string]any{"result": map[string]any{"verdict": "approved", "goal_alignment_score": 80}}) {
+	approvedAtThreshold := map[string]any{
+		"verdict": "approved", "summary": "The reviewed changes meet the acceptance criteria.", "findings": []any{},
+		"goal_alignment_score": 80, "goal_alignment_rationale": "The implementation matches the approved scope.",
+		"requirement_attestations": []any{"REQ-1"},
+	}
+	if !reviewApproved(map[string]any{"result": approvedAtThreshold}) {
 		t.Fatal("approved verdict at the goal-alignment threshold was rejected")
 	}
-	if reviewApproved(map[string]any{"result": map[string]any{"verdict": "approved", "goal_alignment_score": 79}}) {
+	belowThreshold := map[string]any{
+		"verdict": "approved", "summary": "The reviewed changes meet the acceptance criteria.", "findings": []any{},
+		"goal_alignment_score": 79, "goal_alignment_rationale": "The implementation is below the approval threshold.",
+		"requirement_attestations": []any{"REQ-1"},
+	}
+	if reviewApproved(map[string]any{"result": belowThreshold}) {
 		t.Fatal("approved verdict below the goal-alignment threshold was accepted")
 	}
-	if reviewApproved(map[string]any{"result": map[string]any{"verdict": "changes_requested"}}) {
+	changesRequested := map[string]any{"verdict": "changes_requested", "summary": "Blocking changes remain.", "findings": []any{map[string]any{
+		"id": "review-blocker-1", "severity": "high", "category": "correctness",
+		"description": "The behavior is not correct.", "evidence": "The acceptance path fails.", "blocking": true,
+	}}}
+	if reviewApproved(map[string]any{"result": changesRequested}) {
 		t.Fatal("changes_requested verdict must not pass review")
 	}
 }

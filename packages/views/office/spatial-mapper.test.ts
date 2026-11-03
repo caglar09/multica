@@ -184,6 +184,7 @@ function snapshot(): AutonomousProjectSnapshot {
     brain: null,
     bootstrap: null,
     draft: null,
+    specification: null,
     health: { status: "running", active_workflows: 1, blocked: 1, failed_actions: 0, waiting: 1, resumable: 0 },
     control: { paused: false, paused_at: null, cancelled_at: null, replan_requested_at: null, replan_completed_at: null, last_error: null },
   } as AutonomousProjectSnapshot;

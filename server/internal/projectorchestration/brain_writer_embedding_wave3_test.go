@@ -22,9 +22,9 @@ func TestProjectBrainWritersPersistEmbeddings(t *testing.T) {
 	t.Setenv("MULTICA_PROJECT_BRAIN_EMBEDDING_API_KEY", "test-key")
 	t.Setenv("MULTICA_PROJECT_BRAIN_EMBEDDING_BASE_URL", server.URL)
 
-	fixture := newWave3ChangeFixture(t)
+	fixture := newWave3ChangeFixtureWithApprovedSpecification(t)
 	appendWave3DeltaToUnapprovedPlan(t, fixture,
-		NodeSpec{Key: "runtime-discovered", Kind: NodeImplementation, Title: "Runtime discovered login requirement", Description: "Retain a discovered authentication invariant", AcceptanceCriteria: []string{"Reject refresh token reuse."}, Risk: RiskLow, MaxAttempts: 2},
+		NodeSpec{Key: "runtime-discovered", Kind: NodeImplementation, Title: "Runtime discovered login requirement", Description: "Retain a discovered authentication invariant", RequirementIDs: []string{"REQ-1"}, AcceptanceCriteria: []string{"Reject refresh token reuse."}, Risk: RiskLow, MaxAttempts: 2},
 		"Runtime discovered authentication invariant",
 		map[string]any{"text": "Refresh token rotation must reject reused tokens."},
 	)
@@ -78,9 +78,9 @@ func TestBrainWritersRemainLocalWhenEmbeddingsDisabled(t *testing.T) {
 	t.Setenv("MULTICA_PROJECT_BRAIN_EMBEDDING_API_KEY", "")
 	t.Setenv("MULTICA_PROJECT_BRAIN_EMBEDDING_BASE_URL", server.URL)
 
-	fixture := newWave3ChangeFixture(t)
+	fixture := newWave3ChangeFixtureWithApprovedSpecification(t)
 	appendWave3DeltaToUnapprovedPlan(t, fixture,
-		NodeSpec{Key: "runtime-discovered", Kind: NodeImplementation, Title: "Runtime discovered local-only node", Description: "Keep the discovered task in local memory", AcceptanceCriteria: []string{"Keep discovered memory in the database."}, Risk: RiskLow, MaxAttempts: 2},
+		NodeSpec{Key: "runtime-discovered", Kind: NodeImplementation, Title: "Runtime discovered local-only node", Description: "Keep the discovered task in local memory", RequirementIDs: []string{"REQ-1"}, AcceptanceCriteria: []string{"Keep discovered memory in the database."}, Risk: RiskLow, MaxAttempts: 2},
 		"Runtime discovered local-only fact",
 		map[string]any{"text": "This discovery must remain in the local database."},
 	)

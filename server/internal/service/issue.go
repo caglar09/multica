@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/projectorchestration"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -101,6 +105,17 @@ type IssueCreateParams struct {
 // IssueCreateOpts groups optional knobs for IssueService.Create. Most
 // callers leave it zero-valued.
 type IssueCreateOpts struct {
+	// ManualIssueProvenance records an explicit human project-issue creation
+	// as provenance in the approval ledger. It does not make a project plan
+	// executable; autonomous work still requires the shared plan predicate.
+	ManualIssueProvenance *ManualIssueProvenance
+
+	// BeforeCommit runs after the issue and its transactional dependents have
+	// been inserted, but before they become visible. Callers may use it to bind
+	// the new issue to another durable record in the same transaction. Returning
+	// an error rolls back the issue and suppresses all post-commit side effects.
+	BeforeCommit func(ctx context.Context, tx pgx.Tx, issue db.Issue) error
+
 	// BroadcastPayload, if non-nil, is invoked after the issue row is
 	// created and attachments are linked. Its return value is sent as
 	// the EventIssueCreated payload via the event bus. The HTTP handler
@@ -139,6 +154,15 @@ type IssueCreateOpts struct {
 	AssignedAgentRunFireAt time.Time
 }
 
+// ManualIssueProvenance marks a transport path where an authenticated member
+// explicitly created the issue. The service records it only after resolving a
+// project scope and inserts the ledger row with the issue in the same tx.
+type ManualIssueProvenance struct {
+	ActorID        pgtype.UUID
+	ActorDisplay   string
+	SourceEndpoint string
+}
+
 // ErrActiveDuplicate signals that the duplicate guard found an active
 // issue with the same (workspace, project, parent, title) tuple and
 // AllowDuplicate was false. The IssueCreateResult.DuplicateIssue field is
@@ -158,6 +182,35 @@ var ErrParentIssueNotFound = errors.New("parent issue not found in this workspac
 // MCP / API key callers) enforces the same workspace boundary without
 // having to remember it. Callers translate this into 400.
 var ErrProjectNotFound = errors.New("project not found in this workspace")
+
+// ErrProjectPlanRequired signals an agent-created issue targeting a project
+// without a current, locally human-approved specification and executable plan.
+var ErrProjectPlanRequired = errors.New("project requires a current human-approved local specification and executable plan")
+
+// ProjectIssuePlanQuerier is the small query surface shared by issue creation
+// and quick-create queue admission.
+type ProjectIssuePlanQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// ProjectIssuePlanExecutable reports whether a project has a plan accepted by
+// the database's shared specification-and-plan execution predicate.
+func ProjectIssuePlanExecutable(ctx context.Context, q ProjectIssuePlanQuerier, workspaceID, projectID pgtype.UUID) (bool, error) {
+	if !workspaceID.Valid || !projectID.Valid {
+		return false, nil
+	}
+	var executable bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan p
+			WHERE p.workspace_id = $1
+			  AND p.project_id = $2
+			  AND autonomous_project_plan_executable(p.id)
+		)
+	`, workspaceID, projectID).Scan(&executable)
+	return executable, err
+}
 
 // ErrIssueLabelNotFound signals that one of the supplied LabelIDs does not
 // exist in the issue's workspace or is not an issue-scoped label. The whole
@@ -188,6 +241,34 @@ var ErrIssueStatusUnavailable = errors.New("issue status is no longer available"
 
 var ErrSourceContextAlreadyAttached = errors.New("source context is already attached")
 
+func recordManualProjectIssueProvenance(ctx context.Context, tx pgx.Tx, issue db.Issue, provenance ManualIssueProvenance) error {
+	if !provenance.ActorID.Valid || strings.TrimSpace(provenance.ActorDisplay) == "" || strings.TrimSpace(provenance.SourceEndpoint) == "" {
+		return errors.New("manual project issue provenance requires a human actor and source endpoint")
+	}
+	payload, err := json.Marshal(issue)
+	if err != nil {
+		return fmt.Errorf("encode manual project issue subject: %w", err)
+	}
+	digest := sha256.Sum256(payload)
+	return projectorchestration.RecordApprovalTx(ctx, tx, projectorchestration.ApprovalEvent{
+		WorkspaceID:     issue.WorkspaceID,
+		ProjectID:       issue.ProjectID,
+		IdempotencyKey:  "manual-issue:" + util.UUIDToString(issue.ID),
+		SubjectType:     "manual_issue",
+		SubjectID:       util.UUIDToString(issue.ID),
+		SubjectRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
+		SubjectDigest:   hex.EncodeToString(digest[:]),
+		Decision:        "approved",
+		ActorType:       "human",
+		ActorID:         provenance.ActorID,
+		ActorDisplay:    strings.TrimSpace(provenance.ActorDisplay),
+		Rationale:       "Explicit human-created project issue",
+		SourceEndpoint:  strings.TrimSpace(provenance.SourceEndpoint),
+		Origin:          "local",
+		OriginRef:       []byte(`{"intent":"direct_human_issue_creation"}`),
+	})
+}
+
 // IssueCreateResult is the typed return from IssueService.Create.
 //
 //   - On the happy path: Issue is the new row, Attachments lists the
@@ -216,14 +297,15 @@ type IssueCreateResult struct {
 //  3. Lock & check the duplicate guard.
 //  4. Increment the workspace issue counter.
 //  5. Insert the issue row (with optional origin stamping).
-//  6. Commit.
-//  7. Link any pre-uploaded attachments (post-commit, idempotent).
-//  8. For a media-gated channel issue, persist its deferred assigned-agent
+//  6. Run the optional BeforeCommit hook for same-transaction bindings.
+//  7. Commit.
+//  8. Link any pre-uploaded attachments (post-commit, idempotent).
+//  9. For a media-gated channel issue, persist its deferred assigned-agent
 //     task in the issue transaction so both rows become visible atomically.
 //     Ordinary creates keep their existing event-before-enqueue ordering.
-//  9. Publish EventIssueCreated to the bus (payload via opts.BroadcastPayload).
-//  10. Capture the IssueCreated analytics event.
-//  11. Enqueue the ordinary agent task or trigger the squad leader when the
+//  10. Publish EventIssueCreated to the bus (payload via opts.BroadcastPayload).
+//  11. Capture the IssueCreated analytics event.
+//  12. Enqueue the ordinary agent task or trigger the squad leader when the
 //     issue is assigned and not in `backlog`.
 //
 // Validation that lives in the service (parent existence, project
@@ -332,6 +414,15 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			WorkspaceID: p.WorkspaceID,
 		}); err != nil {
 			return IssueCreateResult{}, ErrProjectNotFound
+		}
+	}
+	if p.CreatorType == "agent" && projectID.Valid {
+		executable, err := ProjectIssuePlanExecutable(ctx, tx, p.WorkspaceID, projectID)
+		if err != nil {
+			return IssueCreateResult{}, fmt.Errorf("check project issue execution gate: %w", err)
+		}
+		if !executable {
+			return IssueCreateResult{}, ErrProjectPlanRequired
 		}
 	}
 
@@ -508,6 +599,16 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		assignedTask, err = s.TaskService.createDeferredChannelIssueTaskWithQueries(ctx, qtx, issue, opts.AssignedAgentRunFireAt)
 		if err != nil {
 			return IssueCreateResult{}, fmt.Errorf("create deferred channel issue task: %w", err)
+		}
+	}
+	if opts.ManualIssueProvenance != nil && issue.ProjectID.Valid {
+		if err := recordManualProjectIssueProvenance(ctx, tx, issue, *opts.ManualIssueProvenance); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("record manual project issue provenance: %w", err)
+		}
+	}
+	if opts.BeforeCommit != nil {
+		if err := opts.BeforeCommit(ctx, tx, issue); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("before-commit issue hook: %w", err)
 		}
 	}
 

@@ -18,8 +18,69 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
+func approveAutonomousDeploymentBridgeFixturePlan(t *testing.T, fixture *autonomousDeploymentBridgeFixture) {
+	t.Helper()
+	ctx := fixture.ctx
+	specification := projectorchestration.ProjectSpecification{
+		Goal:    "Restart-safe deployment bridge test",
+		Summary: "An exact local approval authorizes this runtime fixture.",
+		Requirements: []projectorchestration.SpecificationRequirement{{
+			ID: "REQ-RUNTIME-FIXTURE", Text: "Exercise the approved current runtime plan.",
+			Rationale: "Autonomous execution assertions require a locally approved specification.", Source: "test fixture",
+		}},
+		DefinitionOfDone: []string{"The runtime fixture plan is approved against the current specification digest."},
+	}
+	revision, err := projectorchestration.NewStore(fixture.pool).CreateSpecificationRevision(
+		ctx, fixture.workspaceID, fixture.projectID, "project_bootstrap", "workflowruntime-fixture-"+uuid.NewString(), specification, true,
+	)
+	if err != nil {
+		t.Fatalf("create approved runtime fixture specification: %v", err)
+	}
+	revisionID := d2ParseUUID(t, revision.ID)
+	recordLocalSpecificationApprovalForRuntimeFixture(t, fixture, revisionID, revision.Revision)
+	encodedSpecification, err := json.Marshal(specification.LegacySpecification())
+	if err != nil {
+		t.Fatalf("encode runtime fixture plan specification: %v", err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status='awaiting_approval', approved_at=NULL, approved_by=NULL,
+		    specification_revision_id=$2, goal=$3, specification=$4::jsonb
+		WHERE id=$1
+	`, fixture.planID, revisionID, specification.Goal, encodedSpecification); err != nil {
+		t.Fatalf("bind runtime fixture plan to approved specification: %v", err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan SET plan_digest=autonomous_project_plan_digest(id) WHERE id=$1
+	`, fixture.planID); err != nil {
+		t.Fatalf("refresh runtime fixture plan digest: %v", err)
+	}
+	var planDigest string
+	if err := fixture.pool.QueryRow(ctx, `SELECT plan_digest FROM autonomous_project_plan WHERE id=$1`, fixture.planID).Scan(&planDigest); err != nil {
+		t.Fatalf("read runtime fixture plan digest: %v", err)
+	}
+	approveCurrentRuntimePlan(t, fixture, planDigest)
+
+	manifest := fixture.manifest
+	manifest.ManifestID = uuid.NewString()
+	manifest.PlanDigest = planDigest
+	manifest.ManifestDigest = ""
+	manifest, err = projectorchestration.SealReleaseManifest(manifest)
+	if err != nil {
+		t.Fatalf("seal runtime fixture manifest against approved plan: %v", err)
+	}
+	insertReleaseManifest(t, fixture, manifest)
+	if _, err := fixture.pool.Exec(ctx, `
+		UPDATE autonomous_project_plan SET release_manifest_id=$2, release_manifest_digest=$3 WHERE id=$1
+	`, fixture.planID, d2ParseUUID(t, manifest.ManifestID), manifest.ManifestDigest); err != nil {
+		t.Fatalf("pin approved runtime fixture manifest: %v", err)
+	}
+	fixture.manifest = manifest
+}
+
 func TestApprovalVerification_RejectsReusedNodeKey(t *testing.T) {
 	fixture := newAutonomousDeploymentBridgeFixture(t)
+	approveAutonomousDeploymentBridgeFixturePlan(t, fixture)
 	cleanupSafetyEscalations(t, fixture)
 	stagingManifest := addManifestEnvironment(t, fixture, "staging")
 	insertHealthyStagingDeployment(t, fixture, stagingManifest)
@@ -78,6 +139,7 @@ func TestApprovalVerification_RejectsReusedNodeKey(t *testing.T) {
 
 func TestDeployment_TriggersRollbackOnHealthFailure(t *testing.T) {
 	fixture := newAutonomousDeploymentBridgeFixture(t)
+	approveAutonomousDeploymentBridgeFixturePlan(t, fixture)
 	targetManifest := fixture.manifest
 	targetManifest.ManifestID = uuid.NewString()
 	targetManifest.CommitSHA = strings.Repeat("a", 40)
@@ -150,6 +212,7 @@ func TestDeployment_TriggersRollbackOnHealthFailure(t *testing.T) {
 
 func TestProductionDeployment_RequiresExactHumanManifestApproval(t *testing.T) {
 	fixture := newAutonomousDeploymentBridgeFixture(t)
+	approveAutonomousDeploymentBridgeFixturePlan(t, fixture)
 	cleanupSafetyEscalations(t, fixture)
 	stagingManifest := addManifestEnvironment(t, fixture, "staging")
 	insertHealthyStagingDeployment(t, fixture, stagingManifest)
@@ -203,6 +266,7 @@ func TestProductionDeployment_RequiresExactHumanManifestApproval(t *testing.T) {
 func TestDeployment_StagesBeforeProductionPromotion(t *testing.T) {
 	t.Run("healthy staging requires exact approval before production", func(t *testing.T) {
 		fixture := newAutonomousDeploymentBridgeFixture(t)
+		approveAutonomousDeploymentBridgeFixturePlan(t, fixture)
 		cleanupSafetyEscalations(t, fixture)
 		stageManifest := addManifestEnvironment(t, fixture, "staging")
 		provider := newSafetyPromotionProvider(t, true)
@@ -258,6 +322,7 @@ func TestDeployment_StagesBeforeProductionPromotion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newAutonomousDeploymentBridgeFixture(t)
+			approveAutonomousDeploymentBridgeFixturePlan(t, fixture)
 			cleanupSafetyEscalations(t, fixture)
 			stageManifest := addManifestEnvironment(t, fixture, "staging")
 			provider := newSafetyPromotionProvider(t, tc.smokePassed)

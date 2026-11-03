@@ -712,6 +712,15 @@ func (r *Runtime) planProjectRevision(
 			retErr = nil
 		}
 	}()
+	approvedSpecification, approved, err := r.projectStore.LoadHumanApprovedSpecification(ctx, workspaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("load human-approved project specification: %w", err)
+	}
+	if !approved {
+		// The PM proposal remains approval-required. Waiting for its owner is a
+		// normal planning state, so it must not enter the scheduler error path.
+		return nil
+	}
 	project, err := r.taskSvc.Queries.GetProjectInWorkspace(ctx, dbGetProjectParams(projectID, workspaceID))
 	if err != nil {
 		return fmt.Errorf("load project for durable planning: %w", err)
@@ -747,13 +756,8 @@ func (r *Runtime) planProjectRevision(
 		currentPlan = &current
 	}
 	var projectSpecification *projectorchestration.ProjectSpecification
-	specificationRevisionID := ""
-	if revision, exists, loadErr := r.projectStore.LoadLatestSpecification(ctx, workspaceID, projectID); loadErr != nil {
-		return fmt.Errorf("load authoritative project specification: %w", loadErr)
-	} else if exists {
-		projectSpecification = &revision.Specification
-		specificationRevisionID = revision.ID
-	}
+	projectSpecification = &approvedSpecification.Specification
+	specificationRevisionID := approvedSpecification.ID
 	if err := r.refreshRepositoryIntelligence(ctx, workspaceID, projectID); err != nil {
 		slog.Warn("repository intelligence refresh failed; planning without fresh snapshot",
 			"project_id", util.UUIDToString(projectID),
@@ -780,17 +784,6 @@ func (r *Runtime) planProjectRevision(
 	})
 	if err != nil {
 		return err
-	}
-	if projectSpecification == nil {
-		specification, err := projectorchestration.ProjectSpecificationFromPlan(plan)
-		if err != nil {
-			return fmt.Errorf("initial plan cannot establish a versioned project specification: %w", err)
-		}
-		revision, err := r.projectStore.CreateSpecificationRevision(ctx, workspaceID, projectID, "project_bootstrap", sourceRevision, specification, true)
-		if err != nil {
-			return fmt.Errorf("persist initial project specification: %w", err)
-		}
-		plan.SpecificationRevisionID = revision.ID
 	}
 	_, err = r.projectStore.PersistPlan(
 		ctx, workspaceID, projectID, sourceRevision,
@@ -1680,6 +1673,13 @@ func (r *Runtime) ensureMaterializedProjectNodeAssignment(
 	if node.MaterializedIssueID == "" || (node.Status != "pending" && node.Status != "ready") {
 		return false, nil
 	}
+	executable, err := r.isProjectNodePlanExecutable(ctx, workspaceID, projectID, node.ID)
+	if err != nil {
+		return false, fmt.Errorf("check executable plan for project node %q: %w", node.Key, err)
+	}
+	if !executable {
+		return false, fmt.Errorf("project plan for node %q is not executable", node.Key)
+	}
 	if r == nil || r.taskSvc == nil || r.taskSvc.Queries == nil || r.team == nil || r.projectStore == nil {
 		return false, errors.New("project assignment services are not configured")
 	}
@@ -1834,6 +1834,20 @@ func (r *Runtime) ensureProjectNodeIssue(
 	workspaceID, projectID pgtype.UUID,
 	node projectorchestration.PlannedNode,
 ) error {
+	executable, err := r.isProjectNodePlanExecutable(ctx, workspaceID, projectID, node.ID)
+	if err != nil {
+		return fmt.Errorf("check executable plan for project node %q: %w", node.Key, err)
+	}
+	if !executable {
+		return fmt.Errorf("project plan for node %q is not executable", node.Key)
+	}
+	if r.projectStore == nil || r.issueSvc == nil || r.team == nil {
+		return errors.New("project issue materialization services are not configured")
+	}
+	nodeID, err := util.ParseUUID(node.ID)
+	if err != nil {
+		return fmt.Errorf("parse project plan node %q id: %w", node.Key, err)
+	}
 	team, ok, err := r.team.FindProject(ctx, workspaceID, projectID)
 	if err != nil {
 		return err
@@ -1845,15 +1859,6 @@ func (r *Runtime) ensureProjectNodeIssue(
 	if err != nil {
 		return err
 	}
-	var ownerUserID pgtype.UUID
-	if err := r.pool.QueryRow(ctx, `
-		SELECT owner_user_id
-		FROM autonomous_project_team
-		WHERE workspace_id = $1 AND project_id = $2 AND status = 'active'
-	`, workspaceID, projectID).Scan(&ownerUserID); err != nil {
-		return fmt.Errorf("resolve project accountable user: %w", err)
-	}
-
 	criteria := ""
 	if len(node.AcceptanceCriteria) > 0 {
 		var b strings.Builder
@@ -1885,16 +1890,23 @@ func (r *Runtime) ensureProjectNodeIssue(
 		Priority:       projectNodePriority(node.Priority),
 		AssigneeType:   pgtype.Text{String: "agent", Valid: true},
 		AssigneeID:     agentID,
-		CreatorType:    "member",
-		CreatorID:      ownerUserID,
+		CreatorType:    "agent",
+		CreatorID:      agentID,
 		ProjectID:      projectID,
 		AllowDuplicate: false,
 	}, service.IssueCreateOpts{
-		ActorID:          util.UUIDToString(ownerUserID),
+		BeforeCommit: func(hookCtx context.Context, tx pgx.Tx, created db.Issue) error {
+			return r.projectStore.BindNodeIssueTx(
+				hookCtx, tx, workspaceID, projectID, nodeID, node.Key,
+				created.ID, role, agentID,
+			)
+		},
+		ActorID:          util.UUIDToString(agentID),
 		AnalyticsAgentID: util.UUIDToString(agentID),
 		Platform:         "autonomous",
 	})
 	var issue db.Issue
+	createdByCall := err == nil
 	switch {
 	case errors.Is(err, service.ErrActiveDuplicate) && res.DuplicateIssue != nil:
 		issue = *res.DuplicateIssue
@@ -1903,10 +1915,12 @@ func (r *Runtime) ensureProjectNodeIssue(
 	default:
 		issue = res.Issue
 	}
-	if err := r.projectStore.BindNodeIssue(
-		ctx, workspaceID, projectID, node.Key, issue.ID, role, agentID,
-	); err != nil {
-		return err
+	if !createdByCall {
+		if err := r.projectStore.BindNodeIssue(
+			ctx, workspaceID, projectID, node.Key, issue.ID, role, agentID,
+		); err != nil {
+			return err
+		}
 	}
 	if node.Status == "ready" && issue.Status == issuestatus.Backlog {
 		if _, err := r.taskSvc.SetIssueStatusForWorkflow(ctx, issue.ID, issuestatus.Todo); err != nil {
@@ -1914,6 +1928,31 @@ func (r *Runtime) ensureProjectNodeIssue(
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) isProjectNodePlanExecutable(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	nodeID string,
+) (bool, error) {
+	if r == nil || r.pool == nil {
+		return false, errors.New("project runtime database is not configured")
+	}
+	var executable bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM autonomous_project_plan_node n
+			JOIN autonomous_project_plan p ON p.id = n.plan_id
+			WHERE n.id = $1::uuid
+			  AND n.workspace_id = $2
+			  AND n.project_id = $3
+			  AND p.workspace_id = $2
+			  AND p.project_id = $3
+			  AND autonomous_project_plan_executable(p.id)
+		)
+	`, nodeID, workspaceID, projectID).Scan(&executable)
+	return executable, err
 }
 
 func (r *Runtime) canonicalGoalReviewContextForNode(
@@ -1931,7 +1970,7 @@ func (r *Runtime) canonicalGoalReviewContextForNode(
 		JOIN autonomous_project_plan p ON p.id=n.plan_id
 		WHERE n.id=$1::uuid AND n.workspace_id=$2 AND n.project_id=$3
 		  AND p.workspace_id=$2 AND p.project_id=$3
-		  AND p.status IN ('active','blocked')
+		  AND autonomous_project_plan_executable(p.id)
 		ORDER BY p.revision DESC
 		LIMIT 1
 	`, nodeID, workspaceID, projectID).Scan(&planSpecificationRevisionID)

@@ -168,22 +168,46 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 }
 
 func cleanupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
 	var hasClientUsageTable bool
-	if err := pool.QueryRow(ctx, `SELECT to_regclass('client_usage_daily') IS NOT NULL`).Scan(&hasClientUsageTable); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('client_usage_daily') IS NOT NULL`).Scan(&hasClientUsageTable); err != nil {
 		return err
 	}
 	if hasClientUsageTable {
-		if _, err := pool.Exec(ctx, `DELETE FROM client_usage_daily WHERE user_id IN (SELECT id FROM "user" WHERE email = $1)`, handlerTestEmail); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM client_usage_daily WHERE user_id IN (SELECT id FROM "user" WHERE email = $1)`, handlerTestEmail); err != nil {
 			return err
 		}
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, handlerTestWorkspaceSlug); err != nil {
+	if _, err := tx.Exec(ctx, `SET LOCAL multica.approval_purge = 'on'`); err != nil {
 		return err
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, handlerTestEmail); err != nil {
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM autonomous_project_approval_event
+		WHERE workspace_id IN (SELECT id FROM workspace WHERE slug = $1)
+	`, handlerTestWorkspaceSlug); err != nil {
 		return err
 	}
-	return nil
+	for _, query := range []string{
+		`DELETE FROM autonomous_project_plan_node WHERE workspace_id IN (SELECT id FROM workspace WHERE slug = $1)`,
+		`DELETE FROM autonomous_project_plan_edge WHERE workspace_id IN (SELECT id FROM workspace WHERE slug = $1)`,
+		`DELETE FROM autonomous_project_plan WHERE workspace_id IN (SELECT id FROM workspace WHERE slug = $1)`,
+	} {
+		if _, err := tx.Exec(ctx, query, handlerTestWorkspaceSlug); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, handlerTestWorkspaceSlug); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, handlerTestEmail); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func newRequest(method, path string, body any) *http.Request {
@@ -1190,7 +1214,7 @@ func TestAutopilotCreateIssueAssociatesConfiguredProject(t *testing.T) {
 	ctx := context.Background()
 	title := fmt.Sprintf("Autopilot project issue %d", time.Now().UnixNano())
 	var autopilotID, issueID, projectID string
-	defer func() {
+	t.Cleanup(func() {
 		if issueID != "" {
 			testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 		}
@@ -1200,13 +1224,14 @@ func TestAutopilotCreateIssueAssociatesConfiguredProject(t *testing.T) {
 		if projectID != "" {
 			testPool.Exec(ctx, `DELETE FROM project WHERE id = $1`, projectID)
 		}
-	}()
+	})
 
 	dbfx.QueryRow(t, `
 		INSERT INTO project (workspace_id, title)
 		VALUES ($1, $2)
 		RETURNING id::text
 	`, testWorkspaceID, "Autopilot project target").Scan(&projectID)
+	seedApprovedProjectIssuePlanFixture(t, projectID)
 
 	var agentID string
 	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID)
@@ -1255,7 +1280,7 @@ func TestAutopilotDispatchUsesCurrentProjectBinding(t *testing.T) {
 	ctx := context.Background()
 	title := fmt.Sprintf("Autopilot stale project issue %d", time.Now().UnixNano())
 	var autopilotID, issueID, projectAID, projectBID string
-	defer func() {
+	t.Cleanup(func() {
 		if issueID != "" {
 			testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 		}
@@ -1268,7 +1293,7 @@ func TestAutopilotDispatchUsesCurrentProjectBinding(t *testing.T) {
 		if projectBID != "" {
 			testPool.Exec(ctx, `DELETE FROM project WHERE id = $1`, projectBID)
 		}
-	}()
+	})
 
 	dbfx.QueryRow(t, `
 		INSERT INTO project (workspace_id, title)
@@ -1280,6 +1305,8 @@ func TestAutopilotDispatchUsesCurrentProjectBinding(t *testing.T) {
 		VALUES ($1, $2)
 		RETURNING id::text
 	`, testWorkspaceID, "Autopilot stale project B").Scan(&projectBID)
+	seedApprovedProjectIssuePlanFixture(t, projectAID)
+	seedApprovedProjectIssuePlanFixture(t, projectBID)
 
 	var agentID string
 	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID)

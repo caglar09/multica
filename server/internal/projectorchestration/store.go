@@ -133,6 +133,8 @@ func (s *Store) ResumeCompletedPlanForDiscoveredWork(
 		  AND p.workspace_id = $2
 		  AND p.project_id = $3
 		  AND p.status = 'completed'
+		  AND p.specification_revision_id IS NOT NULL
+		  AND autonomous_project_specification_approved(p.specification_revision_id)
 		  AND NOT EXISTS (
 		      SELECT 1
 		      FROM autonomous_project_plan newer
@@ -159,6 +161,19 @@ func (s *Store) ResumeCompletedPlanForDiscoveredWork(
 	}
 	if status == "active" || status == "blocked" {
 		return nil
+	}
+	if status == "completed" {
+		var specificationApproved bool
+		if err := s.pool.QueryRow(ctx, `
+			SELECT COALESCE(autonomous_project_specification_approved(specification_revision_id), FALSE)
+			FROM autonomous_project_plan
+			WHERE id = $1 AND workspace_id = $2 AND project_id = $3
+		`, planID, workspaceID, projectID).Scan(&specificationApproved); err != nil {
+			return err
+		}
+		if !specificationApproved {
+			return ErrPlanApprovalRequired
+		}
 	}
 	return fmt.Errorf("project plan cannot be resumed from status %q", status)
 }
@@ -454,7 +469,8 @@ func (s *Store) RefreshReady(ctx context.Context, workspaceID, projectID pgtype.
 	if err := tx.QueryRow(ctx, `
 		SELECT id
 		FROM autonomous_project_plan
-		WHERE workspace_id = $1 AND project_id = $2 AND status IN ('active', 'blocked')
+		WHERE workspace_id = $1 AND project_id = $2
+		  AND autonomous_project_plan_executable(id)
 		ORDER BY revision DESC
 		LIMIT 1
 		FOR UPDATE
@@ -491,10 +507,7 @@ func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
 		FROM autonomous_project_plan p
 		WHERE n.plan_id = $1
 		  AND p.id = n.plan_id
-		  AND p.status = 'active'
-		  AND NULLIF(p.plan_digest, '') IS NOT NULL
-		  AND p.approved_at IS NOT NULL
-		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
+		  AND autonomous_project_plan_executable(p.id)
 		  AND n.status = 'pending'
 		  AND NOT EXISTS (
 			SELECT 1
@@ -543,6 +556,21 @@ func refreshReadyTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) error {
 		return fmt.Errorf("refresh ready project plan nodes: %w", err)
 	}
 	return nil
+}
+
+func prepareExecutablePlanForRetryTx(ctx context.Context, tx pgx.Tx, planID pgtype.UUID) (bool, error) {
+	if _, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan
+		SET status = 'active', updated_at = now()
+		WHERE id = $1 AND status = 'blocked'
+	`, planID); err != nil {
+		return false, err
+	}
+	var executable bool
+	if err := tx.QueryRow(ctx, `SELECT autonomous_project_plan_executable($1)`, planID).Scan(&executable); err != nil {
+		return false, err
+	}
+	return executable, nil
 }
 
 func normalizePlanArtifactEdges(plan *Plan) {
@@ -609,10 +637,7 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		WHERE p.workspace_id = $1
 		  AND p.project_id = $2
-		  AND p.status = 'active'
-		  AND NULLIF(p.plan_digest, '') IS NOT NULL
-		  AND p.approved_at IS NOT NULL
-		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
+		  AND autonomous_project_plan_executable(p.id)
 		  AND n.is_epic = FALSE
 		  AND n.status IN ('running', 'verification')
 	`, workspaceID, projectID).Scan(&running); err != nil {
@@ -636,10 +661,7 @@ func (s *Store) ListReadyNodes(ctx context.Context, workspaceID, projectID pgtyp
 		  ON c.project_id = n.project_id AND c.workspace_id = n.workspace_id
 		WHERE n.workspace_id = $1
 		  AND n.project_id = $2
-		  AND p.status = 'active'
-		  AND NULLIF(p.plan_digest, '') IS NOT NULL
-		  AND p.approved_at IS NOT NULL
-		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
+		  AND autonomous_project_plan_executable(p.id)
 		  AND n.status = 'ready'
 		  AND COALESCE(c.paused, FALSE) = FALSE
 		ORDER BY n.priority DESC, n.ready_at ASC, n.created_at ASC
@@ -696,7 +718,7 @@ func (s *Store) ListPlanNodes(
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		WHERE n.workspace_id = $1
 		  AND n.project_id = $2
-		  AND p.status IN ('active', 'blocked')
+		  AND autonomous_project_plan_executable(p.id)
 		  AND n.status NOT IN ('completed', 'cancelled')
 		ORDER BY n.priority DESC, n.created_at ASC, n.node_key ASC
 		LIMIT $3
@@ -756,13 +778,77 @@ func (s *Store) BindNodeIssue(
 		  AND n.workspace_id = $1
 		  AND n.project_id = $2
 		  AND n.node_key = $3
-		  AND p.status = 'active'
-		  AND NULLIF(p.plan_digest, '') IS NOT NULL
-		  AND p.approved_at IS NOT NULL
-		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
+		  AND autonomous_project_plan_executable(p.id)
 		  AND n.status NOT IN ('completed', 'cancelled')
 		  AND (n.materialized_issue_id IS NULL OR n.materialized_issue_id = $4)
 	`, workspaceID, projectID, nodeKey, issueID, assignedRole, assignedAgentID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("project plan node %q cannot bind issue", nodeKey)
+	}
+	return nil
+}
+
+func (s *Store) BindNodeIssueTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	workspaceID, projectID, nodeID pgtype.UUID,
+	nodeKey string,
+	issueID pgtype.UUID,
+	assignedRole string,
+	assignedAgentID pgtype.UUID,
+) error {
+	if tx == nil || !workspaceID.Valid || !projectID.Valid || !nodeID.Valid || !issueID.Valid {
+		return errors.New("workspace, project, node, and issue ids are required for transactional binding")
+	}
+	var planID pgtype.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT p.id
+		FROM autonomous_project_plan_node n
+		JOIN autonomous_project_plan p ON p.id = n.plan_id
+		WHERE n.id = $1
+		  AND n.node_key = $2
+		  AND n.workspace_id = $3
+		  AND n.project_id = $4
+		  AND p.workspace_id = $3
+		  AND p.project_id = $4
+		FOR UPDATE OF p, n
+	`, nodeID, nodeKey, workspaceID, projectID).Scan(&planID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("project plan node %q cannot bind issue", nodeKey)
+		}
+		return err
+	}
+	var executable bool
+	if err := tx.QueryRow(ctx, `
+		SELECT autonomous_project_plan_executable($1)
+	`, planID).Scan(&executable); err != nil {
+		return err
+	}
+	if !executable {
+		return fmt.Errorf("project plan node %q cannot bind issue because its plan is not executable", nodeKey)
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE autonomous_project_plan_node n
+		SET materialized_issue_id = $5,
+		    assigned_role = COALESCE(NULLIF($6, ''), n.assigned_role),
+		    assigned_agent_id = CASE WHEN $7::uuid IS NULL THEN n.assigned_agent_id ELSE $7 END,
+		    updated_at = now()
+		FROM autonomous_project_plan p
+		WHERE n.plan_id = p.id
+		  AND p.id = $1
+		  AND n.id = $2
+		  AND n.node_key = $3
+		  AND n.workspace_id = $4
+		  AND n.project_id = $8
+		  AND p.workspace_id = $4
+		  AND p.project_id = $8
+		  AND autonomous_project_plan_executable(p.id)
+		  AND n.status NOT IN ('completed', 'cancelled')
+		  AND (n.materialized_issue_id IS NULL OR n.materialized_issue_id = $5)
+	`, planID, nodeID, nodeKey, workspaceID, issueID, assignedRole, assignedAgentID, projectID)
 	if err != nil {
 		return err
 	}
@@ -818,10 +904,7 @@ func (s *Store) ClaimReadyNode(
 		  AND n.status = 'ready'
 		  AND n.is_epic = FALSE
 		  AND n.attempt < n.max_attempts
-		  AND p.status = 'active'
-		  AND NULLIF(p.plan_digest, '') IS NOT NULL
-		  AND p.approved_at IS NOT NULL
-		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
+		  AND autonomous_project_plan_executable(p.id)
 	`, workspaceID, projectID, nodeKey)
 	if err != nil {
 		return err
@@ -833,7 +916,7 @@ func (s *Store) ClaimReadyNode(
 			FROM autonomous_project_plan_node n
 			JOIN autonomous_project_plan p ON p.id=n.plan_id
 			WHERE n.workspace_id=$1 AND n.project_id=$2 AND n.node_key=$3
-			  AND p.status IN ('active','blocked')
+			  AND autonomous_project_plan_executable(p.id)
 			ORDER BY p.revision DESC LIMIT 1
 		`, workspaceID, projectID, nodeKey).Scan(&exhausted); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -930,7 +1013,7 @@ func (s *Store) SetNodeBlocked(
 		  AND n.workspace_id = $1
 		  AND n.project_id = $2
 		  AND n.node_key = $3
-		  AND p.status IN ('active', 'blocked')
+		  AND autonomous_project_plan_executable(p.id)
 		  AND n.status NOT IN ('completed', 'cancelled')
 	`, workspaceID, projectID, nodeKey, category, reason)
 	return err
@@ -1003,8 +1086,9 @@ func (s *Store) ResumeBlockedNode(
 	defer tx.Rollback(ctx)
 
 	var planID pgtype.UUID
+	var planStatus string
 	if err := tx.QueryRow(ctx, `
-		SELECT n.plan_id
+		SELECT n.plan_id, p.status
 		FROM autonomous_project_plan_node n
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		WHERE n.workspace_id = $1
@@ -1015,12 +1099,21 @@ func (s *Store) ResumeBlockedNode(
 		  AND p.status IN ('active', 'blocked')
 		ORDER BY p.revision DESC
 		LIMIT 1
-		FOR UPDATE OF n
-	`, workspaceID, projectID, nodeKey).Scan(&planID); err != nil {
+		FOR UPDATE OF n, p
+	`, workspaceID, projectID, nodeKey).Scan(&planID, &planStatus); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
 		return false, err
+	}
+	if planStatus == "active" {
+		var executable bool
+		if err := tx.QueryRow(ctx, `SELECT autonomous_project_plan_executable($1)`, planID).Scan(&executable); err != nil {
+			return false, err
+		}
+		if !executable {
+			return false, tx.Commit(ctx)
+		}
 	}
 
 	var depsSatisfied bool
@@ -1069,6 +1162,16 @@ func (s *Store) ResumeBlockedNode(
 	if !depsSatisfied {
 		return false, tx.Commit(ctx)
 	}
+	if planStatus == "blocked" {
+		executable, err := prepareExecutablePlanForRetryTx(ctx, tx, planID)
+		if err != nil {
+			return false, err
+		}
+		if !executable {
+			_ = tx.Rollback(ctx)
+			return false, nil
+		}
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node
 		SET status = 'ready',
@@ -1081,13 +1184,6 @@ func (s *Store) ResumeBlockedNode(
 		  AND node_key = $3
 		  AND status = 'blocked'
 	`, workspaceID, projectID, nodeKey); err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE autonomous_project_plan
-		SET status = 'active', updated_at = now()
-		WHERE id = $1 AND status = 'blocked'
-	`, planID); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -1121,8 +1217,11 @@ func (s *Store) ResumeNodeForWorkflowRetry(
 
 	var nodeID, planID pgtype.UUID
 	var status, category string
+	var planStatus string
+	var executable bool
 	err = tx.QueryRow(ctx, `
-		SELECT n.id, n.plan_id, n.status, COALESCE(n.blocked_category, '')
+		SELECT n.id, n.plan_id, n.status, COALESCE(n.blocked_category, ''), p.status,
+		       autonomous_project_plan_executable(p.id)
 		FROM autonomous_project_plan_node n
 		JOIN autonomous_project_plan p ON p.id = n.plan_id
 		WHERE n.workspace_id = $1
@@ -1131,15 +1230,14 @@ func (s *Store) ResumeNodeForWorkflowRetry(
 		  AND n.status NOT IN ('completed', 'cancelled')
 		ORDER BY p.revision DESC, n.updated_at DESC
 		LIMIT 1
-		FOR UPDATE OF n
-	`, workspaceID, issueID).Scan(&nodeID, &planID, &status, &category)
+		FOR UPDATE OF n, p
+	`, workspaceID, issueID).Scan(&nodeID, &planID, &status, &category, &planStatus, &executable)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return true, tx.Commit(ctx)
 	}
 	if err != nil {
 		return false, err
 	}
-
 	switch status {
 	case "running", "verification":
 		return true, tx.Commit(ctx)
@@ -1204,6 +1302,18 @@ func (s *Store) ResumeNodeForWorkflowRetry(
 	if !depsSatisfied {
 		return false, tx.Commit(ctx)
 	}
+	if planStatus == "blocked" {
+		executable, err = prepareExecutablePlanForRetryTx(ctx, tx, planID)
+		if err != nil {
+			return false, err
+		}
+		if !executable {
+			_ = tx.Rollback(ctx)
+			return false, nil
+		}
+	} else if !executable {
+		return false, tx.Commit(ctx)
+	}
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE autonomous_project_plan_node
@@ -1214,13 +1324,6 @@ func (s *Store) ResumeNodeForWorkflowRetry(
 		    updated_at = now()
 		WHERE id = $1
 	`, nodeID); err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE autonomous_project_plan
-		SET status = 'active', updated_at = now()
-		WHERE id = $1 AND status = 'blocked'
-	`, planID); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1386,20 +1489,44 @@ func (s *Store) ResumePlanAfterNodeRetry(
 	ctx context.Context,
 	workspaceID, projectID pgtype.UUID,
 ) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE autonomous_project_plan
-		SET status = 'active', updated_at = now()
-		WHERE workspace_id = $1
-		  AND project_id = $2
-		  AND status = 'blocked'
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var planID pgtype.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT p.id
+		FROM autonomous_project_plan p
+		WHERE p.workspace_id = $1
+		  AND p.project_id = $2
+		  AND p.status = 'blocked'
 		  AND EXISTS (
 			SELECT 1
 			FROM autonomous_project_plan_node n
-			WHERE n.plan_id = autonomous_project_plan.id
+			WHERE n.plan_id = p.id
 			  AND n.status IN ('ready', 'running', 'verification')
 		  )
-	`, workspaceID, projectID)
-	return err
+		ORDER BY p.revision DESC
+		LIMIT 1
+		FOR UPDATE OF p
+	`, workspaceID, projectID).Scan(&planID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	executable, err := prepareExecutablePlanForRetryTx(ctx, tx, planID)
+	if err != nil {
+		return err
+	}
+	if !executable {
+		_ = tx.Rollback(ctx)
+		return nil
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) CompleteNodeByIssue(ctx context.Context, workspaceID, issueID pgtype.UUID) error {
@@ -1667,10 +1794,7 @@ func (s *Store) StartExternalNode(
 		  AND n.status = 'ready'
 		  AND n.is_epic = FALSE
 		  AND n.attempt < n.max_attempts
-		  AND p.status = 'active'
-		  AND NULLIF(p.plan_digest, '') IS NOT NULL
-		  AND p.approved_at IS NOT NULL
-		  AND p.plan_digest = autonomous_project_plan_digest(p.id)
+		  AND autonomous_project_plan_executable(p.id)
 	`, workspaceID, projectID, nodeKey)
 	if err != nil {
 		return pgtype.UUID{}, pgtype.UUID{}, err

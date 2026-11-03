@@ -63,6 +63,42 @@ func TestCompileProjectLeaderProposalAllowsPendingPatch(t *testing.T) {
 	}
 }
 
+func TestValidateProjectLeaderSpecificationProposal(t *testing.T) {
+	proposal := ProjectLeaderSpecificationProposal{
+		ProposalID: "initial-spec-1",
+		Rationale:  "The user's brief needs explicit, testable requirements before planning.",
+		Specification: ProjectSpecification{
+			Goal:    "Create a reviewable project plan",
+			Summary: "Capture scope before generating executable work.",
+			Requirements: []SpecificationRequirement{{
+				ID: "REQ-001", Text: "The PM records each requirement with its source.",
+				Rationale: "Reviewers need to trace requirements to user intent.", Source: "project brief",
+			}},
+			DefinitionOfDone: []string{"An owner can review the specification before planning."},
+		},
+	}
+	if err := ValidateProjectLeaderResponse(ProjectLeaderResponse{
+		Message:               "Here is the initial specification draft.",
+		SpecificationProposal: &proposal,
+	}); err != nil {
+		t.Fatalf("validate initial specification proposal: %v", err)
+	}
+
+	invalid := proposal
+	invalid.Specification.Requirements = nil
+	if err := ValidateProjectLeaderSpecificationProposal(invalid); err == nil {
+		t.Fatal("validate initial specification without requirements, want error")
+	}
+
+	if err := ValidateProjectLeaderResponse(ProjectLeaderResponse{
+		Message:               "Ambiguous response.",
+		Proposal:              &ProjectChangeProposal{ProposalID: "change-1"},
+		SpecificationProposal: &proposal,
+	}); err == nil {
+		t.Fatal("validate response with two proposal types, want error")
+	}
+}
+
 func TestValidateProjectChangeProposalRejectsUnknownPatchField(t *testing.T) {
 	id := uuid.New()
 	err := ValidateProjectChangeProposal(ProjectChangeProposal{

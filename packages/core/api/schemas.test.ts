@@ -68,6 +68,7 @@ import {
   EMPTY_PLUGIN_PREVIEW,
   DeploymentLogResultSchema,
   EMPTY_DEPLOYMENT_LOG_RESULT,
+  PortabilityPreviewSchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -81,6 +82,67 @@ import {
   AutonomousProjectPlanSnapshotSchema,
   AutonomousProjectSnapshotFieldsSchema,
 } from "./schemas";
+import {
+  ApproveProjectSpecificationResponseSchema,
+  RejectProjectSpecificationResponseSchema,
+} from "./schemas";
+
+describe("PortabilityPreviewSchema parses approval conflicts and specification changes", () => {
+  it("accepts conflict details and defaults them for older servers", () => {
+    const parsed = PortabilityPreviewSchema.parse({
+      project_action: "update",
+      project_changes: [],
+      tasks: [],
+      warnings: [],
+      approval_conflicts: ["approved specification revision has conflicting digests"],
+      specification_changes: ["incoming specification history ends before local imported head"],
+    });
+    expect(parsed.approval_conflicts).toEqual(["approved specification revision has conflicting digests"]);
+    expect(parsed.specification_changes).toEqual(["incoming specification history ends before local imported head"]);
+    expect(PortabilityPreviewSchema.parse({ project_action: "unchanged", project_changes: [], warnings: [] })).toMatchObject({
+      approval_conflicts: [],
+      specification_changes: [],
+    });
+  });
+});
+
+describe("project specification approval responses", () => {
+  const digest = "a".repeat(64);
+
+  it("accepts complete approval and rejection responses", () => {
+    expect(ApproveProjectSpecificationResponseSchema.parse({
+      approved: true,
+      change_request_id: "change-1",
+      specification_revision_id: "spec-1",
+      specification_revision: 2,
+      specification_digest: digest,
+    })).toMatchObject({ approved: true, specification_revision: 2, specification_digest: digest });
+    expect(RejectProjectSpecificationResponseSchema.parse({
+      rejected: true,
+      change_request_id: "change-1",
+      specification_revision_id: "spec-1",
+      specification_revision: 2,
+      specification_digest: digest,
+    })).toMatchObject({ rejected: true, specification_revision: 2, specification_digest: digest });
+  });
+
+  it("rejects malformed lifecycle fields", () => {
+    expect(ApproveProjectSpecificationResponseSchema.safeParse({
+      approved: "yes",
+      change_request_id: "change-1",
+      specification_revision_id: "spec-1",
+      specification_revision: 2,
+      specification_digest: digest,
+    }).success).toBe(false);
+    expect(RejectProjectSpecificationResponseSchema.safeParse({
+      rejected: true,
+      change_request_id: "change-1",
+      specification_revision_id: "spec-1",
+      specification_revision: "2",
+      specification_digest: digest,
+    }).success).toBe(false);
+  });
+});
 
 describe("autonomous project snapshot compatibility", () => {
   it("defaults partial and hierarchy fields for older responses", () => {
@@ -89,6 +151,60 @@ describe("autonomous project snapshot compatibility", () => {
       missing_sections: [],
       quality_gates: [],
       deployments: [],
+      specification: null,
+    });
+
+    expect(AutonomousProjectSnapshotFieldsSchema.parse({
+      specification: {
+        revision_id: "spec-1",
+        revision: 2,
+        digest: "a".repeat(64),
+        source_kind: "change_request",
+        status: "awaiting_approval",
+        is_proposal: true,
+        change_request_id: "change-1",
+        specification: {
+          summary: "A reviewed specification",
+          goal: "Ship an approved feature",
+          requirements: [{ id: "REQ-1", text: "Ship it", rationale: "Required", source: "brief" }],
+        },
+        approval_history: [{
+          id: "event-1",
+          revision: 2,
+          digest: "a".repeat(64),
+          decision: "approved",
+          actor_type: "human",
+          actor_display: "Workspace admin",
+          rationale: "Approved",
+          origin: "local",
+          acted_at: "2026-11-02T12:00:00Z",
+        }],
+      },
+    })).toMatchObject({
+      specification: {
+        status: "awaiting_approval",
+        is_proposal: true,
+        specification: { requirements: [{ id: "REQ-1", text: "Ship it" }] },
+        approval_history: [{ origin: "local", decision: "approved" }],
+      },
+    });
+
+    expect(AutonomousProjectSnapshotFieldsSchema.parse({
+      specification: {
+        revision_id: "spec-1",
+        revision: 1,
+        digest: "a".repeat(64),
+        source_kind: "legacy",
+        status: "future-status",
+        specification: {
+          goal: "Goal",
+          summary: "Summary",
+          requirements: [],
+        },
+        approval_history: [{ origin: "future-origin" }],
+      },
+    })).toMatchObject({
+      specification: { status: "awaiting_approval", approval_history: [{ origin: "unknown" }] },
     });
 
     const plan = AutonomousProjectPlanSnapshotSchema.parse({

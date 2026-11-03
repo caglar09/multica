@@ -11,11 +11,38 @@ import (
 	"time"
 )
 
-const SchemaVersionV1 = "multica.project.v1"
+const (
+	SchemaVersionV1 = "multica.project.v1"
+	SchemaVersionV2 = "multica.project.v2"
+)
 
 const maxPortableMetadataKeys = 50
 
 var portableMetadataKeyPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$`)
+var portableDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var ErrPortabilityConflict = errors.New("project portability conflicts with local provenance")
+var ErrApprovalLedgerConflict = errors.New("approval idempotency key has a different payload")
+var ErrApprovalProvenanceConflict = errors.New("approved provenance has conflicting digests")
+var ErrSpecificationHistoryConflict = errors.New("incoming specification history conflicts with local history")
+
+type PortabilityConflictError struct {
+	ApprovalConflicts    []string
+	SpecificationChanges []string
+	kinds                []error
+}
+
+func (e *PortabilityConflictError) Error() string        { return ErrPortabilityConflict.Error() }
+func (e *PortabilityConflictError) Is(target error) bool {
+	if target == ErrPortabilityConflict {
+		return true
+	}
+	for _, kind := range e.kinds {
+		if target == kind {
+			return true
+		}
+	}
+	return false
+}
 
 type InvalidInputError struct{ Err error }
 
@@ -34,13 +61,51 @@ func invalidInput(err error) error {
 }
 
 type Bundle struct {
-	SchemaVersion string             `json:"schema_version"`
-	ExportedAt    string             `json:"exported_at,omitempty"`
-	Origin        PortableOrigin     `json:"origin,omitempty"`
-	Project       PortableProject    `json:"project"`
-	Resources     []PortableResource `json:"resources,omitempty"`
-	Bootstrap     *PortableBootstrap `json:"bootstrap,omitempty"`
-	Tasks         []PortableTask     `json:"tasks"`
+	SchemaVersion                  string                          `json:"schema_version"`
+	ExportedAt                     string                          `json:"exported_at,omitempty"`
+	Origin                         PortableOrigin                  `json:"origin,omitempty"`
+	Project                        PortableProject                 `json:"project"`
+	Resources                      []PortableResource              `json:"resources,omitempty"`
+	Bootstrap                      *PortableBootstrap              `json:"bootstrap,omitempty"`
+	Tasks                          []PortableTask                  `json:"tasks"`
+	Approvals                      []PortableApproval              `json:"approvals,omitempty"`
+	SpecificationRevisions         []PortableSpecificationRevision `json:"specification_revisions,omitempty"`
+	currentSpecificationRevisionID string
+}
+
+// PortableApproval preserves the source ledger event as provenance. Importers
+// must not treat an approval in a bundle as a local approval.
+type PortableApproval struct {
+	ID              string          `json:"id"`
+	IdempotencyKey  string          `json:"idempotency_key"`
+	SubjectType     string          `json:"subject_type"`
+	SubjectID       string          `json:"subject_id"`
+	SubjectRevision *int64          `json:"subject_revision"`
+	SubjectDigest   string          `json:"subject_digest"`
+	Decision        string          `json:"decision"`
+	ActorType       string          `json:"actor_type"`
+	ActorID         *string         `json:"actor_id"`
+	ActorDisplay    string          `json:"actor_display"`
+	PolicyRef       *string         `json:"policy_ref"`
+	Rationale       string          `json:"rationale"`
+	SourceEndpoint  string          `json:"source_endpoint"`
+	Origin          string          `json:"origin"`
+	OriginRef       json.RawMessage `json:"origin_ref"`
+	ActedAt         string          `json:"acted_at"`
+}
+
+// PortableSpecificationRevision carries immutable revision content and its
+// source identifiers. Content stays raw JSON so older revision payloads remain
+// lossless when bundles are decoded and re-encoded.
+type PortableSpecificationRevision struct {
+	ID         string          `json:"id"`
+	Revision   int64           `json:"revision"`
+	SourceKind string          `json:"source_kind"`
+	SourceRef  *string         `json:"source_ref"`
+	Goal       string          `json:"goal"`
+	Content    json.RawMessage `json:"content"`
+	Digest     string          `json:"digest"`
+	CreatedAt  string          `json:"created_at"`
 }
 
 type PortableOrigin struct {
@@ -230,6 +295,7 @@ type PlanNode struct {
 	Status             string   `json:"status,omitempty"`
 	Priority           int32    `json:"priority,omitempty"`
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
+	RequirementIDs     []string `json:"requirement_ids,omitempty"`
 }
 
 type PlanEdge struct {
@@ -436,10 +502,15 @@ type SyncRequest struct {
 }
 
 type PortabilityPreview struct {
-	ProjectAction  string         `json:"project_action"`
-	ProjectChanges []string       `json:"project_changes"`
-	Tasks          []TaskSyncDiff `json:"tasks"`
-	Warnings       []string       `json:"warnings"`
+	ProjectAction                string         `json:"project_action"`
+	ProjectChanges               []string       `json:"project_changes"`
+	Tasks                        []TaskSyncDiff `json:"tasks"`
+	Warnings                     []string       `json:"warnings"`
+	ApprovalConflicts            []string       `json:"approval_conflicts"`
+	SpecificationChanges         []string       `json:"specification_changes"`
+	approvalLedgerConflict       bool
+	approvalProvenanceConflict   bool
+	specificationHistoryConflict bool
 }
 
 type TaskSyncDiff struct {
@@ -479,8 +550,8 @@ func DecodeBundle(raw []byte) (Bundle, error) {
 }
 
 func ValidateBundle(bundle Bundle) error {
-	if bundle.SchemaVersion != SchemaVersionV1 {
-		return fmt.Errorf("schema_version must be %q", SchemaVersionV1)
+	if bundle.SchemaVersion != SchemaVersionV1 && bundle.SchemaVersion != SchemaVersionV2 {
+		return fmt.Errorf("schema_version must be %q or %q", SchemaVersionV1, SchemaVersionV2)
 	}
 	for field, value := range map[string]*string{"start_date": bundle.Project.StartDate, "due_date": bundle.Project.DueDate} {
 		if value != nil && strings.TrimSpace(*value) != "" {
@@ -549,6 +620,12 @@ func ValidateBundle(bundle Bundle) error {
 				return err
 			}
 		}
+	}
+	if err := validatePortableApprovals(bundle.Approvals); err != nil {
+		return err
+	}
+	if err := validatePortableSpecificationRevisions(bundle.SpecificationRevisions); err != nil {
+		return err
 	}
 	for i, resource := range bundle.Resources {
 		var object map[string]json.RawMessage
@@ -720,6 +797,16 @@ func validatePlan(plan PortablePlan) error {
 		if nodes[node.Key] {
 			return fmt.Errorf("duplicate plan node key %q", node.Key)
 		}
+		seenRequirements := make(map[string]bool, len(node.RequirementIDs))
+		for _, requirementID := range node.RequirementIDs {
+			if strings.TrimSpace(requirementID) == "" || strings.TrimSpace(requirementID) != requirementID {
+				return fmt.Errorf("plan node %q has an invalid requirement id", node.Key)
+			}
+			if seenRequirements[requirementID] {
+				return fmt.Errorf("plan node %q has duplicate requirement id %q", node.Key, requirementID)
+			}
+			seenRequirements[requirementID] = true
+		}
 		nodes[node.Key] = true
 	}
 	graph := make(map[string][]string, len(nodes))
@@ -754,6 +841,91 @@ func validatePlan(plan PortablePlan) error {
 		if err := visit(key); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validatePortableApprovals(approvals []PortableApproval) error {
+	ids := make(map[string]bool, len(approvals))
+	idempotencyKeys := make(map[string]bool, len(approvals))
+	for i, approval := range approvals {
+		if strings.TrimSpace(approval.ID) == "" || strings.TrimSpace(approval.IdempotencyKey) == "" {
+			return fmt.Errorf("approvals[%d] requires id and idempotency_key", i)
+		}
+		if ids[approval.ID] {
+			return fmt.Errorf("approvals[%d] duplicates id %q", i, approval.ID)
+		}
+		if idempotencyKeys[approval.IdempotencyKey] {
+			return fmt.Errorf("approvals[%d] duplicates idempotency_key %q", i, approval.IdempotencyKey)
+		}
+		ids[approval.ID] = true
+		idempotencyKeys[approval.IdempotencyKey] = true
+		if strings.TrimSpace(approval.SubjectType) == "" || strings.TrimSpace(approval.SubjectID) == "" {
+			return fmt.Errorf("approvals[%d] requires subject_type and subject_id", i)
+		}
+		if !portableDigestPattern.MatchString(approval.SubjectDigest) {
+			return fmt.Errorf("approvals[%d].subject_digest must be a lowercase SHA-256 digest", i)
+		}
+		if approval.SubjectRevision != nil && *approval.SubjectRevision < 1 {
+			return fmt.Errorf("approvals[%d].subject_revision must be positive", i)
+		}
+		if approval.Decision != "approved" && approval.Decision != "rejected" {
+			return fmt.Errorf("approvals[%d].decision must be approved or rejected", i)
+		}
+		if approval.ActorType != "human" && approval.ActorType != "system" {
+			return fmt.Errorf("approvals[%d].actor_type must be human or system", i)
+		}
+		if strings.TrimSpace(approval.ActorDisplay) == "" || strings.TrimSpace(approval.SourceEndpoint) == "" {
+			return fmt.Errorf("approvals[%d] requires actor_display and source_endpoint", i)
+		}
+		if approval.Origin != "local" && approval.Origin != "imported" {
+			return fmt.Errorf("approvals[%d].origin must be local or imported", i)
+		}
+		if approval.ActorType == "human" && approval.ActorID == nil && approval.Origin != "imported" {
+			return fmt.Errorf("approvals[%d] requires actor_id for a local human event", i)
+		}
+		if approval.ActorType == "system" && (approval.PolicyRef == nil || strings.TrimSpace(*approval.PolicyRef) == "") {
+			return fmt.Errorf("approvals[%d] requires policy_ref for a system event", i)
+		}
+		if err := validatePortableJSONObject(approval.OriginRef); err != nil {
+			return fmt.Errorf("approvals[%d].origin_ref: %w", i, err)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, approval.ActedAt); err != nil {
+			return fmt.Errorf("approvals[%d].acted_at must use RFC3339 format", i)
+		}
+	}
+	return nil
+}
+
+func validatePortableSpecificationRevisions(revisions []PortableSpecificationRevision) error {
+	ids := make(map[string]bool, len(revisions))
+	revisionNumbers := make(map[int64]bool, len(revisions))
+	for i, revision := range revisions {
+		if strings.TrimSpace(revision.ID) == "" || revision.Revision < 1 || strings.TrimSpace(revision.SourceKind) == "" {
+			return fmt.Errorf("specification_revisions[%d] requires id, positive revision, and source_kind", i)
+		}
+		if ids[revision.ID] || revisionNumbers[revision.Revision] {
+			return fmt.Errorf("specification_revisions[%d] duplicates a revision id or number", i)
+		}
+		ids[revision.ID] = true
+		revisionNumbers[revision.Revision] = true
+		if strings.TrimSpace(revision.Goal) == "" {
+			return fmt.Errorf("specification_revisions[%d].goal is required", i)
+		}
+		if err := validatePortableJSONObject(revision.Content); err != nil {
+			return fmt.Errorf("specification_revisions[%d].content: %w", i, err)
+		}
+		if !portableDigestPattern.MatchString(revision.Digest) {
+			return fmt.Errorf("specification_revisions[%d].digest must be a lowercase SHA-256 digest", i)
+		}
+	}
+	return nil
+}
+
+func validatePortableJSONObject(raw json.RawMessage) error {
+	var object map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &object) != nil || object == nil {
+		return errors.New("must be a JSON object")
 	}
 	return nil
 }

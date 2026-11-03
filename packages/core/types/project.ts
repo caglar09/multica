@@ -351,6 +351,8 @@ export interface PortabilityPreview {
   project_changes: string[];
   tasks: TaskSyncDiff[];
   warnings: string[];
+  approval_conflicts: string[];
+  specification_changes: string[];
 }
 
 export interface PortabilityResult {

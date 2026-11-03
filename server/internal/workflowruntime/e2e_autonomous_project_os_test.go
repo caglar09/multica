@@ -52,6 +52,7 @@ func TestAutonomousProjectOS_EndToEndScenario(t *testing.T) {
 	if err != nil {
 		t.Fatalf("persist complete project brief: %v", err)
 	}
+	recordLocalSpecificationApprovalForRuntimeFixture(t, fixture, d2ParseUUID(t, specRevision.ID), specRevision.Revision)
 
 	// 2. Persist a two-level Epic -> task DAG and approve its exact digest.
 	req123 := []string{"REQ-1", "REQ-2", "REQ-3"}
@@ -176,7 +177,7 @@ func TestAutonomousProjectOS_EndToEndScenario(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin exact plan approval: %v", err)
 	}
-	approved, err := projectorchestration.ApprovePlanTx(ctx, tx, fixture.workspaceID, fixture.projectID, stored.PlanDigest, "e2e approver")
+	approved, err := projectorchestration.ApprovePlanTx(ctx, tx, fixture.workspaceID, fixture.projectID, stored.PlanDigest, fixture.ownerID)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("approve current plan digest: %v", err)

@@ -199,7 +199,7 @@ func TestPlanMutationTraceabilityPreservesIDsAndRejectsCoverageRegression(t *tes
 		t.Fatal("plan mutation lost rich specification fields")
 	}
 
-	updated.RequirementIDs = nil
+	updated.RequirementIDs = []string{"REQ-1"}
 	_, err = ApplyPlanMutation(plan, logicalNodes, []PlanMutationOperation{{
 		Operation:           MutationUpdateNode,
 		TargetLogicalNodeID: logicalNodes[0].LogicalNodeID,
@@ -259,7 +259,7 @@ func TestPlannerOverlaysAuthoritativeSpecificationAndAcceptsCompleteCoverage(t *
 func TestPlannerRejectsRequirementWithoutIndependentVerificationAfterRepair(t *testing.T) {
 	specification := traceabilitySpecification()
 	plan := traceabilityPlan()
-	plan.Nodes[1].RequirementIDs = nil
+	plan.Nodes[1].RequirementIDs = []string{"REQ-1"}
 	output, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatalf("marshal planner output: %v", err)

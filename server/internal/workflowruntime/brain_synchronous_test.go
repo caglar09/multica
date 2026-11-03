@@ -87,6 +87,25 @@ func newSynchronousBrainFixture(t *testing.T) *synchronousBrainFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	specification := projectorchestration.ProjectSpecification{
+		Goal:    "Select and implement project memory retrieval.",
+		Summary: "Architecture choices are approved before dependent project work runs.",
+		Requirements: []projectorchestration.SpecificationRequirement{{
+			ID: "REQ-BRAIN-MEMORY", Text: "Use PostgreSQL pgvector for project memory retrieval.",
+			Rationale: "The implementation depends on a current approved memory architecture.", Source: "test fixture",
+		}},
+		DefinitionOfDone: []string{"The approved architecture decision is synchronously available to dependent work."},
+	}
+	specificationRevision, err := projectorchestration.NewStore(pool).CreateSpecificationRevision(
+		ctx, workspaceID, projectID, "project_bootstrap", "brain-sync-"+uuid.NewString(), specification, true,
+	)
+	if err != nil {
+		t.Fatalf("create approved brain fixture specification: %v", err)
+	}
+	recordLocalProjectSpecificationApproval(
+		t, pool, ctx, workspaceID, projectID, d2ParseUUID(t, userID),
+		d2ParseUUID(t, specificationRevision.ID), specificationRevision.Revision, userID,
+	)
 	predecessorIssueIDText := fixture.Issue(t, "Choose PostgreSQL pgvector memory", testutil.Cols{
 		"project_id": projectIDText, "description": "Choose the vector storage and recall technology.",
 	})
@@ -113,17 +132,22 @@ func newSynchronousBrainFixture(t *testing.T) *synchronousBrainFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	planSpecification, err := json.Marshal(specification.LegacySpecification())
+	if err != nil {
+		t.Fatalf("encode approved brain fixture specification: %v", err)
+	}
 	planIDText := fixture.Insert(t, "autonomous_project_plan", testutil.Cols{
-		"workspace_id":    workspaceIDText,
-		"project_id":      projectIDText,
-		"revision":        1,
-		"source_revision": "brain-sync-" + uuid.NewString(),
-		"planner_name":    "test",
-		"goal":            "Select and implement project memory retrieval.",
-		"specification":   testutil.Raw(`'{"requirements":["Use PostgreSQL pgvector"]}'::jsonb`),
-		"policy":          policy,
-		"plan_digest":     strings.Repeat("0", 64),
-		"status":          "active",
+		"workspace_id":              workspaceIDText,
+		"project_id":                projectIDText,
+		"revision":                  1,
+		"source_revision":           "brain-sync-" + uuid.NewString(),
+		"planner_name":              "test",
+		"goal":                      specification.Goal,
+		"specification":             testutil.Raw("'" + strings.ReplaceAll(string(planSpecification), "'", "''") + "'::jsonb"),
+		"specification_revision_id": specificationRevision.ID,
+		"policy":                    policy,
+		"plan_digest":               strings.Repeat("0", 64),
+		"status":                    "awaiting_approval",
 	})
 	planID, err := util.ParseUUID(planIDText)
 	if err != nil {
@@ -156,12 +180,15 @@ func newSynchronousBrainFixture(t *testing.T) *synchronousBrainFixture {
 		"from_node_key": "architecture", "to_node_key": "implementation", "dependency_type": "hard",
 	})
 	if _, err := pool.Exec(ctx, `
-		UPDATE autonomous_project_plan
-		SET plan_digest=autonomous_project_plan_digest(id), approved_at=now(), approved_by='brain sync test'
-		WHERE id=$1
+		UPDATE autonomous_project_plan SET plan_digest=autonomous_project_plan_digest(id) WHERE id=$1
 	`, planID); err != nil {
-		t.Fatalf("approve test plan: %v", err)
+		t.Fatalf("refresh brain fixture plan digest: %v", err)
 	}
+	var planDigest string
+	if err := pool.QueryRow(ctx, `SELECT plan_digest FROM autonomous_project_plan WHERE id=$1`, planID).Scan(&planDigest); err != nil {
+		t.Fatalf("read brain fixture plan digest: %v", err)
+	}
+	approveCurrentProjectPlan(t, pool, ctx, workspaceID, projectID, d2ParseUUID(t, userID), userID, planDigest)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO autonomous_project_budget (workspace_id,project_id,max_parallel_nodes,max_total_attempts)
 		VALUES ($1,$2,4,100)

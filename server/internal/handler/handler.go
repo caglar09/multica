@@ -241,7 +241,7 @@ type Handler struct {
 	AutonomousWorkflowRestart func(context.Context, pgtype.UUID, pgtype.UUID) error
 	ProjectLeaderSession      func(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID) (db.ChatSession, db.Agent, error)
 	ProjectLeaderCompletion   func(context.Context, pgtype.UUID, []byte) error
-	ProjectLeaderApprove      func(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, string) error
+	ProjectLeaderApprove      func(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string) error
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider

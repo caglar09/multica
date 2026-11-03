@@ -1815,11 +1815,13 @@ const TaskSyncDiffSchema: z.ZodType<TaskSyncDiff> = z.object({
   changes: PortableStringListSchema,
 }).loose();
 
-const PortabilityPreviewSchema: z.ZodType<PortabilityPreview> = z.object({
+export const PortabilityPreviewSchema: z.ZodType<PortabilityPreview> = z.object({
   project_action: PortabilityActionSchema,
   project_changes: PortableStringListSchema,
   tasks: z.array(TaskSyncDiffSchema).nullish().transform((tasks) => tasks ?? []),
   warnings: PortableStringListSchema,
+  approval_conflicts: PortableStringListSchema,
+  specification_changes: PortableStringListSchema,
 }).loose();
 
 const DiscoveredProjectSchema: z.ZodType<DiscoveredProject> = z.object({
@@ -2497,13 +2499,6 @@ export const AutonomousProjectDeploymentSchema = z.object({
   updated_at: z.string().default(""),
 }).loose();
 
-export const AutonomousProjectSnapshotFieldsSchema = z.object({
-  partial: z.boolean().catch(false),
-  missing_sections: z.array(z.string()).catch([]),
-  quality_gates: z.array(AutonomousQualityGateSchema).catch([]),
-  deployments: z.array(AutonomousProjectDeploymentSchema).catch([]),
-}).loose();
-
 export const AutonomousProjectPlanSnapshotSchema = z.object({
   id: z.string().default(""),
   revision: z.number().int().nonnegative().catch(0),
@@ -2570,11 +2565,77 @@ export const AutonomousProjectPlanSnapshotSchema = z.object({
   updated_at: z.string().default(""),
 }).loose();
 
+export const AutonomousProjectSpecificationApprovalSchema = z.object({
+  revision_id: z.string().default(""),
+  revision: z.number().int().nonnegative().catch(0),
+  digest: z.string().default(""),
+  source_kind: z.string().default(""),
+  status: z.enum(["awaiting_approval", "approved", "rejected"]).catch("awaiting_approval"),
+  is_proposal: z.boolean().catch(false),
+  change_request_id: z.string().nullable().catch(null),
+  specification: PortableProjectSpecificationSchema,
+  approval_history: z.array(z.object({
+    id: z.string().default(""),
+    revision: z.number().int().nullable().catch(null),
+    digest: z.string().default(""),
+    decision: z.enum(["approved", "rejected", "unknown"]).catch("unknown"),
+    actor_type: z.enum(["human", "system", "unknown"]).catch("unknown"),
+    actor_display: z.string().default(""),
+    rationale: z.string().default(""),
+    origin: z.enum(["local", "imported", "unknown"]).catch("unknown"),
+    acted_at: z.string().default(""),
+  }).loose()).catch([]),
+}).loose();
+
+export const AutonomousProjectSnapshotFieldsSchema = z.object({
+  partial: z.boolean().catch(false),
+  missing_sections: z.array(z.string()).catch([]),
+  quality_gates: z.array(AutonomousQualityGateSchema).catch([]),
+  deployments: z.array(AutonomousProjectDeploymentSchema).catch([]),
+  specification: AutonomousProjectSpecificationApprovalSchema.nullable().catch(null),
+}).loose();
+
 export const ApproveAutonomousProjectPlanResponseSchema = z.object({
   approved: z.boolean().default(false),
   plan_digest: z.string().default(""),
   status: z.string().default(""),
 }).loose();
+
+export const ApproveProjectSpecificationResponseSchema = z.object({
+  approved: z.boolean(),
+  change_request_id: z.string().min(1),
+  specification_revision_id: z.string().min(1),
+  specification_revision: z.number().int().positive(),
+  specification_digest: z.string().regex(/^[a-f0-9]{64}$/),
+}).loose();
+
+export type ApproveProjectSpecificationResponse = z.infer<typeof ApproveProjectSpecificationResponseSchema>;
+
+export const EMPTY_APPROVE_PROJECT_SPECIFICATION_RESPONSE: ApproveProjectSpecificationResponse = {
+  approved: false,
+  change_request_id: "",
+  specification_revision_id: "",
+  specification_revision: 0,
+  specification_digest: "",
+};
+
+export const RejectProjectSpecificationResponseSchema = z.object({
+  rejected: z.boolean(),
+  change_request_id: z.string().min(1),
+  specification_revision_id: z.string().min(1),
+  specification_revision: z.number().int().positive(),
+  specification_digest: z.string().regex(/^[a-f0-9]{64}$/),
+}).loose();
+
+export type RejectProjectSpecificationResponse = z.infer<typeof RejectProjectSpecificationResponseSchema>;
+
+export const EMPTY_REJECT_PROJECT_SPECIFICATION_RESPONSE: RejectProjectSpecificationResponse = {
+  rejected: false,
+  change_request_id: "",
+  specification_revision_id: "",
+  specification_revision: 0,
+  specification_digest: "",
+};
 
 export const EMPTY_APPROVE_AUTONOMOUS_PROJECT_PLAN_RESPONSE = {
   approved: false,

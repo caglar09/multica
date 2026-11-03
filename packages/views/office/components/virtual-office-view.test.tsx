@@ -91,6 +91,7 @@ describe("ProjectVirtualOfficeView", () => {
     },
     bootstrap: null,
     draft: null,
+    specification: null,
     runtimes: [],
     skills: [],
     actions: [],

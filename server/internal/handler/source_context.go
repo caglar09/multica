@@ -727,6 +727,9 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 		AttachmentIDs: attachmentIDs, LabelIDs: labelIDs, Properties: properties, Stage: stage,
 		AllowDuplicate: input.AllowDuplicate, SourceContext: &capture,
 	}, service.IssueCreateOpts{
+		ManualIssueProvenance: &service.ManualIssueProvenance{
+			ActorID: userID, ActorDisplay: "Workspace member", SourceEndpoint: "/api/comments/:commentId/sub-issues",
+		},
 		ActorID: util.UUIDToString(userID),
 		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, labels []db.IssueLabel) map[string]any {
 			response := issueToResponse(issue, prefix)

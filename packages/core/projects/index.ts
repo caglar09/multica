@@ -29,6 +29,8 @@ export {
   useCancelAutonomousProject,
   useReplanAutonomousProject,
   useApproveAutonomousProjectPlan,
+  useApproveAutonomousProjectSpecification,
+  useRejectAutonomousProjectSpecification,
   useRerunAutonomousIssue,
   useRestartAutonomousWorkflow,
   useConfirmAutonomousTeam,

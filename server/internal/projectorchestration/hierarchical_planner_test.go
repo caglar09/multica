@@ -87,7 +87,7 @@ func TestHierarchicalPlanning_TotalGraphIntegrity(t *testing.T) {
 	if !hierarchyMigrationAvailable(t) {
 		return
 	}
-	fixture := newWave3ChangeFixture(t)
+	fixture := newWave3ChangeFixtureWithApprovedSpecification(t)
 	initial := Plan{
 		Version:                 CurrentPlanVersion,
 		Goal:                    fixture.initialPlan.Plan.Goal,
@@ -197,7 +197,7 @@ func TestPlanDigestIncludesHierarchy(t *testing.T) {
 	if !hierarchyMigrationAvailable(t) {
 		return
 	}
-	fixture := newWave3ChangeFixture(t)
+	fixture := newWave3ChangeFixtureWithApprovedSpecification(t)
 	baseline := fixture.initialPlan.PlanDigest
 	tx, err := fixture.pool.Begin(fixture.ctx)
 	if err != nil {

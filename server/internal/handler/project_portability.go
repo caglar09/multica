@@ -317,6 +317,10 @@ func (h *Handler) writeProjectPortabilityError(w http.ResponseWriter, err error)
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
+	if errors.Is(err, projectbundle.ErrPortabilityConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	var inputErr *projectbundle.InvalidInputError
 	if errors.As(err, &inputErr) {
 		writeError(w, http.StatusBadRequest, inputErr.Error())
